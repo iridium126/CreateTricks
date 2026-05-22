@@ -1,5 +1,6 @@
 package com.iridium126.createtricks;
 
+import com.iridium126.createtricks.display.ModularSpellConstructDisplayTarget;
 import com.iridium126.createtricks.display.SpellConstructDisplayTarget;
 import com.simibubi.create.api.behaviour.display.DisplayTarget;
 import com.simibubi.create.api.registry.CreateRegistries;
@@ -15,7 +16,9 @@ import net.neoforged.neoforge.registries.RegisterEvent;
 @EventBusSubscriber(modid = CreateTricks.MODID)
 public final class CreateTricksDisplayTargets {
 	public static final SpellConstructDisplayTarget SPELL_CONSTRUCT = new SpellConstructDisplayTarget();
+	public static final ModularSpellConstructDisplayTarget MODULAR_SPELL_CONSTRUCT = new ModularSpellConstructDisplayTarget();
 	public static final ResourceLocation SPELL_CONSTRUCT_ID = ResourceLocation.fromNamespaceAndPath(CreateTricks.MODID, "spell_construct");
+	public static final ResourceLocation MODULAR_SPELL_CONSTRUCT_ID = ResourceLocation.fromNamespaceAndPath(CreateTricks.MODID, "modular_spell_construct");
 
 	private CreateTricksDisplayTargets() {}
 
@@ -25,21 +28,22 @@ public final class CreateTricksDisplayTargets {
 			return;
 
 		event.register(CreateRegistries.DISPLAY_TARGET, SPELL_CONSTRUCT_ID, () -> SPELL_CONSTRUCT);
+		event.register(CreateRegistries.DISPLAY_TARGET, MODULAR_SPELL_CONSTRUCT_ID, () -> MODULAR_SPELL_CONSTRUCT);
 	}
 
 	@SubscribeEvent
 	public static void registerBlockEntityBindings(FMLCommonSetupEvent event) {
 		event.enqueueWork(() -> {
-			registerBlockEntity("spell_construct");
-			registerBlockEntity("modular_spell_construct");
+			registerBlockEntity("spell_construct", SPELL_CONSTRUCT);
+			registerBlockEntity("modular_spell_construct", MODULAR_SPELL_CONSTRUCT);
 		});
 	}
 
-	private static void registerBlockEntity(String path) {
+	private static void registerBlockEntity(String path, DisplayTarget target) {
 		ResourceLocation id = ResourceLocation.fromNamespaceAndPath("trickster", path);
 		BlockEntityType<?> type = BuiltInRegistries.BLOCK_ENTITY_TYPE.get(id);
 		if (type != null)
-			DisplayTarget.BY_BLOCK_ENTITY.register(type, SPELL_CONSTRUCT);
+			DisplayTarget.BY_BLOCK_ENTITY.register(type, target);
 		else
 			CreateTricks.LOGGER.warn("Could not bind DisplayTarget to missing block entity type {}", id);
 	}

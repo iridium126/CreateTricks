@@ -1,5 +1,6 @@
 {
   "createtricks.display_target.argument": "Spell Argument %1$s",
+  "createtricks.display_target.modular_argument": "Core %1$s, Argument %2$s",
 
   "itemGroup.createtricks": "Example Mod Tab",
   "block.createtricks.example_block": "Example Block",

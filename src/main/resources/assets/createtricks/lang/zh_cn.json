@@ -1,3 +1,4 @@
 {
-  "createtricks.display_target.argument": "法术参数 %1$s"
+  "createtricks.display_target.argument": "法术参数 %1$s",
+  "createtricks.display_target.modular_argument": "核心 %1$s，参数 %2$s"
 }

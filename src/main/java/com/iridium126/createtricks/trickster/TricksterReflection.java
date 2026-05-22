@@ -46,36 +46,21 @@ public final class TricksterReflection {
 		if (!isAvailable())
 			return;
 
-		List<Object> arguments = buildArgumentObjects(be);
 		try {
 			if (SPELL_CONSTRUCT_BE.equals(be.getClass().getName())) {
 				Object executor = spellConstructExecutorField.get(be);
-				syncExecutor(executor, arguments);
+				syncExecutor(executor, be, -1);
 			} else if (MODULAR_SPELL_CONSTRUCT_BE.equals(be.getClass().getName())) {
 				@SuppressWarnings("unchecked")
 				List<Optional<Object>> executors = (List<Optional<Object>>) modularExecutorsField.get(be);
-				for (Optional<Object> optional : executors)
-					optional.ifPresent(executor -> syncExecutor(executor, arguments));
+				for (int slot = 0; slot < executors.size() && slot < SpellConstructDisplayArguments.MODULAR_EXECUTOR_SLOTS; slot++) {
+					Optional<Object> optional = executors.get(slot);
+					int executorSlot = slot;
+					optional.ifPresent(executor -> syncExecutor(executor, be, executorSlot));
+				}
 			}
 		} catch (ReflectiveOperationException e) {
 			CreateTricks.LOGGER.error("Failed to sync spell construct display arguments", e);
-		}
-	}
-
-	@Nullable
-	public static Object getDisplayArgument(BlockEntity be, int index) {
-		if (!isAvailable())
-			return null;
-
-		String value = SpellConstructDisplayArguments.getArgumentString(be, index);
-		if (value == null)
-			return null;
-
-		try {
-			return stringFragmentConstructor.newInstance(value);
-		} catch (ReflectiveOperationException e) {
-			CreateTricks.LOGGER.error("Failed to create StringFragment", e);
-			return null;
 		}
 	}
 
@@ -83,7 +68,7 @@ public final class TricksterReflection {
 		if (!isAvailable())
 			return List.of();
 
-		return buildArgumentObjects(be);
+		return mergeDisplayArguments(be, -1, List.of());
 	}
 
 	@Nullable
@@ -98,17 +83,41 @@ public final class TricksterReflection {
 		}
 	}
 
-	private static List<Object> buildArgumentObjects(BlockEntity be) {
-		List<Object> arguments = new ArrayList<>(SpellConstructDisplayArguments.MAX_ARGUMENTS);
+	private static List<Object> mergeDisplayArguments(BlockEntity be, int executorSlot, List<Object> base) {
+		ArrayList<Object> merged = new ArrayList<>(base);
 		for (int i = 0; i < SpellConstructDisplayArguments.MAX_ARGUMENTS; i++) {
-			Object fragment = getDisplayArgument(be, i);
-			arguments.add(fragment != null ? fragment : voidFragmentInstance);
+			if (!SpellConstructDisplayArguments.hasStoredArgument(be, executorSlot, i))
+				continue;
+
+			Object fragment = getDisplayArgument(be, executorSlot, i);
+			if (fragment == null)
+				continue;
+
+			while (merged.size() <= i)
+				merged.add(voidFragmentInstance);
+			merged.set(i, fragment);
 		}
-		trimTrailingVoid(arguments);
-		return arguments;
+		return merged;
 	}
 
-	private static void syncExecutor(@Nullable Object executor, List<Object> arguments) {
+	@Nullable
+	private static Object getDisplayArgument(BlockEntity be, int executorSlot, int index) {
+		if (!isAvailable())
+			return null;
+
+		String value = SpellConstructDisplayArguments.getArgumentString(be, executorSlot, index);
+		if (value == null)
+			return null;
+
+		try {
+			return stringFragmentConstructor.newInstance(value);
+		} catch (ReflectiveOperationException e) {
+			CreateTricks.LOGGER.error("Failed to create StringFragment", e);
+			return null;
+		}
+	}
+
+	private static void syncExecutor(@Nullable Object executor, BlockEntity be, int executorSlot) {
 		if (executor == null || !DEFAULT_SPELL_EXECUTOR.equals(executor.getClass().getName()))
 			return;
 
@@ -116,27 +125,21 @@ public final class TricksterReflection {
 			Object state = defaultExecutorStateField.get(executor);
 			@SuppressWarnings("unchecked")
 			List<Object> current = (List<Object>) executionStateGetArguments.invoke(state);
+			List<Object> merged = mergeDisplayArguments(be, executorSlot, current);
+
 			if (current instanceof ArrayList<?> arrayList) {
 				@SuppressWarnings("unchecked")
 				ArrayList<Object> mutable = (ArrayList<Object>) arrayList;
 				mutable.clear();
-				mutable.addAll(arguments);
+				mutable.addAll(merged);
 			} else {
 				Field argumentsField = state.getClass().getDeclaredField("arguments");
 				argumentsField.setAccessible(true);
-				argumentsField.set(state, new ArrayList<>(arguments));
+				argumentsField.set(state, merged);
 			}
 		} catch (ReflectiveOperationException e) {
 			CreateTricks.LOGGER.error("Failed to update spell executor arguments", e);
 		}
-	}
-
-	private static void trimTrailingVoid(List<Object> arguments) {
-		int size = arguments.size();
-		while (size > 0 && voidFragmentInstance.equals(arguments.get(size - 1)))
-			size--;
-		if (size < arguments.size())
-			arguments.subList(size, arguments.size()).clear();
 	}
 
 	private static void ensureInitialized() {

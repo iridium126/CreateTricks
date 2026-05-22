@@ -18,7 +18,6 @@ public final class TricksterReflection {
 	private static final String SPELL_CONSTRUCT_BE = "dev.enjarai.trickster.block.SpellConstructBlockEntity";
 	private static final String MODULAR_SPELL_CONSTRUCT_BE = "dev.enjarai.trickster.block.ModularSpellConstructBlockEntity";
 	private static final String DEFAULT_SPELL_EXECUTOR = "dev.enjarai.trickster.spell.execution.executor.DefaultSpellExecutor";
-	private static final String SPELL_PART = "dev.enjarai.trickster.spell.SpellPart";
 	private static final String STRING_FRAGMENT = "dev.enjarai.trickster.spell.fragment.StringFragment";
 	private static final String VOID_FRAGMENT = "dev.enjarai.trickster.spell.fragment.VoidFragment";
 	private static final String EXECUTION_STATE = "dev.enjarai.trickster.spell.execution.ExecutionState";
@@ -27,10 +26,8 @@ public final class TricksterReflection {
 	private static volatile boolean initialized;
 	private static volatile boolean available;
 
-	private static Class<?> spellPartClass;
 	private static Class<?> stringFragmentClass;
 	private static Object voidFragmentInstance;
-	private static Constructor<?> defaultExecutorConstructor;
 	private static Constructor<?> stringFragmentConstructor;
 	private static Field spellConstructExecutorField;
 	private static Field modularExecutorsField;
@@ -82,15 +79,11 @@ public final class TricksterReflection {
 		}
 	}
 
-	public static Object createDefaultSpellExecutor(Object spell, BlockEntity be) {
+	public static List<?> buildExecutorArguments(BlockEntity be) {
 		if (!isAvailable())
-			throw new IllegalStateException("Trickster is not available");
+			return List.of();
 
-		try {
-			return defaultExecutorConstructor.newInstance(spell, buildArgumentObjects(be));
-		} catch (ReflectiveOperationException e) {
-			throw new IllegalStateException("Failed to create DefaultSpellExecutor", e);
-		}
+		return buildArgumentObjects(be);
 	}
 
 	@Nullable
@@ -155,13 +148,10 @@ public final class TricksterReflection {
 				return;
 			initialized = true;
 			try {
-				spellPartClass = Class.forName(SPELL_PART);
 				stringFragmentClass = Class.forName(STRING_FRAGMENT);
 				Class<?> voidFragmentClass = Class.forName(VOID_FRAGMENT);
 				voidFragmentInstance = voidFragmentClass.getField("INSTANCE").get(null);
 				stringFragmentConstructor = stringFragmentClass.getConstructor(String.class);
-				defaultExecutorConstructor = Class.forName(DEFAULT_SPELL_EXECUTOR)
-					.getConstructor(spellPartClass, List.class);
 
 				spellConstructExecutorField = Class.forName(SPELL_CONSTRUCT_BE).getField("executor");
 				modularExecutorsField = Class.forName(MODULAR_SPELL_CONSTRUCT_BE).getField("executors");

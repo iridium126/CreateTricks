@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "package": "com.iridium126.createtricks.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "LoadArgumentTrickMixin",
+    "ModularSpellConstructBlockEntityMixin",
+    "SpellConstructBlockEntityMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "overwrites": {
+    "requireAnnotations": true
+  }
+}

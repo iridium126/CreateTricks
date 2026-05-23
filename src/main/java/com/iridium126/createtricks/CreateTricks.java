@@ -14,5 +14,7 @@ public class CreateTricks {
 	public static final Logger LOGGER = LogUtils.getLogger();
 
 	public CreateTricks(IEventBus modEventBus, ModContainer modContainer) {
+		CreateTricksRegistrate.register(modEventBus);
+		modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.COMMON, Config.SPEC);
 	}
 }

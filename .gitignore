@@ -39,4 +39,4 @@ run/
 repo/
 !**/src/**/repo/
 
-.refs
+.refs/

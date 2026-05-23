@@ -42,6 +42,10 @@ repositories {
         name = "Create"
         url = "https://maven.createmod.net"
     }
+    maven {
+        name = "Ithundxr"
+        url = "https://maven.ithundxr.dev/snapshots"
+    }
 }
 
 base {
@@ -155,6 +159,7 @@ dependencies {
     // http://www.gradle.org/docs/current/userguide/dependency_management.html
 
     implementation "curse.maven:create-328085:7963363"
+    compileOnly "com.tterrag.registrate:Registrate:${registrate_version}"
     compileOnly "net.createmod.ponder:Ponder-NeoForge-${minecraft_version}:${ponder_version}"
 
     implementation "curse.maven:accessories-938917:7583320"

@@ -1,4 +1,8 @@
 {
   "createtricks.display_target.argument": "法术参数 %1$s",
-  "createtricks.display_target.modular_argument": "核心 %1$s，参数 %2$s"
+  "createtricks.display_target.modular_argument": "核心 %1$s，参数 %2$s",
+  "block.createtricks.stress_mana_converter": "应力魔力转换器",
+  "item.createtricks.stress_mana_converter": "应力魔力转换器",
+  "itemGroup.createtricks": "Create: Tricks",
+  "createtricks.stress_mana_converter.stress_per_rpm": "每 RPM 应力消耗"
 }

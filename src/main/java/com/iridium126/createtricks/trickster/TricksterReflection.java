@@ -12,11 +12,19 @@ import org.jetbrains.annotations.Nullable;
 import com.iridium126.createtricks.CreateTricks;
 import com.iridium126.createtricks.display.SpellConstructDisplayArguments;
 
+import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.entity.BlockEntity;
 
 public final class TricksterReflection {
 	private static final String SPELL_CONSTRUCT_BE = "dev.enjarai.trickster.block.SpellConstructBlockEntity";
 	private static final String MODULAR_SPELL_CONSTRUCT_BE = "dev.enjarai.trickster.block.ModularSpellConstructBlockEntity";
+	private static final String CHARGING_ARRAY_BE = "dev.enjarai.trickster.block.ChargingArrayBlockEntity";
+	private static final String KNOT_ITEM = "dev.enjarai.trickster.item.KnotItem";
+	private static final String MANA_COMPONENT = "dev.enjarai.trickster.item.component.ManaComponent";
+	private static final String MOD_COMPONENTS = "dev.enjarai.trickster.item.component.ModComponents";
+	private static final String MUTABLE_MANA_POOL = "dev.enjarai.trickster.spell.mana.MutableManaPool";
 	private static final String DEFAULT_SPELL_EXECUTOR = "dev.enjarai.trickster.spell.execution.executor.DefaultSpellExecutor";
 	private static final String STRING_FRAGMENT = "dev.enjarai.trickster.spell.fragment.StringFragment";
 	private static final String VOID_FRAGMENT = "dev.enjarai.trickster.spell.fragment.VoidFragment";
@@ -35,7 +43,44 @@ public final class TricksterReflection {
 	private static Method executionStateGetArguments;
 	private static Field blockSpellSourceBlockEntityField;
 
+	private static Class<?> knotItemClass;
+	private static Object manaComponentType;
+	private static Method manaComponentPoolMethod;
+	private static Method manaComponentWithMethod;
+	private static Method mutableManaPoolMakeCloneMethod;
+	private static Method mutableManaPoolRefillMethod;
+	private static Method itemStackGetComponentMethod;
+	private static Method itemStackSetComponentMethod;
+	private static Method markDirtyAndUpdateClientsMethod;
+	private static Field spellConstructStackField;
+	private static Field modularInventoryField;
+	private static Field chargingArrayInventoryField;
+
+	private static void resolveItemStackComponentAccess() throws ReflectiveOperationException {
+		Class<?> componentTypeClass = Class.forName(MOD_COMPONENTS).getField("MANA").getType();
+		for (Method method : ItemStack.class.getMethods()) {
+			if ("get".equals(method.getName()) && method.getParameterCount() == 1
+					&& componentTypeClass.isAssignableFrom(method.getParameterTypes()[0])) {
+				itemStackGetComponentMethod = method;
+			}
+			if ("set".equals(method.getName()) && method.getParameterCount() == 2
+					&& componentTypeClass.isAssignableFrom(method.getParameterTypes()[0])) {
+				itemStackSetComponentMethod = method;
+			}
+		}
+		if (itemStackGetComponentMethod == null || itemStackSetComponentMethod == null)
+			throw new NoSuchMethodException("Could not resolve ItemStack component accessors");
+	}
+
 	private TricksterReflection() {}
+
+	private static Class<?> resolveWorldClass() throws ClassNotFoundException {
+		try {
+			return Class.forName("net.minecraft.world.level.Level");
+		} catch (ClassNotFoundException ignored) {
+			return Class.forName("net.minecraft.world.World");
+		}
+	}
 
 	public static boolean isAvailable() {
 		ensureInitialized();
@@ -69,6 +114,93 @@ public final class TricksterReflection {
 			return List.of();
 
 		return mergeDisplayArguments(be, -1, List.of());
+	}
+
+	public static boolean chargeKnotsAbove(ServerLevel level, BlockPos converterPos, float manaAmount) {
+		if (!isAvailable() || manaAmount <= 0)
+			return false;
+
+		BlockEntity target = level.getBlockEntity(converterPos.above());
+		if (target == null)
+			return false;
+
+		return chargeKnotsInBlockEntity(level, target, manaAmount);
+	}
+
+	private static boolean chargeKnotsInBlockEntity(ServerLevel level, BlockEntity blockEntity, float manaAmount) {
+		String className = blockEntity.getClass().getName();
+		try {
+			if (SPELL_CONSTRUCT_BE.equals(className)) {
+				ItemStack stack = (ItemStack) spellConstructStackField.get(blockEntity);
+				if (chargeKnotStack(level, stack, manaAmount)) {
+					markDirtyAndUpdateClientsMethod.invoke(blockEntity);
+					return true;
+				}
+				return false;
+			}
+
+			if (MODULAR_SPELL_CONSTRUCT_BE.equals(className)) {
+				@SuppressWarnings("unchecked")
+				List<ItemStack> inventory = (List<ItemStack>) modularInventoryField.get(blockEntity);
+				if (inventory.isEmpty())
+					return false;
+				if (chargeKnotStack(level, inventory.get(0), manaAmount)) {
+					markDirtyAndUpdateClientsMethod.invoke(blockEntity);
+					return true;
+				}
+				return false;
+			}
+
+			if (CHARGING_ARRAY_BE.equals(className)) {
+				@SuppressWarnings("unchecked")
+				List<ItemStack> inventory = (List<ItemStack>) chargingArrayInventoryField.get(blockEntity);
+				boolean changed = false;
+				int knotCount = 0;
+				for (ItemStack stack : inventory) {
+					if (isKnotStack(stack))
+						knotCount++;
+				}
+				if (knotCount == 0)
+					return false;
+
+				float share = manaAmount / knotCount;
+				for (int i = 0; i < inventory.size(); i++) {
+					ItemStack stack = inventory.get(i);
+					if (isKnotStack(stack) && chargeKnotStack(level, stack, share))
+						changed = true;
+				}
+				if (changed)
+					markDirtyAndUpdateClientsMethod.invoke(blockEntity);
+				return changed;
+			}
+		} catch (ReflectiveOperationException e) {
+			CreateTricks.LOGGER.error("Failed to charge trickster knot mana", e);
+		}
+
+		return false;
+	}
+
+	private static boolean isKnotStack(ItemStack stack) {
+		return stack != null && !stack.isEmpty() && knotItemClass.isInstance(stack.getItem());
+	}
+
+	private static boolean chargeKnotStack(ServerLevel level, ItemStack stack, float manaAmount) throws ReflectiveOperationException {
+		if (!isKnotStack(stack) || manaAmount <= 0)
+			return false;
+
+		Object component = itemStackGetComponentMethod.invoke(stack, manaComponentType);
+		if (component == null)
+			return false;
+
+		Object pool = manaComponentPoolMethod.invoke(component);
+		Object mutablePool = mutableManaPoolMakeCloneMethod.invoke(pool, level);
+		float leftover = (float) mutableManaPoolRefillMethod.invoke(mutablePool, manaAmount, level);
+		if (leftover >= manaAmount)
+			return false;
+
+		Object updatedComponent = manaComponentWithMethod.invoke(component, mutablePool);
+		itemStackSetComponentMethod.invoke(stack, manaComponentType, updatedComponent);
+		return true;
 	}
 
 	@Nullable
@@ -162,6 +294,24 @@ public final class TricksterReflection {
 				defaultExecutorStateField.setAccessible(true);
 				executionStateGetArguments = Class.forName(EXECUTION_STATE).getMethod("getArguments");
 				blockSpellSourceBlockEntityField = Class.forName(BLOCK_SPELL_SOURCE).getField("blockEntity");
+
+				knotItemClass = Class.forName(KNOT_ITEM);
+				Class<?> manaComponentClass = Class.forName(MANA_COMPONENT);
+				Class<?> modComponentsClass = Class.forName(MOD_COMPONENTS);
+				Class<?> mutableManaPoolClass = Class.forName(MUTABLE_MANA_POOL);
+				Class<?> worldClass = resolveWorldClass();
+				manaComponentType = modComponentsClass.getField("MANA").get(null);
+				manaComponentPoolMethod = manaComponentClass.getMethod("pool");
+				manaComponentWithMethod = manaComponentClass.getMethod("with", mutableManaPoolClass);
+				mutableManaPoolMakeCloneMethod = mutableManaPoolClass.getMethod("makeClone", worldClass);
+				mutableManaPoolRefillMethod = mutableManaPoolClass.getMethod("refill", float.class, worldClass);
+				resolveItemStackComponentAccess();
+				spellConstructStackField = Class.forName(SPELL_CONSTRUCT_BE).getField("stack");
+				modularInventoryField = Class.forName(MODULAR_SPELL_CONSTRUCT_BE).getDeclaredField("inventory");
+				modularInventoryField.setAccessible(true);
+				chargingArrayInventoryField = Class.forName(CHARGING_ARRAY_BE).getDeclaredField("inventory");
+				chargingArrayInventoryField.setAccessible(true);
+				markDirtyAndUpdateClientsMethod = Class.forName(SPELL_CONSTRUCT_BE).getMethod("markDirtyAndUpdateClients");
 
 				available = true;
 			} catch (ReflectiveOperationException e) {

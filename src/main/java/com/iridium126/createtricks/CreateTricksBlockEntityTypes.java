@@ -1,0 +1,18 @@
+package com.iridium126.createtricks;
+
+import com.iridium126.createtricks.content.kinetics.StressManaConverterBlockEntity;
+import com.iridium126.createtricks.content.kinetics.StressManaConverterRenderer;
+import com.tterrag.registrate.util.entry.BlockEntityEntry;
+
+public final class CreateTricksBlockEntityTypes {
+	public static final BlockEntityEntry<StressManaConverterBlockEntity> STRESS_MANA_CONVERTER =
+			CreateTricksRegistrate.REGISTRATE
+					.blockEntity("stress_mana_converter", StressManaConverterBlockEntity::new)
+					.validBlocks(CreateTricksBlocks.STRESS_MANA_CONVERTER)
+					.renderer(() -> StressManaConverterRenderer::new)
+					.register();
+
+	private CreateTricksBlockEntityTypes() {}
+
+	public static void register() {}
+}

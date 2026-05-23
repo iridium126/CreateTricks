@@ -1,0 +1,69 @@
+{
+	"format_version": "1.21.11",
+	"credit": "Made with Blockbench",
+	"textures": {
+		"0": "createtricks:block/stress_mana_converter/base_down",
+		"1": "createtricks:block/stress_mana_converter/base_other",
+		"2": "createtricks:block/stress_mana_converter/base_up"
+	},
+	"elements": [
+		{
+			"from": [0, 0, 0],
+			"to": [16, 6, 16],
+			"rotation": {"angle": 0, "axis": "y", "origin": [8, 3, 8]},
+			"faces": {
+				"north": {"uv": [0, 10, 16, 16], "texture": "#1"},
+				"east": {"uv": [0, 10, 16, 16], "texture": "#1"},
+				"south": {"uv": [0, 10, 16, 16], "texture": "#1"},
+				"west": {"uv": [0, 10, 16, 16], "texture": "#1"},
+				"up": {"uv": [0, 0, 16, 16], "texture": "#2"},
+				"down": {"uv": [0, 0, 16, 16], "texture": "#0"}
+			}
+		},
+		{
+			"name": "upper",
+			"from": [3, 15, 3],
+			"to": [13, 16, 13],
+			"rotation": {"angle": 0, "axis": "y", "origin": [8, 15.5, 8]},
+			"faces": {
+				"north": {"uv": [0, 1, 10, 2], "texture": "#2"},
+				"east": {"uv": [0, 1, 10, 2], "texture": "#2"},
+				"south": {"uv": [0, 1, 10, 2], "texture": "#2"},
+				"west": {"uv": [0, 1, 10, 2], "texture": "#2"},
+				"up": {"uv": [0, 0, 10, 10], "texture": "#2"}
+			}
+		},
+		{
+			"name": "lower",
+			"from": [2, 12, 2],
+			"to": [14, 15, 14],
+			"rotation": {"angle": 0, "axis": "y", "origin": [8, 13.5, 8]},
+			"faces": {
+				"north": {"uv": [0, 0, 12, 3], "texture": "#2"},
+				"east": {"uv": [0, 0, 12, 3], "texture": "#2"},
+				"south": {"uv": [0, 0, 12, 3], "texture": "#2"},
+				"west": {"uv": [0, 0, 12, 3], "texture": "#2"},
+				"up": {"uv": [0, 0, 12, 12], "texture": "#2"},
+				"down": {"uv": [0, 0, 12, 12], "texture": "#2"}
+			}
+		}
+	],
+	"groups": [
+		{
+			"name": "base_brass",
+			"origin": [8, 3, 8],
+			"scope": 0,
+			"color": 0,
+			"shade": false,
+			"children": [0]
+		},
+		{
+			"name": "cap_amethyst",
+			"origin": [8, 14, 8],
+			"scope": 0,
+			"color": 0,
+			"shade": false,
+			"children": [1, 2]
+		}
+	]
+}

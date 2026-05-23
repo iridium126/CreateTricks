@@ -4,7 +4,6 @@ import static com.simibubi.create.foundation.data.ModelGen.customItemModel;
 import static com.simibubi.create.foundation.data.TagGen.pickaxeOnly;
 
 import com.iridium126.createtricks.content.kinetics.StressManaConverterBlock;
-import com.simibubi.create.Create;
 import com.simibubi.create.foundation.data.SharedProperties;
 import com.tterrag.registrate.util.entry.BlockEntry;
 
@@ -17,8 +16,7 @@ public final class CreateTricksBlocks {
 					.properties(p -> p.mapColor(MapColor.METAL))
 					.transform(pickaxeOnly())
 					.blockstate((ctx, prov) -> prov.simpleBlock(ctx.get(), prov.models()
-							.withExistingParent(ctx.getName(), prov.mcLoc("block/cube_all"))
-							.texture("all", Create.asResource("block/andesite_casing"))))
+							.getExistingFile(prov.modLoc("block/stress_mana_converter"))))
 					.item()
 					.transform(customItemModel())
 					.register();

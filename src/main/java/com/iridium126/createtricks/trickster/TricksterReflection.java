@@ -13,89 +13,126 @@ import com.iridium126.createtricks.CreateTricks;
 import com.iridium126.createtricks.display.SpellConstructDisplayArguments;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.component.DataComponentType;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.Container;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 
 public final class TricksterReflection {
-	private static final String SPELL_CONSTRUCT_BE = "dev.enjarai.trickster.block.SpellConstructBlockEntity";
-	private static final String MODULAR_SPELL_CONSTRUCT_BE = "dev.enjarai.trickster.block.ModularSpellConstructBlockEntity";
-	private static final String CHARGING_ARRAY_BE = "dev.enjarai.trickster.block.ChargingArrayBlockEntity";
-	private static final String KNOT_ITEM = "dev.enjarai.trickster.item.KnotItem";
-	private static final String MANA_COMPONENT = "dev.enjarai.trickster.item.component.ManaComponent";
-	private static final String MOD_COMPONENTS = "dev.enjarai.trickster.item.component.ModComponents";
-	private static final String MUTABLE_MANA_POOL = "dev.enjarai.trickster.spell.mana.MutableManaPool";
-	private static final String DEFAULT_SPELL_EXECUTOR = "dev.enjarai.trickster.spell.execution.executor.DefaultSpellExecutor";
-	private static final String STRING_FRAGMENT = "dev.enjarai.trickster.spell.fragment.StringFragment";
-	private static final String VOID_FRAGMENT = "dev.enjarai.trickster.spell.fragment.VoidFragment";
-	private static final String EXECUTION_STATE = "dev.enjarai.trickster.spell.execution.ExecutionState";
-	private static final String BLOCK_SPELL_SOURCE = "dev.enjarai.trickster.spell.execution.source.BlockSpellSource";
+	static volatile boolean displayInitialized;
+	static volatile boolean displayAvailable;
+	static volatile boolean chargeInitialized;
+	static volatile boolean chargeAvailable;
 
-	private static volatile boolean initialized;
-	private static volatile boolean available;
+	static Class<?> spellConstructBlockEntityClass;
+	static Class<?> modularSpellConstructBlockEntityClass;
+	static Class<?> chargingArrayBlockEntityClass;
+	static Class<?> defaultSpellExecutorClass;
+	static Class<?> knotItemClass;
 
-	private static Class<?> stringFragmentClass;
-	private static Object voidFragmentInstance;
-	private static Constructor<?> stringFragmentConstructor;
-	private static Field spellConstructExecutorField;
-	private static Field modularExecutorsField;
-	private static Field defaultExecutorStateField;
-	private static Method executionStateGetArguments;
-	private static Field blockSpellSourceBlockEntityField;
+	static Constructor<?> stringFragmentCtor;
+	static Object voidFragmentInstance;
 
-	private static Class<?> knotItemClass;
-	private static Object manaComponentType;
-	private static Method manaComponentPoolMethod;
-	private static Method manaComponentWithMethod;
-	private static Method mutableManaPoolMakeCloneMethod;
-	private static Method mutableManaPoolRefillMethod;
-	private static Method itemStackGetComponentMethod;
-	private static Method itemStackSetComponentMethod;
-	private static Method markDirtyAndUpdateClientsMethod;
-	private static Field spellConstructStackField;
-	private static Field modularInventoryField;
-	private static Field chargingArrayInventoryField;
+	static Field spellConstructExecutorField;
+	static Field modularExecutorsField;
+	static Method spellExecutorGetDeepestStateMethod;
+	static Method executionStateGetArgumentsMethod;
+	static Field blockSpellSourceBlockEntityField;
 
-	private static void resolveItemStackComponentAccess() throws ReflectiveOperationException {
-		Class<?> componentTypeClass = Class.forName(MOD_COMPONENTS).getField("MANA").getType();
-		for (Method method : ItemStack.class.getMethods()) {
-			if ("get".equals(method.getName()) && method.getParameterCount() == 1
-					&& componentTypeClass.isAssignableFrom(method.getParameterTypes()[0])) {
-				itemStackGetComponentMethod = method;
-			}
-			if ("set".equals(method.getName()) && method.getParameterCount() == 2
-					&& componentTypeClass.isAssignableFrom(method.getParameterTypes()[0])) {
-				itemStackSetComponentMethod = method;
-			}
-		}
-		if (itemStackGetComponentMethod == null || itemStackSetComponentMethod == null)
-			throw new NoSuchMethodException("Could not resolve ItemStack component accessors");
-	}
+	static Object manaComponentType;
+	static Method manaComponentPoolMethod;
+	static Method manaComponentWithMethod;
+	static Method manaPoolMakeCloneMethod;
+	static Method mutableManaPoolRefillMethod;
+	static Method itemStackGetComponentMethod;
+	static Method itemStackSetComponentMethod;
 
 	private TricksterReflection() {}
 
-	private static Class<?> resolveWorldClass() throws ClassNotFoundException {
-		try {
-			return Class.forName("net.minecraft.world.level.Level");
-		} catch (ClassNotFoundException ignored) {
-			return Class.forName("net.minecraft.world.World");
-		}
+	public static boolean isAvailable() {
+		return ensureDisplayInit() || ensureChargeInit();
 	}
 
-	public static boolean isAvailable() {
-		ensureInitialized();
-		return available;
+	static synchronized boolean ensureDisplayInit() {
+		if (displayInitialized)
+			return displayAvailable;
+		displayInitialized = true;
+		try {
+			Class<?> stringFragmentClass = Class.forName("dev.enjarai.trickster.spell.fragment.StringFragment");
+			stringFragmentCtor = stringFragmentClass.getConstructor(String.class);
+
+			Class<?> voidFragmentClass = Class.forName("dev.enjarai.trickster.spell.fragment.VoidFragment");
+			voidFragmentInstance = voidFragmentClass.getField("INSTANCE").get(null);
+
+			spellConstructBlockEntityClass = Class.forName("dev.enjarai.trickster.block.SpellConstructBlockEntity");
+			modularSpellConstructBlockEntityClass = Class.forName("dev.enjarai.trickster.block.ModularSpellConstructBlockEntity");
+			defaultSpellExecutorClass = Class.forName("dev.enjarai.trickster.spell.execution.executor.DefaultSpellExecutor");
+
+			spellConstructExecutorField = spellConstructBlockEntityClass.getField("executor");
+			modularExecutorsField = modularSpellConstructBlockEntityClass.getField("executors");
+
+			Class<?> spellExecutorClass = Class.forName("dev.enjarai.trickster.spell.SpellExecutor");
+			spellExecutorGetDeepestStateMethod = spellExecutorClass.getMethod("getDeepestState");
+
+			Class<?> executionStateClass = Class.forName("dev.enjarai.trickster.spell.execution.ExecutionState");
+			executionStateGetArgumentsMethod = executionStateClass.getMethod("getArguments");
+
+			Class<?> blockSpellSourceClass = Class.forName("dev.enjarai.trickster.spell.execution.source.BlockSpellSource");
+			blockSpellSourceBlockEntityField = blockSpellSourceClass.getField("blockEntity");
+
+			displayAvailable = true;
+		} catch (Throwable t) {
+			CreateTricks.LOGGER.warn("Trickster display integration unavailable", t);
+			displayAvailable = false;
+		}
+		return displayAvailable;
+	}
+
+	static synchronized boolean ensureChargeInit() {
+		if (chargeInitialized)
+			return chargeAvailable;
+		chargeInitialized = true;
+		try {
+			knotItemClass = Class.forName("dev.enjarai.trickster.item.KnotItem");
+			chargingArrayBlockEntityClass = Class.forName("dev.enjarai.trickster.block.ChargingArrayBlockEntity");
+			if (spellConstructBlockEntityClass == null)
+				spellConstructBlockEntityClass = Class.forName("dev.enjarai.trickster.block.SpellConstructBlockEntity");
+			if (modularSpellConstructBlockEntityClass == null)
+				modularSpellConstructBlockEntityClass = Class.forName("dev.enjarai.trickster.block.ModularSpellConstructBlockEntity");
+
+			Class<?> modComponentsClass = Class.forName("dev.enjarai.trickster.item.component.ModComponents");
+			Class<?> manaComponentClass = Class.forName("dev.enjarai.trickster.item.component.ManaComponent");
+			Class<?> manaPoolClass = Class.forName("dev.enjarai.trickster.spell.mana.ManaPool");
+			Class<?> mutableManaPoolClass = Class.forName("dev.enjarai.trickster.spell.mana.MutableManaPool");
+
+			manaComponentType = modComponentsClass.getField("MANA").get(null);
+			manaComponentPoolMethod = manaComponentClass.getMethod("pool");
+			manaComponentWithMethod = manaComponentClass.getMethod("with", manaPoolClass);
+			manaPoolMakeCloneMethod = manaPoolClass.getMethod("makeClone", Level.class);
+			mutableManaPoolRefillMethod = mutableManaPoolClass.getMethod("refill", float.class, Level.class);
+
+			itemStackGetComponentMethod = ItemStack.class.getMethod("get", DataComponentType.class);
+			itemStackSetComponentMethod = ItemStack.class.getMethod("set", DataComponentType.class, Object.class);
+
+			chargeAvailable = true;
+		} catch (Throwable t) {
+			CreateTricks.LOGGER.warn("Trickster charge integration unavailable", t);
+			chargeAvailable = false;
+		}
+		return chargeAvailable;
 	}
 
 	public static void syncExecutors(BlockEntity be) {
-		if (!isAvailable())
+		if (!ensureDisplayInit())
 			return;
 
 		try {
-			if (SPELL_CONSTRUCT_BE.equals(be.getClass().getName())) {
+			if (spellConstructBlockEntityClass.isInstance(be)) {
 				Object executor = spellConstructExecutorField.get(be);
 				syncExecutor(executor, be, -1);
-			} else if (MODULAR_SPELL_CONSTRUCT_BE.equals(be.getClass().getName())) {
+			} else if (modularSpellConstructBlockEntityClass.isInstance(be)) {
 				@SuppressWarnings("unchecked")
 				List<Optional<Object>> executors = (List<Optional<Object>>) modularExecutorsField.get(be);
 				for (int slot = 0; slot < executors.size() && slot < SpellConstructDisplayArguments.MODULAR_EXECUTOR_SLOTS; slot++) {
@@ -110,14 +147,14 @@ public final class TricksterReflection {
 	}
 
 	public static List<?> buildExecutorArguments(BlockEntity be) {
-		if (!isAvailable())
+		if (!ensureDisplayInit())
 			return List.of();
 
 		return mergeDisplayArguments(be, -1, List.of());
 	}
 
 	public static boolean chargeKnotsAbove(ServerLevel level, BlockPos converterPos, float manaAmount) {
-		if (!isAvailable() || manaAmount <= 0)
+		if (!ensureChargeInit() || manaAmount <= 0)
 			return false;
 
 		BlockEntity target = level.getBlockEntity(converterPos.above());
@@ -128,49 +165,48 @@ public final class TricksterReflection {
 	}
 
 	private static boolean chargeKnotsInBlockEntity(ServerLevel level, BlockEntity blockEntity, float manaAmount) {
-		String className = blockEntity.getClass().getName();
 		try {
-			if (SPELL_CONSTRUCT_BE.equals(className)) {
-				ItemStack stack = (ItemStack) spellConstructStackField.get(blockEntity);
-				if (chargeKnotStack(level, stack, manaAmount)) {
-					markDirtyAndUpdateClientsMethod.invoke(blockEntity);
-					return true;
-				}
-				return false;
-			}
-
-			if (MODULAR_SPELL_CONSTRUCT_BE.equals(className)) {
-				@SuppressWarnings("unchecked")
-				List<ItemStack> inventory = (List<ItemStack>) modularInventoryField.get(blockEntity);
-				if (inventory.isEmpty())
+			if (spellConstructBlockEntityClass.isInstance(blockEntity)) {
+				if (!(blockEntity instanceof Container container))
 					return false;
-				if (chargeKnotStack(level, inventory.get(0), manaAmount)) {
-					markDirtyAndUpdateClientsMethod.invoke(blockEntity);
+				if (chargeKnotStack(level, container.getItem(0), manaAmount)) {
+					markDirtyAndUpdateClients(blockEntity);
 					return true;
 				}
 				return false;
 			}
 
-			if (CHARGING_ARRAY_BE.equals(className)) {
-				@SuppressWarnings("unchecked")
-				List<ItemStack> inventory = (List<ItemStack>) chargingArrayInventoryField.get(blockEntity);
+			if (modularSpellConstructBlockEntityClass.isInstance(blockEntity)) {
+				if (!(blockEntity instanceof Container container) || container.isEmpty())
+					return false;
+				if (chargeKnotStack(level, container.getItem(0), manaAmount)) {
+					markDirtyAndUpdateClients(blockEntity);
+					return true;
+				}
+				return false;
+			}
+
+			if (chargingArrayBlockEntityClass.isInstance(blockEntity)) {
+				if (!(blockEntity instanceof Container container))
+					return false;
+
 				boolean changed = false;
 				int knotCount = 0;
-				for (ItemStack stack : inventory) {
-					if (isKnotStack(stack))
+				for (int i = 0; i < container.getContainerSize(); i++) {
+					if (isKnotStack(container.getItem(i)))
 						knotCount++;
 				}
 				if (knotCount == 0)
 					return false;
 
 				float share = manaAmount / knotCount;
-				for (int i = 0; i < inventory.size(); i++) {
-					ItemStack stack = inventory.get(i);
+				for (int i = 0; i < container.getContainerSize(); i++) {
+					ItemStack stack = container.getItem(i);
 					if (isKnotStack(stack) && chargeKnotStack(level, stack, share))
 						changed = true;
 				}
 				if (changed)
-					markDirtyAndUpdateClientsMethod.invoke(blockEntity);
+					markDirtyAndUpdateClients(blockEntity);
 				return changed;
 			}
 		} catch (ReflectiveOperationException e) {
@@ -178,6 +214,10 @@ public final class TricksterReflection {
 		}
 
 		return false;
+	}
+
+	private static void markDirtyAndUpdateClients(BlockEntity blockEntity) throws ReflectiveOperationException {
+		blockEntity.getClass().getMethod("markDirtyAndUpdateClients").invoke(blockEntity);
 	}
 
 	private static boolean isKnotStack(ItemStack stack) {
@@ -193,7 +233,7 @@ public final class TricksterReflection {
 			return false;
 
 		Object pool = manaComponentPoolMethod.invoke(component);
-		Object mutablePool = mutableManaPoolMakeCloneMethod.invoke(pool, level);
+		Object mutablePool = manaPoolMakeCloneMethod.invoke(pool, level);
 		float leftover = (float) mutableManaPoolRefillMethod.invoke(mutablePool, manaAmount, level);
 		if (leftover >= manaAmount)
 			return false;
@@ -205,7 +245,7 @@ public final class TricksterReflection {
 
 	@Nullable
 	public static BlockEntity getBlockEntityFromSource(Object source) {
-		if (!isAvailable() || source == null)
+		if (!ensureDisplayInit() || source == null)
 			return null;
 
 		try {
@@ -234,7 +274,7 @@ public final class TricksterReflection {
 
 	@Nullable
 	private static Object getDisplayArgument(BlockEntity be, int executorSlot, int index) {
-		if (!isAvailable())
+		if (!ensureDisplayInit())
 			return null;
 
 		String value = SpellConstructDisplayArguments.getArgumentString(be, executorSlot, index);
@@ -242,7 +282,7 @@ public final class TricksterReflection {
 			return null;
 
 		try {
-			return stringFragmentConstructor.newInstance(value);
+			return stringFragmentCtor.newInstance(value);
 		} catch (ReflectiveOperationException e) {
 			CreateTricks.LOGGER.error("Failed to create StringFragment", e);
 			return null;
@@ -250,13 +290,13 @@ public final class TricksterReflection {
 	}
 
 	private static void syncExecutor(@Nullable Object executor, BlockEntity be, int executorSlot) {
-		if (executor == null || !DEFAULT_SPELL_EXECUTOR.equals(executor.getClass().getName()))
+		if (executor == null || !defaultSpellExecutorClass.isInstance(executor))
 			return;
 
 		try {
-			Object state = defaultExecutorStateField.get(executor);
+			Object state = spellExecutorGetDeepestStateMethod.invoke(executor);
 			@SuppressWarnings("unchecked")
-			List<Object> current = (List<Object>) executionStateGetArguments.invoke(state);
+			List<Object> current = (List<Object>) executionStateGetArgumentsMethod.invoke(state);
 			List<Object> merged = mergeDisplayArguments(be, executorSlot, current);
 
 			if (current instanceof ArrayList<?> arrayList) {
@@ -271,53 +311,6 @@ public final class TricksterReflection {
 			}
 		} catch (ReflectiveOperationException e) {
 			CreateTricks.LOGGER.error("Failed to update spell executor arguments", e);
-		}
-	}
-
-	private static void ensureInitialized() {
-		if (initialized)
-			return;
-
-		synchronized (TricksterReflection.class) {
-			if (initialized)
-				return;
-			initialized = true;
-			try {
-				stringFragmentClass = Class.forName(STRING_FRAGMENT);
-				Class<?> voidFragmentClass = Class.forName(VOID_FRAGMENT);
-				voidFragmentInstance = voidFragmentClass.getField("INSTANCE").get(null);
-				stringFragmentConstructor = stringFragmentClass.getConstructor(String.class);
-
-				spellConstructExecutorField = Class.forName(SPELL_CONSTRUCT_BE).getField("executor");
-				modularExecutorsField = Class.forName(MODULAR_SPELL_CONSTRUCT_BE).getField("executors");
-				defaultExecutorStateField = Class.forName(DEFAULT_SPELL_EXECUTOR).getDeclaredField("state");
-				defaultExecutorStateField.setAccessible(true);
-				executionStateGetArguments = Class.forName(EXECUTION_STATE).getMethod("getArguments");
-				blockSpellSourceBlockEntityField = Class.forName(BLOCK_SPELL_SOURCE).getField("blockEntity");
-
-				knotItemClass = Class.forName(KNOT_ITEM);
-				Class<?> manaComponentClass = Class.forName(MANA_COMPONENT);
-				Class<?> modComponentsClass = Class.forName(MOD_COMPONENTS);
-				Class<?> mutableManaPoolClass = Class.forName(MUTABLE_MANA_POOL);
-				Class<?> worldClass = resolveWorldClass();
-				manaComponentType = modComponentsClass.getField("MANA").get(null);
-				manaComponentPoolMethod = manaComponentClass.getMethod("pool");
-				manaComponentWithMethod = manaComponentClass.getMethod("with", mutableManaPoolClass);
-				mutableManaPoolMakeCloneMethod = mutableManaPoolClass.getMethod("makeClone", worldClass);
-				mutableManaPoolRefillMethod = mutableManaPoolClass.getMethod("refill", float.class, worldClass);
-				resolveItemStackComponentAccess();
-				spellConstructStackField = Class.forName(SPELL_CONSTRUCT_BE).getField("stack");
-				modularInventoryField = Class.forName(MODULAR_SPELL_CONSTRUCT_BE).getDeclaredField("inventory");
-				modularInventoryField.setAccessible(true);
-				chargingArrayInventoryField = Class.forName(CHARGING_ARRAY_BE).getDeclaredField("inventory");
-				chargingArrayInventoryField.setAccessible(true);
-				markDirtyAndUpdateClientsMethod = Class.forName(SPELL_CONSTRUCT_BE).getMethod("markDirtyAndUpdateClients");
-
-				available = true;
-			} catch (ReflectiveOperationException e) {
-				CreateTricks.LOGGER.warn("Trickster classes were not found; display link spell construct integration is disabled");
-				available = false;
-			}
 		}
 	}
 }

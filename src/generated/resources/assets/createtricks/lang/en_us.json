@@ -1,3 +1,7 @@
 {
-  "block.createtricks.stress_mana_converter": "Stress Mana Converter"
+  "block.createtricks.stress_mana_converter": "Stress Mana Converter",
+  "createtricks.display_target.argument": "Spell Argument %1$s",
+  "createtricks.display_target.modular_argument": "Core %1$s, Argument %2$s",
+  "createtricks.stress_mana_converter.stress_per_rpm": "Stress per RPM",
+  "itemGroup.createtricks": "Create: Tricks"
 }

@@ -1,7 +1,3 @@
 {
-  "block.createtricks.stress_mana_converter": "ɹǝʇɹǝʌuoƆ ɐuɐW ssǝɹʇS",
-  "createtricks.display_target.argument": "%1$s ʇuǝɯnbɹⱯ ןןǝdS",
-  "createtricks.display_target.modular_argument": "%2$s ʇuǝɯnbɹⱯ '%1$s ǝɹoƆ",
-  "createtricks.stress_mana_converter.stress_per_rpm": "WԀᴚ ɹǝd ssǝɹʇS",
-  "itemGroup.createtricks": "sʞɔıɹ⟘ :ǝʇɐǝɹƆ"
+  "block.createtricks.stress_mana_converter": "ɹǝʇɹǝʌuoƆ ɐuɐW ssǝɹʇS"
 }

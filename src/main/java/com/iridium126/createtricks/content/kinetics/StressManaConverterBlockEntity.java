@@ -70,7 +70,8 @@ public class StressManaConverterBlockEntity extends KineticBlockEntity {
 		if (mana <= 0)
 			return;
 
-		TricksterReflection.chargeKnotsAbove((ServerLevel) level, worldPosition, mana);
+		BlockPos outputPos = StressManaConverterBlock.getManaOutputPos(getBlockState(), worldPosition);
+		TricksterReflection.chargeKnotsAt((ServerLevel) level, outputPos, mana);
 	}
 
 	public int getStressPerRpm() {

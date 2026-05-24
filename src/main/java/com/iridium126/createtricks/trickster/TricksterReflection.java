@@ -153,11 +153,11 @@ public final class TricksterReflection {
 		return mergeDisplayArguments(be, -1, List.of());
 	}
 
-	public static boolean chargeKnotsAbove(ServerLevel level, BlockPos converterPos, float manaAmount) {
+	public static boolean chargeKnotsAt(ServerLevel level, BlockPos targetPos, float manaAmount) {
 		if (!ensureChargeInit() || manaAmount <= 0)
 			return false;
 
-		BlockEntity target = level.getBlockEntity(converterPos.above());
+		BlockEntity target = level.getBlockEntity(targetPos);
 		if (target == null)
 			return false;
 

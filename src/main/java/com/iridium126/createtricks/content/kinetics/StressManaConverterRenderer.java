@@ -1,10 +1,16 @@
 package com.iridium126.createtricks.content.kinetics;
 
+import com.iridium126.createtricks.CreateTricksPartialModels;
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntityRenderer;
 
+import dev.engine_room.flywheel.api.visualization.VisualizationManager;
+import net.createmod.catnip.render.CachedBuffers;
+import net.createmod.catnip.render.SuperByteBuffer;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider;
-import net.minecraft.core.Direction.Axis;
-import net.minecraft.world.level.block.state.BlockState;
 
 public class StressManaConverterRenderer extends KineticBlockEntityRenderer<StressManaConverterBlockEntity> {
 
@@ -13,7 +19,18 @@ public class StressManaConverterRenderer extends KineticBlockEntityRenderer<Stre
 	}
 
 	@Override
-	protected BlockState getRenderedBlockState(StressManaConverterBlockEntity be) {
-		return shaft(Axis.Y);
+	protected void renderSafe(StressManaConverterBlockEntity be, float partialTicks, PoseStack ms,
+			MultiBufferSource buffer, int light, int overlay) {
+		if (VisualizationManager.supportsVisualization(be.getLevel()))
+			return;
+
+		VertexConsumer vb = buffer.getBuffer(RenderType.solid());
+		SuperByteBuffer shaft = CachedBuffers.partial(CreateTricksPartialModels.STRESS_MANA_CONVERTER_SHAFT,
+				be.getBlockState());
+		SuperByteBuffer cog = CachedBuffers.partial(CreateTricksPartialModels.STRESS_MANA_CONVERTER_COG,
+				be.getBlockState());
+
+		renderRotatingBuffer(be, shaft, ms, vb, light);
+		renderRotatingBuffer(be, cog, ms, vb, light);
 	}
 }

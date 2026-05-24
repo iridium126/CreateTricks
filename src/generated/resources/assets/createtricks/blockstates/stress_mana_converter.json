@@ -1,7 +1,17 @@
 {
   "variants": {
-    "": {
+    "axis=x": {
+      "model": "createtricks:block/stress_mana_converter",
+      "x": 90,
+      "y": 90
+    },
+    "axis=y": {
       "model": "createtricks:block/stress_mana_converter"
+    },
+    "axis=z": {
+      "model": "createtricks:block/stress_mana_converter",
+      "x": 90,
+      "y": 180
     }
   }
 }

@@ -1,5 +1,6 @@
 package com.iridium126.createtricks;
 
+import com.iridium126.createtricks.CreateTricksPartialModels;
 import com.iridium126.createtricks.ponder.CreateTricksPonderPlugin;
 
 import net.createmod.ponder.foundation.PonderIndex;
@@ -15,6 +16,9 @@ public class CreateTricksClient {
 	}
 
 	private static void onClientSetup(FMLClientSetupEvent event) {
-		event.enqueueWork(() -> PonderIndex.addPlugin(new CreateTricksPonderPlugin()));
+		event.enqueueWork(() -> {
+			CreateTricksPartialModels.init();
+			PonderIndex.addPlugin(new CreateTricksPonderPlugin());
+		});
 	}
 }

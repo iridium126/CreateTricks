@@ -22,20 +22,16 @@ public class CreateTricks {
 	public static final CreateRegistrate REGISTRATE = CreateRegistrate.create(MODID);
 
 	static {
+		REGISTRATE.defaultCreativeTab(CreateTricksCreativeModeTabs.MAIN_TAB.getKey());
 		REGISTRATE.setTooltipModifierFactory(item -> new ItemDescription.Modifier(item, FontHelper.Palette.STANDARD_CREATE)
 				.andThen(TooltipModifier.mapNull(KineticStats.create(item))));
-
-		REGISTRATE.addRawLang("createtricks.stress_mana_converter.stress_per_rpm", "Stress per RPM");
-		REGISTRATE.addRawLang("createtricks.display_target.argument", "Spell Argument %1$s");
-		REGISTRATE.addRawLang("createtricks.display_target.modular_argument", "Core %1$s, Argument %2$s");
-		REGISTRATE.addRawLang("itemGroup.createtricks", "Create: Tricks");
 	}
 
 	public CreateTricks(IEventBus modEventBus, ModContainer modContainer) {
 		REGISTRATE.registerEventListeners(modEventBus);
 		CreateTricksCreativeModeTabs.register(modEventBus);
 		CreateTricksBlocks.register();
-		CreateTricksBlockEntityTypes.register();
+		CreateTricksBlockEntitys.register();
 		modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.COMMON, Config.SPEC);
 	}
 

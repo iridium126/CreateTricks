@@ -1,42 +1,59 @@
 package com.iridium126.createtricks.content.kinetics;
 
-import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.math.Axis;
+import com.simibubi.create.content.kinetics.base.RotatedPillarKineticBlock;
 import com.simibubi.create.foundation.blockEntity.behaviour.ValueBoxTransform;
 
+import net.createmod.catnip.math.AngleHelper;
 import net.createmod.catnip.math.VecHelper;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.Direction.Axis;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
-public class StressManaConverterScrollSlot extends ValueBoxTransform {
+public class StressManaConverterScrollSlot extends ValueBoxTransform.Sided {
 
 	@Override
 	public Vec3 getLocalOffset(LevelAccessor level, BlockPos pos, BlockState state) {
-		return VecHelper.voxelSpace(8, 8, 2.6f);
+		Direction side = getSide();
+		Axis axis = state.getValue(RotatedPillarKineticBlock.AXIS);
+
+		if (axis == Axis.Y) {
+			float horizontalAngle = AngleHelper.horizontalAngle(side);
+			return VecHelper.rotateCentered(VecHelper.voxelSpace(8, 3, 15.5f), horizontalAngle, Axis.Y);
+		}
+
+		double alongAxis = 3;
+		double x = 8, y = 3, z = 8;
+		switch (axis) {
+			case X -> x = alongAxis;
+			case Z -> z = alongAxis;
+			default -> {
+			}
+		}
+
+		switch (side) {
+			case EAST -> x = 15.5;
+			case WEST -> x = 0.5;
+			case UP -> y = axis == Axis.Y ? 15.5 : 6.5;
+			case DOWN -> y = 0.5;
+			case SOUTH -> z = 15.5;
+			case NORTH -> z = 0.5;
+			default -> {
+			}
+		}
+
+		return VecHelper.voxelSpace((float) x, (float) y, (float) z);
 	}
 
 	@Override
-	public boolean testHit(LevelAccessor level, BlockPos pos, BlockState state, Vec3 localHit) {
-		if (localHit.y < 2 || localHit.y > 14)
-			return false;
-
-		double dx = Math.abs(localHit.x - 8);
-		double dz = Math.abs(localHit.z - 8);
-		double edge = scale / 2 + 0.5;
-
-		if (localHit.x <= edge && dz <= 4)
-			return true;
-		if (localHit.x >= 16 - edge && dz <= 4)
-			return true;
-		if (localHit.z <= edge && dx <= 4)
-			return true;
-		return localHit.z >= 16 - edge && dx <= 4;
+	protected boolean isSideActive(BlockState state, Direction direction) {
+		return direction.getAxis() != state.getValue(RotatedPillarKineticBlock.AXIS);
 	}
 
 	@Override
-	public void rotate(LevelAccessor level, BlockPos pos, BlockState state, PoseStack ms) {
-		ms.mulPose(Axis.XP.rotationDegrees(90));
+	protected Vec3 getSouthLocation() {
+		return Vec3.ZERO;
 	}
 }

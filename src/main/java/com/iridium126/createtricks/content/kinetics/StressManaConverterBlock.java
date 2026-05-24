@@ -1,7 +1,8 @@
 package com.iridium126.createtricks.content.kinetics;
 
-import com.iridium126.createtricks.CreateTricksBlockEntitys;
+import com.iridium126.createtricks.CreateTricksBlockEntityTypes;
 import com.simibubi.create.content.kinetics.base.RotatedPillarKineticBlock;
+import com.simibubi.create.content.kinetics.simpleRelays.ICogWheel;
 import com.simibubi.create.foundation.block.IBE;
 
 import net.createmod.catnip.math.VoxelShaper;
@@ -19,12 +20,12 @@ import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
-public class StressManaConverterBlock extends RotatedPillarKineticBlock implements IBE<StressManaConverterBlockEntity> {
+public class StressManaConverterBlock extends RotatedPillarKineticBlock implements IBE<StressManaConverterBlockEntity>, ICogWheel {
 
 	private static final VoxelShaper SHAPE = VoxelShaper.forAxis(
 			Shapes.or(
 					Block.box(0, 0, 0, 16, 6, 16),
-					Block.box(2, 12, 2, 14, 15, 14),
+					Block.box(2, 6, 2, 14, 15, 14),
 					Block.box(3, 15, 3, 13, 16, 13)),
 			Axis.Y);
 
@@ -39,7 +40,7 @@ public class StressManaConverterBlock extends RotatedPillarKineticBlock implemen
 
 	@Override
 	public boolean hasShaftTowards(LevelReader level, BlockPos pos, BlockState state, Direction face) {
-		return face.getAxis() == getRotationAxis(state);
+		return face == getStressInputFace(state);
 	}
 
 	@Override
@@ -66,7 +67,7 @@ public class StressManaConverterBlock extends RotatedPillarKineticBlock implemen
 
 	@Override
 	public BlockEntityType<? extends StressManaConverterBlockEntity> getBlockEntityType() {
-		return CreateTricksBlockEntitys.STRESS_MANA_CONVERTER.get();
+		return CreateTricksBlockEntityTypes.STRESS_MANA_CONVERTER.get();
 	}
 
 	@Override

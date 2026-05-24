@@ -3,8 +3,7 @@ package com.iridium126.createtricks;
 import dev.engine_room.flywheel.lib.model.baked.PartialModel;
 
 public final class CreateTricksPartialModels {
-	public static final PartialModel STRESS_MANA_CONVERTER_SHAFT = block("stress_mana_converter/shaft");
-	public static final PartialModel STRESS_MANA_CONVERTER_COG = block("stress_mana_converter/cog");
+	public static final PartialModel STRESS_MANA_CONVERTER_INNER = block("stress_mana_converter/inner");
 
 	private CreateTricksPartialModels() {}
 

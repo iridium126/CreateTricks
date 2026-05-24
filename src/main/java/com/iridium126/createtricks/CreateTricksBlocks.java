@@ -17,7 +17,7 @@ public final class CreateTricksBlocks {
 			.initialProperties(() -> Blocks.IRON_BLOCK)
 			.properties(p -> p.mapColor(MapColor.TERRACOTTA_YELLOW))
 			.blockstate((ctx, prov) -> BlockStateGen.axisBlock(ctx, prov, state -> prov.models()
-					.getExistingFile(prov.modLoc("block/stress_mana_converter"))))
+					.getExistingFile(prov.modLoc("block/stress_mana_converter/block"))))
 			.transform(TagGen.pickaxeOnly())
 			.item()
 			.transform(ModelGen.customItemModel())

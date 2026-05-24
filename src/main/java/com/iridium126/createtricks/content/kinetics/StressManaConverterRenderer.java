@@ -25,12 +25,9 @@ public class StressManaConverterRenderer extends KineticBlockEntityRenderer<Stre
 			return;
 
 		VertexConsumer vb = buffer.getBuffer(RenderType.solid());
-		SuperByteBuffer shaft = CachedBuffers.partial(CreateTricksPartialModels.STRESS_MANA_CONVERTER_SHAFT,
-				be.getBlockState());
-		SuperByteBuffer cog = CachedBuffers.partial(CreateTricksPartialModels.STRESS_MANA_CONVERTER_COG,
+		SuperByteBuffer inner = CachedBuffers.partial(CreateTricksPartialModels.STRESS_MANA_CONVERTER_INNER,
 				be.getBlockState());
 
-		renderRotatingBuffer(be, shaft, ms, vb, light);
-		renderRotatingBuffer(be, cog, ms, vb, light);
+		renderRotatingBuffer(be, inner, ms, vb, light);
 	}
 }

@@ -16,54 +16,43 @@ import net.minecraft.core.Direction;
 public class StressManaConverterVisual extends KineticBlockEntityVisual<StressManaConverterBlockEntity>
 		implements SimpleTickableVisual {
 
-	protected final RotatingInstance shaft;
-	protected final RotatingInstance cog;
+	protected final RotatingInstance inner;
 
 	public StressManaConverterVisual(VisualizationContext context, StressManaConverterBlockEntity blockEntity,
 			float partialTick) {
 		super(context, blockEntity, partialTick);
 
-		shaft = instancerProvider().instancer(AllInstanceTypes.ROTATING, Models.partial(CreateTricksPartialModels.STRESS_MANA_CONVERTER_SHAFT))
+		inner = instancerProvider().instancer(AllInstanceTypes.ROTATING, Models.partial(CreateTricksPartialModels.STRESS_MANA_CONVERTER_INNER))
 				.createInstance()
 				.rotateToFace(Direction.UP, rotationAxis())
 				.setup(blockEntity)
 				.setPosition(getVisualPosition());
 
-		cog = instancerProvider().instancer(AllInstanceTypes.ROTATING, Models.partial(CreateTricksPartialModels.STRESS_MANA_CONVERTER_COG))
-				.createInstance()
-				.rotateToFace(Direction.UP, rotationAxis())
-				.setup(blockEntity)
-				.setPosition(getVisualPosition());
-
-		shaft.setChanged();
-		cog.setChanged();
+		inner.setChanged();
 	}
 
 	@Override
 	public void update(float pt) {
-		shaft.setup(blockEntity).setChanged();
-		cog.setup(blockEntity).setChanged();
+		inner.setup(blockEntity).setChanged();
 	}
 
 	@Override
 	public void tick(Context context) {
-		applyOverstressEffect(blockEntity, shaft, cog);
+		applyOverstressEffect(blockEntity, inner);
 	}
 
 	@Override
 	public void updateLight(float partialTick) {
-		relight(shaft, cog);
+		relight(inner);
 	}
 
 	@Override
 	protected void _delete() {
-		shaft.delete();
-		cog.delete();
+		inner.delete();
 	}
 
 	@Override
 	public void collectCrumblingInstances(Consumer<Instance> consumer) {
-		consumer.accept(shaft);
-		consumer.accept(cog);
+		consumer.accept(inner);
 	}
 }

@@ -31,7 +31,7 @@ public class CreateTricks {
 		REGISTRATE.registerEventListeners(modEventBus);
 		CreateTricksCreativeModeTabs.register(modEventBus);
 		CreateTricksBlocks.register();
-		CreateTricksBlockEntitys.register();
+		CreateTricksBlockEntityTypes.register();
 		modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.COMMON, Config.SPEC);
 	}
 

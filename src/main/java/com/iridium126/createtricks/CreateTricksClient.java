@@ -1,6 +1,5 @@
 package com.iridium126.createtricks;
 
-import com.iridium126.createtricks.CreateTricksPartialModels;
 import com.iridium126.createtricks.ponder.CreateTricksPonderPlugin;
 
 import net.createmod.ponder.foundation.PonderIndex;

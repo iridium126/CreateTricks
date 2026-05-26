@@ -3,7 +3,7 @@ package com.iridium126.createtricks;
 import static com.iridium126.createtricks.CreateTricks.REGISTRATE;
 
 import com.iridium126.createtricks.content.kinetics.StressManaConverterBlock;
-import com.simibubi.create.foundation.data.BlockStateGen;
+import com.iridium126.createtricks.content.kinetics.StressManaConverterGenerator;
 import com.simibubi.create.foundation.data.ModelGen;
 import com.simibubi.create.foundation.data.TagGen;
 import com.tterrag.registrate.util.entry.BlockEntry;
@@ -16,8 +16,7 @@ public final class CreateTricksBlocks {
 			.block("stress_mana_converter", StressManaConverterBlock::new)
 			.initialProperties(() -> Blocks.IRON_BLOCK)
 			.properties(p -> p.mapColor(MapColor.TERRACOTTA_YELLOW))
-			.blockstate((ctx, prov) -> BlockStateGen.axisBlock(ctx, prov, state -> prov.models()
-					.getExistingFile(prov.modLoc("block/stress_mana_converter/block"))))
+			.blockstate(new StressManaConverterGenerator()::generate)
 			.transform(TagGen.pickaxeOnly())
 			.item()
 			.transform(ModelGen.customItemModel())

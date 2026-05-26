@@ -1,0 +1,26 @@
+{
+  "variants": {
+    "facing=down": {
+      "model": "createtricks:block/stress_mana_converter/block_vertical",
+      "x": 180
+    },
+    "facing=east": {
+      "model": "createtricks:block/stress_mana_converter/block",
+      "y": 270
+    },
+    "facing=north": {
+      "model": "createtricks:block/stress_mana_converter/block",
+      "y": 180
+    },
+    "facing=south": {
+      "model": "createtricks:block/stress_mana_converter/block"
+    },
+    "facing=up": {
+      "model": "createtricks:block/stress_mana_converter/block_vertical"
+    },
+    "facing=west": {
+      "model": "createtricks:block/stress_mana_converter/block",
+      "y": 90
+    }
+  }
+}

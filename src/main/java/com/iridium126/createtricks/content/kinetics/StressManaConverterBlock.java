@@ -21,12 +21,12 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 
 public class StressManaConverterBlock extends DirectionalKineticBlock implements IBE<StressManaConverterBlockEntity>, ICogWheel {
 
-	private static final VoxelShaper SHAPE = VoxelShaper.forAxis(
+	private static final VoxelShaper SHAPE = VoxelShaper.forDirectional(
 			Shapes.or(
 					Block.box(0, 0, 0, 16, 6, 16),
 					Block.box(2, 6, 2, 14, 15, 14),
 					Block.box(3, 15, 3, 13, 16, 13)),
-			Axis.Y);
+			Direction.UP);
 
 	public StressManaConverterBlock(Properties properties) {
 		super(properties);

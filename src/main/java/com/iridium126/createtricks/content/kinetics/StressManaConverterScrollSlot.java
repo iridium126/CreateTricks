@@ -1,6 +1,6 @@
 package com.iridium126.createtricks.content.kinetics;
 
-import com.simibubi.create.content.kinetics.base.RotatedPillarKineticBlock;
+import com.simibubi.create.content.kinetics.base.DirectionalKineticBlock;
 import com.simibubi.create.foundation.blockEntity.behaviour.ValueBoxTransform;
 
 import net.createmod.catnip.math.AngleHelper;
@@ -17,7 +17,7 @@ public class StressManaConverterScrollSlot extends ValueBoxTransform.Sided {
 	@Override
 	public Vec3 getLocalOffset(LevelAccessor level, BlockPos pos, BlockState state) {
 		Direction side = getSide();
-		Axis axis = state.getValue(RotatedPillarKineticBlock.AXIS);
+		Axis axis = state.getValue(DirectionalKineticBlock.FACING).getAxis();
 
 		if (axis == Axis.Y) {
 			float horizontalAngle = AngleHelper.horizontalAngle(side);
@@ -49,7 +49,7 @@ public class StressManaConverterScrollSlot extends ValueBoxTransform.Sided {
 
 	@Override
 	protected boolean isSideActive(BlockState state, Direction direction) {
-		return direction.getAxis() != state.getValue(RotatedPillarKineticBlock.AXIS);
+		return direction.getAxis() != state.getValue(DirectionalKineticBlock.FACING).getAxis();
 	}
 
 	@Override

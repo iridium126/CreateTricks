@@ -1,5 +1,6 @@
 package com.iridium126.createtricks.content.kinetics;
 
+import com.simibubi.create.foundation.data.AssetLookup;
 import com.simibubi.create.foundation.data.SpecialBlockStateGen;
 import com.tterrag.registrate.providers.DataGenContext;
 import com.tterrag.registrate.providers.RegistrateBlockstateProvider;
@@ -28,8 +29,8 @@ public class StressManaConverterGenerator extends SpecialBlockStateGen {
 		BlockState state) {
 		return state.getValue(StressManaConverterBlock.FACING)
 			.getAxis()
-			.isVertical() ? prov.models().getExistingFile(prov.modLoc("block/stress_mana_converter/block_vertical"))
-				: prov.models().getExistingFile(prov.modLoc("block/stress_mana_converter/block"));
+			.isVertical() ? AssetLookup.partialBaseModel(ctx, prov, "vertical")
+				: AssetLookup.partialBaseModel(ctx, prov);
 	}
 
 }

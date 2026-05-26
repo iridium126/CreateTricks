@@ -32,7 +32,6 @@ public class StressManaConverterBlockEntity extends KineticBlockEntity {
 				this,
 				new StressManaConverterScrollSlot())
 				.between(MIN_STRESS_PER_RPM, MAX_STRESS_PER_RPM)
-				.withFormatter(value -> value + " SU/rpm")
 				.withCallback(this::onStressPerRpmChanged);
 		stressPerRpm.setValue(DEFAULT_STRESS_PER_RPM);
 		behaviours.add(stressPerRpm);

@@ -2,9 +2,13 @@
   "createtricks.display_target.argument": "Spell Argument %1$s",
   "createtricks.display_target.modular_argument": "Core %1$s, Argument %2$s",
   "block.createtricks.stress_mana_converter": "Stress Mana Converter",
+  "block.createtricks.stress_mana_converter.tooltip.summary": "Consumes _kinetic stress_ to _charge Trickster Knots_. The scroll box lets you tune its _stress cost per RPM_.",
   "item.createtricks.stress_mana_converter": "Stress Mana Converter",
   "itemGroup.createtricks": "Create: Tricks",
   "block.createtricks.liquid_mana": "Liquid Mana",
   "item.createtricks.liquid_mana_bucket": "Liquid Mana Bucket",
-  "createtricks.stress_mana_converter.stress_per_rpm": "Stress per RPM"
+  "createtricks.stress_mana_converter.stress_per_rpm": "Stress per RPM",
+  "tooltip.createtricks.stress_range": "%1$s-%2$s SU/RPM",
+  "tooltip.createtricks.variable": "Variable",
+  "tooltip.createtricks.variable_impact": "Variable Impact"
 }

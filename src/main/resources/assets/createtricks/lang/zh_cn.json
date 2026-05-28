@@ -2,9 +2,13 @@
   "createtricks.display_target.argument": "法术参数 %1$s",
   "createtricks.display_target.modular_argument": "法术核心 %1$s，法术参数 %2$s",
   "block.createtricks.stress_mana_converter": "动力注魔台",
+  "block.createtricks.stress_mana_converter.tooltip.summary": "消耗_应力_为_Trickster 晶结_充能，通过滑动框调节其_每 RPM 的应力消耗_。",
   "item.createtricks.stress_mana_converter": "动力注魔台",
   "itemGroup.createtricks": "机械动力: 戏法",
   "block.createtricks.liquid_mana": "液态魔力",
   "item.createtricks.liquid_mana_bucket": "液态魔力桶",
-  "createtricks.stress_mana_converter.stress_per_rpm": "每 RPM 应力消耗"
+  "createtricks.stress_mana_converter.stress_per_rpm": "每 RPM 应力消耗",
+  "tooltip.createtricks.stress_range": "%1$s-%2$sx RPM",
+  "tooltip.createtricks.variable": "可变",
+  "tooltip.createtricks.variable_impact": "可变负载"
 }

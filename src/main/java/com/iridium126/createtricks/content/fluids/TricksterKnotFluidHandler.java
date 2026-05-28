@@ -1,8 +1,9 @@
 package com.iridium126.createtricks.content.fluids;
 
-import com.iridium126.createtricks.Config;
 import com.iridium126.createtricks.CreateTricksFluids;
 import com.iridium126.createtricks.trickster.TricksterReflection;
+
+import org.jetbrains.annotations.Nullable;
 
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
@@ -39,17 +40,19 @@ public class TricksterKnotFluidHandler implements IFluidHandlerItem {
 
 	@Override
 	public int getTankCapacity(int tank) {
-		return tank == 0 ? getDrainableAmount() : 0;
+		return tank == 0 ? getCapacityAmount() : 0;
 	}
 
 	@Override
 	public boolean isFluidValid(int tank, FluidStack stack) {
-		return false;
+		return tank == 0 && stack.getFluid().isSame(CreateTricksFluids.LIQUID_MANA.get());
 	}
 
 	@Override
 	public int fill(FluidStack resource, IFluidHandler.FluidAction action) {
-		return 0;
+		if (resource.isEmpty() || !resource.getFluid().isSame(CreateTricksFluids.LIQUID_MANA.get()))
+			return 0;
+		return transferFluid(resource.getAmount(), action, true);
 	}
 
 	@Override
@@ -64,47 +67,108 @@ public class TricksterKnotFluidHandler implements IFluidHandlerItem {
 
 	@Override
 	public FluidStack drain(int maxDrain, IFluidHandler.FluidAction action) {
-		if (container.getCount() != 1 || maxDrain <= 0 || !TricksterReflection.isKnotStack(container))
-			return FluidStack.EMPTY;
+		int drainedAmount = transferFluid(maxDrain, action, false);
+		return drainedAmount > 0 ? new FluidStack(CreateTricksFluids.LIQUID_MANA.get(), drainedAmount) : FluidStack.EMPTY;
+	}
 
-		int drainable = getDrainableAmount();
-		if (drainable <= 0)
-			return FluidStack.EMPTY;
+	private int transferFluid(int requestedFluidAmount, IFluidHandler.FluidAction action, boolean filling) {
+		if (!canTransferFluid(requestedFluidAmount, filling))
+			return 0;
 
-		int drainedAmount = Math.min(maxDrain, drainable);
-		FluidStack drainedFluid = new FluidStack(CreateTricksFluids.LIQUID_MANA.get(), drainedAmount);
+		int transferableFluidAmount = getTransferableFluidAmount(filling);
+		if (transferableFluidAmount <= 0)
+			return 0;
 
-		if (!action.execute() || TricksterReflection.hasInfiniteMana(container))
-			return drainedFluid;
+		int fluidAmount = Math.min(requestedFluidAmount, transferableFluidAmount);
+		if (!action.execute())
+			return fluidAmount;
 
 		Level level = CreateTricksFluidTransferContext.getLevel();
 		if (level == null)
-			return FluidStack.EMPTY;
+			return 0;
 
-		float currentMana = TricksterReflection.getMana(container, level);
-		float manaToDrain = Math.min(currentMana, drainedAmount * Config.manaPerBucket / 1000f);
-		if (manaToDrain <= 0)
-			return FluidStack.EMPTY;
+		float transferredMana = transferMana(level, fluidAmount, filling);
+		return transferredMana > 0 ? toFluidAmount(transferredMana, fluidAmount) : 0;
+	}
 
-		float drainedMana = TricksterReflection.drainMana(container, level, manaToDrain);
-		return drainedMana > 0 ? drainedFluid : FluidStack.EMPTY;
+	private boolean canTransferFluid(int requestedFluidAmount, boolean filling) {
+		return requestedFluidAmount > 0
+				&& container.getCount() == 1
+				&& isKnotContainer()
+				&& (!filling || !hasInfiniteMana());
+	}
+
+	private int getTransferableFluidAmount(boolean filling) {
+		return filling ? getFillableAmount() : getDrainableAmount();
+	}
+
+	private float transferMana(Level level, int fluidAmount, boolean filling) {
+		float manaAmount = CreateTricksFluidConversions.fluidAmountToMana(fluidAmount);
+		if (manaAmount <= 0)
+			return 0;
+
+		return filling
+				? TricksterReflection.refillMana(container, level, manaAmount)
+				: TricksterReflection.drainMana(container, level, manaAmount);
 	}
 
 	private int getDrainableAmount() {
-		if (!TricksterReflection.isKnotStack(container))
+		if (!isKnotContainer())
 			return 0;
-		if (TricksterReflection.hasInfiniteMana(container))
+		if (hasInfiniteMana())
 			return 1000;
 
-		Level level = CreateTricksFluidTransferContext.getLevel();
+		Level level = getContextLevel();
 		if (level == null)
 			return 0;
 
-		float mana = TricksterReflection.getMana(container, level);
-		if (mana <= 0)
+		return getPositiveManaFluidAmount(TricksterReflection.getMana(container, level));
+	}
+
+	private int getFillableAmount() {
+		if (!isKnotContainer() || hasInfiniteMana())
 			return 0;
 
-		double amount = Math.ceil(mana * 1000.0 / Config.manaPerBucket);
-		return (int) Math.min(Integer.MAX_VALUE, Math.max(1, amount));
+		Level level = getContextLevel();
+		if (level == null)
+			return 0;
+
+		float currentMana = TricksterReflection.getMana(container, level);
+		float maxMana = TricksterReflection.getMaxMana(container, level);
+		return getPositiveManaFluidAmount(Math.max(0, maxMana - currentMana));
+	}
+
+	private int getCapacityAmount() {
+		if (!isKnotContainer())
+			return 0;
+		if (hasInfiniteMana())
+			return 1000;
+
+		Level level = getContextLevel();
+		if (level == null)
+			return 0;
+
+		return getPositiveManaFluidAmount(TricksterReflection.getMaxMana(container, level));
+	}
+
+	private boolean isKnotContainer() {
+		return TricksterReflection.isKnotStack(container);
+	}
+
+	private boolean hasInfiniteMana() {
+		return TricksterReflection.hasInfiniteMana(container);
+	}
+
+	@Nullable
+	private Level getContextLevel() {
+		return CreateTricksFluidTransferContext.getLevel();
+	}
+
+	private int getPositiveManaFluidAmount(float manaAmount) {
+		return manaAmount > 0 ? CreateTricksFluidConversions.manaToFluidAmount(manaAmount) : 0;
+	}
+
+	private static int toFluidAmount(float manaAmount, int maxAmount) {
+		return CreateTricksFluidConversions.manaToFluidAmount(manaAmount, maxAmount);
 	}
 }

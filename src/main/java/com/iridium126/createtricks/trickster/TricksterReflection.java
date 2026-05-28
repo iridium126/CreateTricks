@@ -48,11 +48,16 @@ public final class TricksterReflection {
 	static Method manaComponentWithMethod;
 	static Method manaPoolMakeCloneMethod;
 	static Method manaPoolGetManaMethod;
+	static Method manaPoolGetMaxManaMethod;
 	static Method mutableManaPoolRefillMethod;
 	static Method itemStackGetComponentMethod;
 	static Method itemStackSetComponentMethod;
 
-	private TricksterReflection() {}
+	private record ManaAccess(Object component, Object pool) {
+	}
+
+	private TricksterReflection() {
+	}
 
 	public static boolean isAvailable() {
 		return ensureDisplayInit() || ensureChargeInit();
@@ -70,8 +75,10 @@ public final class TricksterReflection {
 			voidFragmentInstance = voidFragmentClass.getField("INSTANCE").get(null);
 
 			spellConstructBlockEntityClass = Class.forName("dev.enjarai.trickster.block.SpellConstructBlockEntity");
-			modularSpellConstructBlockEntityClass = Class.forName("dev.enjarai.trickster.block.ModularSpellConstructBlockEntity");
-			defaultSpellExecutorClass = Class.forName("dev.enjarai.trickster.spell.execution.executor.DefaultSpellExecutor");
+			modularSpellConstructBlockEntityClass = Class
+					.forName("dev.enjarai.trickster.block.ModularSpellConstructBlockEntity");
+			defaultSpellExecutorClass = Class
+					.forName("dev.enjarai.trickster.spell.execution.executor.DefaultSpellExecutor");
 
 			spellConstructExecutorField = spellConstructBlockEntityClass.getField("executor");
 			modularExecutorsField = modularSpellConstructBlockEntityClass.getField("executors");
@@ -82,7 +89,8 @@ public final class TricksterReflection {
 			Class<?> executionStateClass = Class.forName("dev.enjarai.trickster.spell.execution.ExecutionState");
 			executionStateGetArgumentsMethod = executionStateClass.getMethod("getArguments");
 
-			Class<?> blockSpellSourceClass = Class.forName("dev.enjarai.trickster.spell.execution.source.BlockSpellSource");
+			Class<?> blockSpellSourceClass = Class
+					.forName("dev.enjarai.trickster.spell.execution.source.BlockSpellSource");
 			blockSpellSourceBlockEntityField = blockSpellSourceClass.getField("blockEntity");
 
 			displayAvailable = true;
@@ -103,7 +111,8 @@ public final class TricksterReflection {
 			if (spellConstructBlockEntityClass == null)
 				spellConstructBlockEntityClass = Class.forName("dev.enjarai.trickster.block.SpellConstructBlockEntity");
 			if (modularSpellConstructBlockEntityClass == null)
-				modularSpellConstructBlockEntityClass = Class.forName("dev.enjarai.trickster.block.ModularSpellConstructBlockEntity");
+				modularSpellConstructBlockEntityClass = Class
+						.forName("dev.enjarai.trickster.block.ModularSpellConstructBlockEntity");
 
 			Class<?> modComponentsClass = Class.forName("dev.enjarai.trickster.item.component.ModComponents");
 			Class<?> manaComponentClass = Class.forName("dev.enjarai.trickster.item.component.ManaComponent");
@@ -116,6 +125,7 @@ public final class TricksterReflection {
 			manaComponentWithMethod = manaComponentClass.getMethod("with", manaPoolClass);
 			manaPoolMakeCloneMethod = manaPoolClass.getMethod("makeClone", Level.class);
 			manaPoolGetManaMethod = manaPoolClass.getMethod("get", Level.class);
+			manaPoolGetMaxManaMethod = manaPoolClass.getMethod("getMax", Level.class);
 			mutableManaPoolRefillMethod = mutableManaPoolClass.getMethod("refill", float.class, Level.class);
 
 			itemStackGetComponentMethod = ItemStack.class.getMethod("get", DataComponentType.class);
@@ -134,22 +144,11 @@ public final class TricksterReflection {
 	}
 
 	public static float getMana(ItemStack stack, @Nullable Level level) {
-		if (!ensureChargeInit() || stack == null || stack.isEmpty())
-			return 0;
+		return readManaValue(stack, level, manaPoolGetManaMethod);
+	}
 
-		try {
-			Object component = itemStackGetComponentMethod.invoke(stack, manaComponentType);
-			if (component == null)
-				return 0;
-
-			Object pool = manaComponentPoolMethod.invoke(component);
-			if (pool == null || level == null)
-				return 0;
-
-			return (float) manaPoolGetManaMethod.invoke(pool, level);
-		} catch (ReflectiveOperationException e) {
-			return 0;
-		}
+	public static float getMaxMana(ItemStack stack, @Nullable Level level) {
+		return readManaValue(stack, level, manaPoolGetMaxManaMethod);
 	}
 
 	public static boolean isKnotItem(Item item) {
@@ -165,11 +164,8 @@ public final class TricksterReflection {
 			return false;
 
 		try {
-			Object component = itemStackGetComponentMethod.invoke(stack, manaComponentType);
-			if (component == null)
-				return false;
-			Object pool = manaComponentPoolMethod.invoke(component);
-			return pool != null && infiniteManaPoolClass.isInstance(pool);
+			ManaAccess access = getManaAccess(stack);
+			return access != null && isInfiniteManaPool(access.pool());
 		} catch (ReflectiveOperationException e) {
 			return false;
 		}
@@ -180,30 +176,75 @@ public final class TricksterReflection {
 			return 0;
 
 		try {
-			Object component = itemStackGetComponentMethod.invoke(stack, manaComponentType);
-			if (component == null)
+			ManaAccess access = getManaAccess(stack);
+			if (access == null)
 				return 0;
-
-			Object pool = manaComponentPoolMethod.invoke(component);
-			if (pool == null)
-				return 0;
-			if (infiniteManaPoolClass != null && infiniteManaPoolClass.isInstance(pool))
+			if (isInfiniteManaPool(access.pool()))
 				return manaAmount;
-
-			float before = (float) manaPoolGetManaMethod.invoke(pool, level);
-			Object mutablePool = manaPoolMakeCloneMethod.invoke(pool, level);
-			mutableManaPoolRefillMethod.invoke(mutablePool, -manaAmount, level);
-			float after = (float) manaPoolGetManaMethod.invoke(mutablePool, level);
-			float drained = Math.max(0, before - after);
-			if (drained <= 0)
-				return 0;
-
-			Object updatedComponent = manaComponentWithMethod.invoke(component, mutablePool);
-			itemStackSetComponentMethod.invoke(stack, manaComponentType, updatedComponent);
-			return drained;
+			return Math.max(0, -mutateMana(stack, level, access, -manaAmount));
 		} catch (ReflectiveOperationException e) {
 			return 0;
 		}
+	}
+
+	public static float refillMana(ItemStack stack, Level level, float manaAmount) {
+		if (!ensureChargeInit() || stack == null || stack.isEmpty() || level == null || manaAmount <= 0)
+			return 0;
+
+		try {
+			ManaAccess access = getManaAccess(stack);
+			if (access == null || isInfiniteManaPool(access.pool()))
+				return 0;
+			return Math.max(0, mutateMana(stack, level, access, manaAmount));
+		} catch (ReflectiveOperationException e) {
+			return 0;
+		}
+	}
+
+	private static float readManaValue(ItemStack stack, @Nullable Level level, Method getterMethod) {
+		if (!ensureChargeInit() || stack == null || stack.isEmpty() || level == null)
+			return 0;
+
+		try {
+			ManaAccess access = getManaAccess(stack);
+			if (access == null)
+				return 0;
+			return (float) getterMethod.invoke(access.pool(), level);
+		} catch (ReflectiveOperationException e) {
+			return 0;
+		}
+	}
+
+	private static boolean isInfiniteManaPool(Object pool) {
+		return infiniteManaPoolClass != null && infiniteManaPoolClass.isInstance(pool);
+	}
+
+	@Nullable
+	private static ManaAccess getManaAccess(ItemStack stack) throws ReflectiveOperationException {
+		Object component = itemStackGetComponentMethod.invoke(stack, manaComponentType);
+		if (component == null)
+			return null;
+
+		Object pool = manaComponentPoolMethod.invoke(component);
+		if (pool == null)
+			return null;
+
+		return new ManaAccess(component, pool);
+	}
+
+	private static float mutateMana(ItemStack stack, Level level, ManaAccess access, float manaDelta)
+			throws ReflectiveOperationException {
+		float before = (float) manaPoolGetManaMethod.invoke(access.pool(), level);
+		Object mutablePool = manaPoolMakeCloneMethod.invoke(access.pool(), level);
+		mutableManaPoolRefillMethod.invoke(mutablePool, manaDelta, level);
+		float after = (float) manaPoolGetManaMethod.invoke(mutablePool, level);
+		float changed = after - before;
+		if (changed == 0)
+			return 0;
+
+		Object updatedComponent = manaComponentWithMethod.invoke(access.component(), mutablePool);
+		itemStackSetComponentMethod.invoke(stack, manaComponentType, updatedComponent);
+		return changed;
 	}
 
 	public static void syncExecutors(BlockEntity be) {
@@ -217,7 +258,8 @@ public final class TricksterReflection {
 			} else if (modularSpellConstructBlockEntityClass.isInstance(be)) {
 				@SuppressWarnings("unchecked")
 				List<Optional<Object>> executors = (List<Optional<Object>>) modularExecutorsField.get(be);
-				for (int slot = 0; slot < executors.size() && slot < SpellConstructDisplayArguments.MODULAR_EXECUTOR_SLOTS; slot++) {
+				for (int slot = 0; slot < executors.size()
+						&& slot < SpellConstructDisplayArguments.MODULAR_EXECUTOR_SLOTS; slot++) {
 					Optional<Object> optional = executors.get(slot);
 					int executorSlot = slot;
 					optional.ifPresent(executor -> syncExecutor(executor, be, executorSlot));
@@ -302,8 +344,8 @@ public final class TricksterReflection {
 		blockEntity.getClass().getMethod("markDirtyAndUpdateClients").invoke(blockEntity);
 	}
 
-
-	private static boolean chargeKnotStack(ServerLevel level, ItemStack stack, float manaAmount) throws ReflectiveOperationException {
+	private static boolean chargeKnotStack(ServerLevel level, ItemStack stack, float manaAmount)
+			throws ReflectiveOperationException {
 		if (!isKnotStack(stack) || manaAmount <= 0)
 			return false;
 

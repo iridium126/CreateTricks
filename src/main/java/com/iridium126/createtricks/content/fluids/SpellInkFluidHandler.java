@@ -1,11 +1,11 @@
 package com.iridium126.createtricks.content.fluids;
 
-import com.iridium126.createtricks.Config;
 import com.iridium126.createtricks.CreateTricksFluids;
 import com.iridium126.createtricks.trickster.TricksterReflection;
 
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.neoforged.neoforge.fluids.FluidStack;
@@ -16,6 +16,37 @@ public class SpellInkFluidHandler implements IFluidHandlerItem {
 	private static final float DEFAULT_SPELL_INK_MANA = 512;
 
 	public static final ResourceLocation SPELL_INK_ID = ResourceLocation.fromNamespaceAndPath("trickster", "spell_ink");
+
+	public static boolean canFillItem(ItemStack stack, FluidStack availableFluid) {
+		return stack.getItem() == Items.GLASS_BOTTLE
+				&& !availableFluid.isEmpty()
+				&& availableFluid.getFluid().isSame(CreateTricksFluids.LIQUID_MANA.get());
+	}
+
+	public static int getRequiredAmountForFilling(ItemStack stack, FluidStack availableFluid) {
+		return canFillItem(stack, availableFluid)
+				? CreateTricksFluidConversions.manaToFluidAmount(DEFAULT_SPELL_INK_MANA)
+				: -1;
+	}
+
+	public static ItemStack createFilledBottle() {
+		Item spellInk = BuiltInRegistries.ITEM.get(SPELL_INK_ID);
+		return spellInk == Items.AIR ? ItemStack.EMPTY : new ItemStack(spellInk);
+	}
+
+	public static ItemStack fillItem(ItemStack stack, FluidStack availableFluid) {
+		int requiredAmount = getRequiredAmountForFilling(stack, availableFluid);
+		if (requiredAmount < 0 || availableFluid.getAmount() < requiredAmount)
+			return ItemStack.EMPTY;
+
+		ItemStack filledBottle = createFilledBottle();
+		if (filledBottle.isEmpty())
+			return ItemStack.EMPTY;
+
+		availableFluid.shrink(requiredAmount);
+		stack.shrink(1);
+		return filledBottle;
+	}
 
 	private ItemStack container;
 
@@ -87,7 +118,7 @@ public class SpellInkFluidHandler implements IFluidHandlerItem {
 		if (mana <= 0)
 			mana = DEFAULT_SPELL_INK_MANA;
 
-		int amount = Math.max(1, (int) Math.ceil(mana * 1000.0 / Config.manaPerBucket));
+		int amount = CreateTricksFluidConversions.manaToFluidAmount(mana);
 		return new FluidStack(CreateTricksFluids.LIQUID_MANA.get(), amount);
 	}
 

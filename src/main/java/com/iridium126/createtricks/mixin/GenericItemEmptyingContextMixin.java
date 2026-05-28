@@ -5,7 +5,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-import com.iridium126.createtricks.content.fluids.CreateTricksFluidTransferContext;
+import com.iridium126.createtricks.content.fluids.FluidTransferContextSupport;
 import com.simibubi.create.content.fluids.transfer.GenericItemEmptying;
 
 import net.createmod.catnip.data.Pair;
@@ -18,24 +18,24 @@ public class GenericItemEmptyingContextMixin {
 	@Inject(method = "canItemBeEmptied", at = @At("HEAD"))
 	private static void createtricks$setLevelForEmptyCheck(Level world, ItemStack stack,
 			CallbackInfoReturnable<Boolean> cir) {
-		CreateTricksFluidTransferContext.setLevel(world);
+		FluidTransferContextSupport.captureLevel(world);
 	}
 
 	@Inject(method = "canItemBeEmptied", at = @At("RETURN"))
 	private static void createtricks$clearLevelForEmptyCheck(Level world, ItemStack stack,
 			CallbackInfoReturnable<Boolean> cir) {
-		CreateTricksFluidTransferContext.clear();
+		FluidTransferContextSupport.clearLevel();
 	}
 
 	@Inject(method = "emptyItem", at = @At("HEAD"))
 	private static void createtricks$setLevelForEmptying(Level level, ItemStack stack, boolean simulate,
 			CallbackInfoReturnable<Pair<FluidStack, ItemStack>> cir) {
-		CreateTricksFluidTransferContext.setLevel(level);
+		FluidTransferContextSupport.captureLevel(level);
 	}
 
 	@Inject(method = "emptyItem", at = @At("RETURN"))
 	private static void createtricks$clearLevelForEmptying(Level level, ItemStack stack, boolean simulate,
 			CallbackInfoReturnable<Pair<FluidStack, ItemStack>> cir) {
-		CreateTricksFluidTransferContext.clear();
+		FluidTransferContextSupport.clearLevel();
 	}
 }

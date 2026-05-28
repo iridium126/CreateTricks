@@ -4,7 +4,7 @@
   "block.createtricks.stress_mana_converter": "Stress Mana Converter",
   "item.createtricks.stress_mana_converter": "Stress Mana Converter",
   "itemGroup.createtricks": "Create: Tricks",
-  "fluid.createtricks.liquid_mana": "Liquid Mana",
+  "block.createtricks.liquid_mana": "Liquid Mana",
   "item.createtricks.liquid_mana_bucket": "Liquid Mana Bucket",
   "createtricks.stress_mana_converter.stress_per_rpm": "Stress per RPM"
 }

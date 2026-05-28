@@ -1,6 +1,6 @@
 {
-  "parent": "minecraft:item/generated",
-  "textures": {
-    "layer0": "createtricks:item/liquid_mana_bucket"
-  }
+  "loader": "neoforge:fluid_container",
+  "parent": "neoforge:item/bucket",
+  "fluid": "createtricks:liquid_mana",
+  "apply_fluid_luminosity": true
 }

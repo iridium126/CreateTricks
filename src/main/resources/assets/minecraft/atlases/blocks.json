@@ -1,0 +1,12 @@
+{
+  "sources": [
+    {
+      "type": "single",
+      "resource": "createtricks:fluid/liquid_mana_flow"
+    },
+    {
+      "type": "single",
+      "resource": "createtricks:fluid/liquid_mana_still"
+    }
+  ]
+}

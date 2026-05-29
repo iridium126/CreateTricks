@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import com.iridium126.createtricks.content.kinetics.StressManaConverterBlock;
 import com.iridium126.createtricks.content.kinetics.StressManaConverterBlockEntity;
 import com.iridium126.createtricks.content.kinetics.StressRangeTooltipModifier;
+import com.iridium126.createtricks.trickster.KineticStressTrickRegister;
 import com.mojang.logging.LogUtils;
 import com.simibubi.create.foundation.data.CreateRegistrate;
 import com.simibubi.create.foundation.item.ItemDescription;
@@ -48,6 +49,7 @@ public class CreateTricks {
 		CreateTricksBlocks.register();
 		CreateTricksFluids.register();
 		CreateTricksBlockEntityTypes.register();
+		KineticStressTrickRegister.register();
 		modContainer.registerConfig(net.neoforged.fml.config.ModConfig.Type.COMMON, Config.SPEC);
 	}
 

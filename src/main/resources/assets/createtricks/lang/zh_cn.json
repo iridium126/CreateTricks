@@ -10,5 +10,6 @@
   "createtricks.stress_mana_converter.stress_per_rpm": "每 RPM 应力消耗",
   "tooltip.createtricks.stress_range": "%1$s-%2$sx RPM",
   "tooltip.createtricks.variable": "可变",
-  "tooltip.createtricks.variable_impact": "可变负载"
+  "tooltip.createtricks.variable_impact": "可变负载",
+  "trickster.trick.createtricks.temporary_kinetic_stress": "动力应力戏法"
 }

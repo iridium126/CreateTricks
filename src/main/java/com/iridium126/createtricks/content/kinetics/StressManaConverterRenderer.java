@@ -16,6 +16,8 @@ public class StressManaConverterRenderer extends KineticBlockEntityRenderer<Stre
 
 	@Override
 	protected SuperByteBuffer getRotatedModel(StressManaConverterBlockEntity be, BlockState state) {
-		return CachedBuffers.partialFacing(CreateTricksPartialModels.STRESS_MANA_CONVERTER_INNER, state);
+		return CachedBuffers.partialFacing(TemporaryStress.isActive(be)
+				? CreateTricksPartialModels.STRESSED_STRESS_MANA_CONVERTER_INNER
+				: CreateTricksPartialModels.STRESS_MANA_CONVERTER_INNER, state);
 	}
 }

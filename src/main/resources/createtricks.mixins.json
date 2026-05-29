@@ -5,6 +5,13 @@
   "mixins": [
     "GenericItemFillingContextMixin",
     "GenericItemEmptyingContextMixin",
+    "BracketedKineticBlockEntityRendererMixin",
+    "EncasedCogRendererMixin",
+    "EncasedCogVisualMixin",
+    "KineticBlockEntityMixin",
+    "KineticBlockEntityRendererMixin",
+    "KineticBlockEntitySyncMixin",
+    "SingleAxisRotatingVisualMixin",
     "TricksterSpellConstructSyncMixin"
   ],
   "client": [

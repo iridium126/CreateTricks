@@ -10,5 +10,6 @@
   "createtricks.stress_mana_converter.stress_per_rpm": "Stress per RPM",
   "tooltip.createtricks.stress_range": "%1$s-%2$s SU/RPM",
   "tooltip.createtricks.variable": "Variable",
-  "tooltip.createtricks.variable_impact": "Variable Impact"
+  "tooltip.createtricks.variable_impact": "Variable Impact",
+  "trickster.trick.createtricks.temporary_kinetic_stress": "Kinetic Stress Ploy"
 }

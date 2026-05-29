@@ -26,6 +26,8 @@ public final class TricksterReflection {
 	static volatile boolean displayAvailable;
 	static volatile boolean chargeInitialized;
 	static volatile boolean chargeAvailable;
+	static volatile boolean registerInitialized;
+	static volatile boolean registerAvailable;
 
 	static Class<?> spellConstructBlockEntityClass;
 	static Class<?> modularSpellConstructBlockEntityClass;
@@ -33,9 +35,15 @@ public final class TricksterReflection {
 	static Class<?> defaultSpellExecutorClass;
 	static Class<?> knotItemClass;
 	static Class<?> infiniteManaPoolClass;
+	static Class<?> signatureClass;
+	static Class<?> trickClass;
+	static Class<?> vectorFragmentClass;
+	static Class<?> numberFragmentClass;
 
 	static Constructor<?> stringFragmentCtor;
+	static Constructor<?> loadArgumentTrickCtor;
 	static Object voidFragmentInstance;
+	static Method textLiteralMethod;
 
 	static Field spellConstructExecutorField;
 	static Field modularExecutorsField;
@@ -52,6 +60,13 @@ public final class TricksterReflection {
 	static Method mutableManaPoolRefillMethod;
 	static Method itemStackGetComponentMethod;
 	static Method itemStackSetComponentMethod;
+	static Method patternOfMethod;
+	static Method tricksRegisterMethod;
+	static Method numberFragmentNumberMethod;
+	static Method vectorFragmentToBlockPosMethod;
+	static Method spellContextSourceMethod;
+	static Method spellContextUseManaMethod;
+	static Method spellSourceGetWorldMethod;
 
 	private record ManaAccess(Object component, Object pool) {
 	}
@@ -137,6 +152,70 @@ public final class TricksterReflection {
 			chargeAvailable = false;
 		}
 		return chargeAvailable;
+	}
+
+	static synchronized boolean ensureRegisterInit() {
+		if (registerInitialized)
+			return registerAvailable;
+		registerInitialized = true;
+		try {
+			Class<?> patternClass = Class.forName("dev.enjarai.trickster.spell.Pattern");
+			trickClass = Class.forName("dev.enjarai.trickster.spell.trick.Trick");
+			Class<?> tricksClass = Class.forName("dev.enjarai.trickster.spell.trick.Tricks");
+			Class<?> loadArgumentTrickClass = Class
+					.forName("dev.enjarai.trickster.spell.trick.func.LoadArgumentTrick");
+			signatureClass = Class.forName("dev.enjarai.trickster.spell.type.Signature");
+			vectorFragmentClass = Class.forName("dev.enjarai.trickster.spell.fragment.VectorFragment");
+			numberFragmentClass = Class.forName("dev.enjarai.trickster.spell.fragment.NumberFragment");
+			Class<?> spellContextClass = Class.forName("dev.enjarai.trickster.spell.SpellContext");
+			Class<?> spellSourceClass = Class.forName("dev.enjarai.trickster.spell.execution.source.SpellSource");
+
+			patternOfMethod = patternClass.getMethod("of", int[].class);
+			textLiteralMethod = findTextLiteralMethod();
+			loadArgumentTrickCtor = loadArgumentTrickClass.getConstructor(patternClass, int.class);
+			tricksRegisterMethod = tricksClass.getMethod("register", String.class, trickClass);
+			numberFragmentNumberMethod = numberFragmentClass.getMethod("number");
+			vectorFragmentToBlockPosMethod = vectorFragmentClass.getMethod("toBlockPos");
+			spellContextSourceMethod = spellContextClass.getMethod("source");
+			spellContextUseManaMethod = spellContextClass.getMethod("useMana", trickClass, float.class);
+			spellSourceGetWorldMethod = spellSourceClass.getMethod("getWorld");
+
+			registerAvailable = true;
+		} catch (Throwable t) {
+			CreateTricks.LOGGER.warn("Trickster trick registration unavailable", t);
+			registerAvailable = false;
+		}
+		return registerAvailable;
+	}
+
+	private static Method findTextLiteralMethod() throws ReflectiveOperationException {
+		for (String className : new String[] {
+				"net.minecraft.network.chat.Component",
+				"net.minecraft.text.Text",
+				"net.minecraft.class_2561"
+		}) {
+			try {
+				Class<?> textClass = Class.forName(className);
+				for (String methodName : new String[] {"literal", "method_43470"}) {
+					try {
+						return textClass.getMethod(methodName, String.class);
+					} catch (NoSuchMethodException ignored) {
+					}
+				}
+			} catch (ClassNotFoundException ignored) {
+			}
+		}
+		throw new ClassNotFoundException("Minecraft text literal factory");
+	}
+
+	public static Object makeText(String value) {
+		if (!ensureRegisterInit())
+			return value;
+		try {
+			return textLiteralMethod.invoke(null, value);
+		} catch (ReflectiveOperationException e) {
+			return value;
+		}
 	}
 
 	public static float getMana(ItemStack stack) {

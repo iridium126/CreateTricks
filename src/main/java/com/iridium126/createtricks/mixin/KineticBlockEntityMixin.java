@@ -10,21 +10,15 @@ import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 
 @Mixin(value = KineticBlockEntity.class, remap = false)
 public class KineticBlockEntityMixin {
-	@Inject(method = "calculateStressApplied", at = @At("RETURN"), cancellable = true)
-	private void createtricks$addTemporaryStress(CallbackInfoReturnable<Float> cir) {
-		KineticBlockEntity be = (KineticBlockEntity) (Object) this;
-		cir.setReturnValue(cir.getReturnValueF() + TemporaryStress.getStress(be));
-	}
-
 	@Inject(method = "getGeneratedSpeed", at = @At("RETURN"), cancellable = true)
 	private void createtricks$addTemporaryGeneratedSpeed(CallbackInfoReturnable<Float> cir) {
 		KineticBlockEntity be = (KineticBlockEntity) (Object) this;
 		cir.setReturnValue(cir.getReturnValueF() + TemporaryStress.getSpeed(be));
 	}
 
-	@Inject(method = "getTheoreticalSpeed", at = @At("RETURN"), cancellable = true)
-	private void createtricks$addTemporaryTheoreticalSpeed(CallbackInfoReturnable<Float> cir) {
+	@Inject(method = "calculateAddedStressCapacity", at = @At("RETURN"), cancellable = true)
+	private void createtricks$addTemporaryStressCapacity(CallbackInfoReturnable<Float> cir) {
 		KineticBlockEntity be = (KineticBlockEntity) (Object) this;
-		cir.setReturnValue(cir.getReturnValueF() + TemporaryStress.getSpeed(be));
+		cir.setReturnValue(cir.getReturnValueF() + TemporaryStress.getStress(be));
 	}
 }

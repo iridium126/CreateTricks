@@ -4,12 +4,14 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.simibubi.create.content.kinetics.KineticNetwork;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.foundation.blockEntity.SyncedBlockEntity;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 
@@ -27,8 +29,7 @@ public final class TemporaryStress {
 
 		StressState state = new StressState(stress, speed, durationTicks);
 		SERVER_STATES.put(be.getBlockPos().immutable(), state);
-		refreshKinetics(be);
-		sync(be);
+		updateGeneratedRotation(be);
 	}
 
 	public static void tick(ServerLevel level) {
@@ -42,10 +43,8 @@ public final class TemporaryStress {
 
 			iterator.remove();
 			BlockEntity be = level.getBlockEntity(entry.getKey());
-			if (be instanceof KineticBlockEntity kinetic) {
-				refreshKinetics(kinetic);
-				sync(kinetic);
-			}
+			if (be instanceof KineticBlockEntity kinetic)
+				updateGeneratedRotation(kinetic);
 		}
 	}
 
@@ -96,9 +95,73 @@ public final class TemporaryStress {
 		return (level.isClientSide ? CLIENT_STATES : SERVER_STATES).get(be.getBlockPos());
 	}
 
-	private static void refreshKinetics(KineticBlockEntity be) {
-		if (be.hasNetwork())
-			be.getOrCreateNetwork().updateNetwork();
+	private static void updateGeneratedRotation(KineticBlockEntity be) {
+		Level level = be.getLevel();
+		if (level == null || level.isClientSide)
+			return;
+
+		float speed = getGeneratedSpeed(be);
+		float prevSpeed = be.getTheoreticalSpeed();
+		if (!Mth.equal(prevSpeed, speed))
+			applyNewSpeed(be, prevSpeed, speed);
+
+		if (be.hasNetwork() && speed != 0) {
+			KineticNetwork network = be.getOrCreateNetwork();
+			network.updateCapacityFor(be, be.calculateAddedStressCapacity());
+			network.updateStressFor(be, be.calculateStressApplied());
+			network.updateStress();
+		}
+
+		be.onSpeedChanged(prevSpeed);
+		sync(be);
+	}
+
+	private static void applyNewSpeed(KineticBlockEntity be, float prevSpeed, float speed) {
+		if (speed == 0) {
+			if (be.hasSource()) {
+				be.getOrCreateNetwork().updateCapacityFor(be, 0);
+				be.getOrCreateNetwork().updateStressFor(be, be.calculateStressApplied());
+				return;
+			}
+			be.detachKinetics();
+			be.setSpeed(0);
+			be.setNetwork(null);
+			return;
+		}
+
+		if (prevSpeed == 0) {
+			be.setSpeed(speed);
+			be.setNetwork(createNetworkId(be));
+			be.attachKinetics();
+			return;
+		}
+
+		if (be.hasSource()) {
+			if (Math.abs(prevSpeed) >= Math.abs(speed)) {
+				if (Math.signum(prevSpeed) != Math.signum(speed) && be.getLevel() != null)
+					be.getLevel().destroyBlock(be.getBlockPos(), true);
+				return;
+			}
+
+			be.detachKinetics();
+			be.setSpeed(speed);
+			be.source = null;
+			be.setNetwork(createNetworkId(be));
+			be.attachKinetics();
+			return;
+		}
+
+		be.detachKinetics();
+		be.setSpeed(speed);
+		be.attachKinetics();
+	}
+
+	private static Long createNetworkId(KineticBlockEntity be) {
+		return be.getBlockPos().asLong();
+	}
+
+	private static float getGeneratedSpeed(KineticBlockEntity be) {
+		return be.getGeneratedSpeed();
 	}
 
 	private static void sync(KineticBlockEntity be) {

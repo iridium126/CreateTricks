@@ -124,27 +124,16 @@ public abstract class EncasedCogVisualMixin extends KineticBlockEntityVisual<Kin
 	@Unique
 	private void createtricks$deleteStressedModels() {
 		if (createtricks$stressedCog != null) {
-			createtricks$stopInstance(createtricks$stressedCog);
 			createtricks$stressedCog.delete();
 			createtricks$stressedCog = null;
 		}
 		if (createtricks$stressedTopShaft != null) {
-			createtricks$stopInstance(createtricks$stressedTopShaft);
 			createtricks$stressedTopShaft.delete();
 			createtricks$stressedTopShaft = null;
 		}
 		if (createtricks$stressedBottomShaft != null) {
-			createtricks$stopInstance(createtricks$stressedBottomShaft);
 			createtricks$stressedBottomShaft.delete();
 			createtricks$stressedBottomShaft = null;
 		}
-	}
-
-	@Unique
-	private void createtricks$stopInstance(RotatingInstance instance) {
-		instance.setup(blockEntity)
-			.setPosition(getVisualPosition())
-			.setRotationalSpeed(0)
-			.setChanged();
 	}
 }

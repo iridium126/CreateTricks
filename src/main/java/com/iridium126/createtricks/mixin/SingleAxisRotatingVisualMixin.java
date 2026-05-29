@@ -47,10 +47,6 @@ public abstract class SingleAxisRotatingVisualMixin<T extends KineticBlockEntity
 				.setPosition(getVisualPosition())
 				.setChanged();
 		if (!active && createtricks$stressedModel != null) {
-			createtricks$stressedModel.setup(blockEntity)
-				.setPosition(getVisualPosition())
-				.setRotationalSpeed(0)
-				.setChanged();
 			createtricks$stressedModel.delete();
 			createtricks$stressedModel = null;
 			createtricks$stressedModelActive = false;

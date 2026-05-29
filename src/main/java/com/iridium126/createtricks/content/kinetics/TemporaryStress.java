@@ -103,7 +103,8 @@ public final class TemporaryStress {
 		if (level == null || level.isClientSide)
 			return;
 
-		float speed = getGeneratedSpeed(be);
+		StressState state = SERVER_STATES.get(be.getBlockPos());
+		float speed = state == null ? 0 : getGeneratedSpeed(be);
 		float prevSpeed = be.getTheoreticalSpeed();
 		if (!Mth.equal(prevSpeed, speed))
 			applyNewSpeed(be, prevSpeed, speed);

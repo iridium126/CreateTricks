@@ -1,14 +1,17 @@
 package com.iridium126.createtricks.content.kinetics;
 
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.simibubi.create.content.kinetics.RotationPropagator;
 import com.simibubi.create.content.kinetics.KineticNetwork;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.foundation.blockEntity.SyncedBlockEntity;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.Mth;
@@ -44,7 +47,7 @@ public final class TemporaryStress {
 			iterator.remove();
 			BlockEntity be = level.getBlockEntity(entry.getKey());
 			if (be instanceof KineticBlockEntity kinetic)
-				updateGeneratedRotation(kinetic);
+				removeGeneratedRotation(kinetic);
 		}
 	}
 
@@ -118,6 +121,38 @@ public final class TemporaryStress {
 
 		be.onSpeedChanged(prevSpeed);
 		sync(be);
+	}
+
+	private static void removeGeneratedRotation(KineticBlockEntity be) {
+		Level level = be.getLevel();
+		if (level == null || level.isClientSide)
+			return;
+
+		float prevSpeed = be.getTheoreticalSpeed();
+		if (Mth.equal(prevSpeed, 0)) {
+			sync(be);
+			return;
+		}
+
+		List<KineticBlockEntity> neighbours = Direction.stream()
+			.map(direction -> level.getBlockEntity(be.getBlockPos().relative(direction)))
+			.filter(KineticBlockEntity.class::isInstance)
+			.map(KineticBlockEntity.class::cast)
+			.filter(neighbour -> neighbour.hasSource() && be.getBlockPos().equals(neighbour.source))
+			.toList();
+
+		be.detachKinetics();
+		be.setSpeed(0);
+		be.setNetwork(null);
+		be.source = null;
+		be.onSpeedChanged(prevSpeed);
+		sync(be);
+
+		for (KineticBlockEntity neighbour : neighbours) {
+			neighbour.removeSource();
+			sync(neighbour);
+			RotationPropagator.handleRemoved(level, neighbour.getBlockPos(), neighbour);
+		}
 	}
 
 	private static void applyNewSpeed(KineticBlockEntity be, float prevSpeed, float speed) {

@@ -6,7 +6,7 @@
         32
     ],
     "textures": {
-        "5": "createtricks:block/temporary_stress/cogwheel",
+        "5": "createtricks:block/stress_mana_converter/cog",
         "particle": "createtricks:block/temporary_stress/axis",
         "1_0": "createtricks:block/temporary_stress/axis",
         "1_1": "createtricks:block/temporary_stress/axis_top"

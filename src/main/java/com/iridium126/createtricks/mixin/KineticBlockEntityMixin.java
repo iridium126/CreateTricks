@@ -13,7 +13,7 @@ public class KineticBlockEntityMixin {
 	@Inject(method = "getGeneratedSpeed", at = @At("RETURN"), cancellable = true)
 	private void createtricks$addTemporaryGeneratedSpeed(CallbackInfoReturnable<Float> cir) {
 		KineticBlockEntity be = (KineticBlockEntity) (Object) this;
-		cir.setReturnValue(cir.getReturnValueF() + TemporaryStress.getSpeed(be));
+		cir.setReturnValue(Math.max(cir.getReturnValueF(), TemporaryStress.getSpeed(be)));
 	}
 
 	@Inject(method = "calculateAddedStressCapacity", at = @At("RETURN"), cancellable = true)

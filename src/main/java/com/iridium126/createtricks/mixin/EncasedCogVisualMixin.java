@@ -18,26 +18,12 @@ import com.simibubi.create.content.kinetics.simpleRelays.ICogWheel;
 import com.simibubi.create.content.kinetics.simpleRelays.encased.EncasedCogVisual;
 import com.simibubi.create.foundation.render.AllInstanceTypes;
 
-import dev.engine_room.flywheel.api.instance.InstancerProvider;
+import dev.engine_room.flywheel.api.visualization.VisualizationContext;
 import dev.engine_room.flywheel.lib.instance.AbstractInstance;
-import dev.engine_room.flywheel.lib.instance.FlatLit;
 import dev.engine_room.flywheel.lib.model.Models;
-import net.minecraft.core.BlockPos;
 
 @Mixin(value = EncasedCogVisual.class, remap = false)
-public abstract class EncasedCogVisualMixin {
-	@Shadow
-	protected KineticBlockEntity blockEntity;
-
-	@Shadow
-	public abstract BlockPos getVisualPosition();
-
-	@Shadow
-	protected abstract InstancerProvider instancerProvider();
-
-	@Shadow
-	protected abstract void relight(@Nullable FlatLit... instances);
-
+public abstract class EncasedCogVisualMixin extends KineticBlockEntityVisual<KineticBlockEntity> {
 	@Shadow
 	@Final
 	protected RotatingInstance rotatingModel;
@@ -60,6 +46,10 @@ public abstract class EncasedCogVisualMixin {
 
 	@Unique
 	private RotatingInstance createtricks$stressedBottomShaft;
+
+	protected EncasedCogVisualMixin(VisualizationContext context, KineticBlockEntity blockEntity, float partialTick) {
+		super(context, blockEntity, partialTick);
+	}
 
 	@Inject(method = "update", at = @At("RETURN"))
 	private void createtricks$updateStressedModels(float pt, CallbackInfo ci) {

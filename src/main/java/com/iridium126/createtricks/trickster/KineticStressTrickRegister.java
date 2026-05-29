@@ -106,7 +106,8 @@ public final class KineticStressTrickRegister {
 
 		float manaCost = (float) (Config.manaPerStress * stressMagnitude * durationTicks);
 		TricksterReflection.spellContextUseManaMethod.invoke(spellContext, trick, manaCost);
-		TemporaryStress.apply(kinetic, speedInput < 0 ? -stressMagnitude : stressMagnitude, durationTicks);
+		float speed = (float) speedInput;
+		TemporaryStress.apply(kinetic, speed < 0 ? -stressMagnitude : stressMagnitude, speed, durationTicks);
 		return vectorFragment;
 	}
 }

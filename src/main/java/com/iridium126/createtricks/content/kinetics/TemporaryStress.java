@@ -21,13 +21,13 @@ public final class TemporaryStress {
 
 	private TemporaryStress() {}
 
-	public static void apply(KineticBlockEntity be, float stress, int durationTicks) {
+	public static void apply(KineticBlockEntity be, float stress, float speed, int durationTicks) {
 		if (be.getLevel() == null || be.getLevel().isClientSide || durationTicks <= 0)
 			return;
 
-		StressState state = new StressState(stress, durationTicks);
+		StressState state = new StressState(stress, speed, durationTicks);
 		SERVER_STATES.put(be.getBlockPos().immutable(), state);
-		refreshStress(be);
+		refreshKinetics(be);
 		sync(be);
 	}
 
@@ -43,7 +43,7 @@ public final class TemporaryStress {
 			iterator.remove();
 			BlockEntity be = level.getBlockEntity(entry.getKey());
 			if (be instanceof KineticBlockEntity kinetic) {
-				refreshStress(kinetic);
+				refreshKinetics(kinetic);
 				sync(kinetic);
 			}
 		}
@@ -52,6 +52,11 @@ public final class TemporaryStress {
 	public static float getStress(KineticBlockEntity be) {
 		StressState state = getState(be);
 		return state == null ? 0 : state.stress;
+	}
+
+	public static float getSpeed(KineticBlockEntity be) {
+		StressState state = getState(be);
+		return state == null ? 0 : state.speed;
 	}
 
 	public static boolean isActive(BlockEntity be) {
@@ -68,6 +73,7 @@ public final class TemporaryStress {
 
 		CompoundTag stressTag = new CompoundTag();
 		stressTag.putFloat("Stress", state.stress);
+		stressTag.putFloat("Speed", state.speed);
 		stressTag.putInt("Ticks", state.ticksRemaining);
 		tag.put(NBT_KEY, stressTag);
 	}
@@ -76,7 +82,7 @@ public final class TemporaryStress {
 		if (tag.contains(NBT_KEY)) {
 			CompoundTag stressTag = tag.getCompound(NBT_KEY);
 			CLIENT_STATES.put(be.getBlockPos().immutable(),
-					new StressState(stressTag.getFloat("Stress"), stressTag.getInt("Ticks")));
+					new StressState(stressTag.getFloat("Stress"), stressTag.getFloat("Speed"), stressTag.getInt("Ticks")));
 			return;
 		}
 
@@ -90,12 +96,9 @@ public final class TemporaryStress {
 		return (level.isClientSide ? CLIENT_STATES : SERVER_STATES).get(be.getBlockPos());
 	}
 
-	private static void refreshStress(KineticBlockEntity be) {
+	private static void refreshKinetics(KineticBlockEntity be) {
 		if (be.hasNetwork())
-			be.getOrCreateNetwork().updateStressFor(be,
-					be instanceof TemporaryStressProvider provider
-							? provider.createtricks$calculateStressApplied()
-							: be.calculateStressApplied());
+			be.getOrCreateNetwork().updateNetwork();
 	}
 
 	private static void sync(KineticBlockEntity be) {
@@ -106,10 +109,12 @@ public final class TemporaryStress {
 
 	private static final class StressState {
 		private final float stress;
+		private final float speed;
 		private int ticksRemaining;
 
-		private StressState(float stress, int ticksRemaining) {
+		private StressState(float stress, float speed, int ticksRemaining) {
 			this.stress = stress;
+			this.speed = speed;
 			this.ticksRemaining = ticksRemaining;
 		}
 	}

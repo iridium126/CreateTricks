@@ -14,7 +14,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 
-public class StressManaConverterBlockEntity extends KineticBlockEntity implements TemporaryStressProvider {
+public class StressManaConverterBlockEntity extends KineticBlockEntity {
 	public static final int MIN_STRESS_PER_RPM = 4;
 	public static final int MAX_STRESS_PER_RPM = 256;
 	public static final int DEFAULT_STRESS_PER_RPM = 4;
@@ -75,10 +75,5 @@ public class StressManaConverterBlockEntity extends KineticBlockEntity implement
 
 	public int getStressPerRpm() {
 		return stressPerRpm == null ? DEFAULT_STRESS_PER_RPM : stressPerRpm.getValue();
-	}
-
-	@Override
-	public float createtricks$calculateStressApplied() {
-		return calculateStressApplied() + TemporaryStress.getStress(this);
 	}
 }

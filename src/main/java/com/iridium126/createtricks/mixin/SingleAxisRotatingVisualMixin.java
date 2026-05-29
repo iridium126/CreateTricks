@@ -12,30 +12,17 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import com.iridium126.createtricks.content.kinetics.TemporaryStress;
 import com.iridium126.createtricks.content.kinetics.TemporaryStressModel;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
+import com.simibubi.create.content.kinetics.base.KineticBlockEntityVisual;
 import com.simibubi.create.content.kinetics.base.RotatingInstance;
 import com.simibubi.create.content.kinetics.base.SingleAxisRotatingVisual;
 import com.simibubi.create.foundation.render.AllInstanceTypes;
 
-import dev.engine_room.flywheel.api.instance.InstancerProvider;
+import dev.engine_room.flywheel.api.visualization.VisualizationContext;
 import dev.engine_room.flywheel.lib.instance.AbstractInstance;
-import dev.engine_room.flywheel.lib.instance.FlatLit;
 import dev.engine_room.flywheel.lib.model.Models;
-import net.minecraft.core.BlockPos;
 
 @Mixin(value = SingleAxisRotatingVisual.class, remap = false)
-public abstract class SingleAxisRotatingVisualMixin<T extends KineticBlockEntity> {
-	@Shadow
-	protected T blockEntity;
-
-	@Shadow
-	public abstract BlockPos getVisualPosition();
-
-	@Shadow
-	protected abstract InstancerProvider instancerProvider();
-
-	@Shadow
-	protected abstract void relight(@Nullable FlatLit... instances);
-
+public abstract class SingleAxisRotatingVisualMixin<T extends KineticBlockEntity> extends KineticBlockEntityVisual<T> {
 	@Shadow
 	@Final
 	protected RotatingInstance rotatingModel;
@@ -45,6 +32,10 @@ public abstract class SingleAxisRotatingVisualMixin<T extends KineticBlockEntity
 
 	@Unique
 	private boolean createtricks$stressedModelActive;
+
+	protected SingleAxisRotatingVisualMixin(VisualizationContext context, T blockEntity, float partialTick) {
+		super(context, blockEntity, partialTick);
+	}
 
 	@Inject(method = "update", at = @At("RETURN"))
 	private void createtricks$updateStressedModel(float pt, CallbackInfo ci) {

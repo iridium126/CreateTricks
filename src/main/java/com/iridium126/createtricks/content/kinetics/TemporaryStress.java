@@ -50,7 +50,10 @@ public final class TemporaryStress {
 
 	public static float getStress(KineticBlockEntity be) {
 		StressState state = getState(be);
-		return state == null ? 0 : state.stress;
+		if (state == null)
+			return 0;
+		float speed = Math.abs(getGeneratedSpeed(be));
+		return speed == 0 ? 0 : state.stress / speed;
 	}
 
 	public static float getSpeed(KineticBlockEntity be) {

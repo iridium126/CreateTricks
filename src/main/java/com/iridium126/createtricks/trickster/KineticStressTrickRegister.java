@@ -87,8 +87,13 @@ public final class KineticStressTrickRegister {
 		List<Object> fragments = (List<Object>) args[2];
 
 		Object vectorFragment = fragments.get(0);
-		double speedInput = (double) TricksterReflection.numberFragmentNumberMethod.invoke(fragments.get(1));
-		double durationInput = (double) TricksterReflection.numberFragmentNumberMethod.invoke(fragments.get(2));
+		double speedInput = number(fragments.get(1));
+		double durationInput = number(fragments.get(2));
+		if (Math.abs(speedInput) < Math.abs(durationInput)) {
+			double actualSpeedInput = durationInput;
+			durationInput = speedInput;
+			speedInput = actualSpeedInput;
+		}
 		float stressMagnitude = (float) Math.abs(speedInput) * STRESS_PER_SPEED;
 		int durationTicks = (int) Math.floor(durationInput);
 		if (stressMagnitude <= 0 || durationTicks <= 0)
@@ -109,5 +114,9 @@ public final class KineticStressTrickRegister {
 		float speed = (float) speedInput;
 		TemporaryStress.apply(kinetic, speed < 0 ? -stressMagnitude : stressMagnitude, speed, durationTicks);
 		return vectorFragment;
+	}
+
+	private static double number(Object fragment) throws Throwable {
+		return (double) TricksterReflection.numberFragmentNumberMethod.invoke(fragment);
 	}
 }

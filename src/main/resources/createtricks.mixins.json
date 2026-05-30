@@ -11,6 +11,8 @@
     "KineticBlockEntityAccessor",
     "KineticBlockEntityMixin",
     "KineticBlockEntitySyncMixin",
+    "KineticBlockEntityVisualMixin",
+    "ModelsMixin",
     "SingleAxisRotatingVisualMixin",
     "TricksterSpellConstructSyncMixin"
   ],

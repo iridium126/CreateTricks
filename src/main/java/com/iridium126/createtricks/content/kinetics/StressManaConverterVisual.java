@@ -2,7 +2,6 @@ package com.iridium126.createtricks.content.kinetics;
 
 import java.util.function.Consumer;
 
-import com.iridium126.createtricks.CreateTricksPartialModels;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntityVisual;
 import com.simibubi.create.content.kinetics.base.RotatingInstance;
 import com.simibubi.create.foundation.render.AllInstanceTypes;
@@ -61,9 +60,8 @@ public class StressManaConverterVisual extends KineticBlockEntityVisual<StressMa
 		stressed = TemporaryStress.isActive(blockEntity);
 		Direction facing = blockEntity.getBlockState()
 			.getValue(BlockStateProperties.FACING);
-		rotatingModel = instancerProvider().instancer(AllInstanceTypes.ROTATING, Models.partial(stressed
-				? CreateTricksPartialModels.STRESSED_STRESS_MANA_CONVERTER_INNER
-				: CreateTricksPartialModels.STRESS_MANA_CONVERTER_INNER))
+		rotatingModel = instancerProvider().instancer(AllInstanceTypes.ROTATING,
+				Models.partial(TemporaryStressModel.innerStressManaConverter(blockEntity)))
 			.createInstance()
 			.rotateToFace(Direction.SOUTH, facing)
 			.setup(blockEntity)

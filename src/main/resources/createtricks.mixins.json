@@ -6,6 +6,7 @@
     "GenericItemFillingContextMixin",
     "GenericItemEmptyingContextMixin",
     "BracketedKineticBlockEntityRendererMixin",
+    "BracketedKineticBlockEntityVisualMixin",
     "EncasedCogVisualMixin",
     "KineticBlockEntityAccessor",
     "KineticBlockEntityMixin",

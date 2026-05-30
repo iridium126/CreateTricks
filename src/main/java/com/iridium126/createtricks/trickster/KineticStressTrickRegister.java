@@ -15,6 +15,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.entity.BlockEntity;
 
 public final class KineticStressTrickRegister {
+	private static final float STRESS_PER_SPEED = 4;
 	private static volatile boolean registered;
 
 	private KineticStressTrickRegister() {
@@ -86,9 +87,9 @@ public final class KineticStressTrickRegister {
 		List<Object> fragments = (List<Object>) args[2];
 
 		Object vectorFragment = fragments.get(0);
-		double stressInput = (double) TricksterReflection.numberFragmentNumberMethod.invoke(fragments.get(1));
+		double speedInput = (double) TricksterReflection.numberFragmentNumberMethod.invoke(fragments.get(1));
 		double durationInput = (double) TricksterReflection.numberFragmentNumberMethod.invoke(fragments.get(2));
-		float stressMagnitude = (float) Math.abs(stressInput);
+		float stressMagnitude = (float) Math.abs(speedInput) * STRESS_PER_SPEED;
 		int durationTicks = (int) Math.floor(durationInput);
 		if (stressMagnitude <= 0 || durationTicks <= 0)
 			throw new InvalidKineticStressBlunder(trick);
@@ -105,7 +106,8 @@ public final class KineticStressTrickRegister {
 
 		float manaCost = (float) (Config.manaPerStress * stressMagnitude * durationTicks);
 		TricksterReflection.spellContextUseManaMethod.invoke(spellContext, trick, manaCost);
-		TemporaryStress.apply(kinetic, stressInput < 0 ? -stressMagnitude : stressMagnitude, durationTicks);
+		float speed = (float) speedInput;
+		TemporaryStress.apply(kinetic, speed < 0 ? -stressMagnitude : stressMagnitude, speed, durationTicks);
 		return vectorFragment;
 	}
 }

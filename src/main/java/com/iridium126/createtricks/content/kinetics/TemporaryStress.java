@@ -1,11 +1,9 @@
 package com.iridium126.createtricks.content.kinetics;
 
 import java.util.Iterator;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.iridium126.createtricks.mixin.KineticBlockEntityAccessor;
@@ -60,9 +58,8 @@ public final class TemporaryStress {
 			iterator.remove();
 			BlockEntity be = level.getBlockEntity(entry.getKey().pos);
 			if (be instanceof KineticBlockEntity kinetic) {
-				Set<KineticBlockEntity> affected = collectNetworkMembers(kinetic);
 				updateGeneratedRotation(kinetic);
-				syncAll(affected);
+				syncBlock(kinetic);
 			}
 		}
 	}
@@ -71,8 +68,7 @@ public final class TemporaryStress {
 		StressState state = getState(be);
 		if (state == null)
 			return 0;
-		float speed = Math.abs(getGeneratedSpeed(be));
-		return speed == 0 ? 0 : Math.abs(state.stress) / speed;
+		return state.stressCapacity();
 	}
 
 	public static float getSpeed(KineticBlockEntity be) {
@@ -162,7 +158,7 @@ public final class TemporaryStress {
 			.forGoggles(tooltip);
 
 		float speed = be.getTheoreticalSpeed();
-		float generatedSpeed = getGeneratedSpeed(be);
+		float generatedSpeed = getSpeed(be);
 		if (speed != generatedSpeed && speed != 0)
 			stressBase *= generatedSpeed / speed;
 
@@ -198,13 +194,14 @@ public final class TemporaryStress {
 			return;
 
 		StressState state = getServerState(be);
-		float speed = state == null ? 0 : getGeneratedSpeed(be);
+		float speed = state == null ? 0 : state.speed;
 		float prevSpeed = be.getTheoreticalSpeed();
+		KineticNetwork previousNetwork = be.hasNetwork() ? be.getOrCreateNetwork() : null;
 		if (!Mth.equal(prevSpeed, speed)) {
 			if (!be.hasSource() && SpeedLevel.of(prevSpeed) != SpeedLevel.of(speed))
 				((KineticBlockEntityAccessor) be).createtricks$getEffects()
 					.queueRotationIndicators();
-			applyNewSpeed(be, prevSpeed, speed);
+			applyNewSpeed(be, state, prevSpeed, speed);
 		}
 
 		if (be.hasNetwork() && speed != 0) {
@@ -215,10 +212,10 @@ public final class TemporaryStress {
 		}
 
 		be.onSpeedChanged(prevSpeed);
-		sync(be);
+		sync(be, previousNetwork);
 	}
 
-	private static void applyNewSpeed(KineticBlockEntity be, float prevSpeed, float speed) {
+	private static void applyNewSpeed(KineticBlockEntity be, StressState state, float prevSpeed, float speed) {
 		if (speed == 0) {
 			if (be.hasSource()) {
 				notifyStressCapacityChange(be, 0);
@@ -246,8 +243,10 @@ public final class TemporaryStress {
 			}
 
 			be.detachKinetics();
+			be.removeSource();
+			if (state != null)
+				state.reActivateSource = false;
 			be.setSpeed(speed);
-			be.source = null;
 			be.setNetwork(createNetworkId(be));
 			be.attachKinetics();
 			return;
@@ -266,25 +265,14 @@ public final class TemporaryStress {
 		be.getOrCreateNetwork().updateCapacityFor(be, capacity);
 	}
 
-	private static float getGeneratedSpeed(KineticBlockEntity be) {
-		return be.getGeneratedSpeed();
-	}
-
-	private static void sync(KineticBlockEntity be) {
+	private static void sync(KineticBlockEntity be, KineticNetwork previousNetwork) {
 		be.setChanged();
-		syncAll(collectNetworkMembers(be));
+		if (previousNetwork != null)
+			previousNetwork.sync();
+		if (be.hasNetwork())
+			be.getOrCreateNetwork()
+				.sync();
 		syncBlock(be);
-	}
-
-	private static Set<KineticBlockEntity> collectNetworkMembers(KineticBlockEntity be) {
-		if (!be.hasNetwork())
-			return Set.of(be);
-		return new HashSet<>(be.getOrCreateNetwork().members.keySet());
-	}
-
-	private static void syncAll(Set<KineticBlockEntity> members) {
-		for (KineticBlockEntity member : members)
-			syncBlock(member);
 	}
 
 	private static void syncBlock(KineticBlockEntity be) {
@@ -322,6 +310,11 @@ public final class TemporaryStress {
 			this.stress = stress;
 			this.speed = speed;
 			this.ticksRemaining = ticksRemaining;
+		}
+
+		private float stressCapacity() {
+			float absSpeed = Math.abs(speed);
+			return absSpeed == 0 ? 0 : Math.abs(stress) / absSpeed;
 		}
 	}
 }

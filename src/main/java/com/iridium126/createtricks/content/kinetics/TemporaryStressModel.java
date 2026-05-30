@@ -19,6 +19,11 @@ public final class TemporaryStressModel {
 		return TemporaryStress.isActive(be) ? stressed : normal;
 	}
 
+	public static PartialModel innerStressManaConverter(BlockEntity be) {
+		return select(be, CreateTricksPartialModels.STRESS_MANA_CONVERTER_INNER,
+				CreateTricksPartialModels.STRESSED_STRESS_MANA_CONVERTER_INNER);
+	}
+
 	public static PartialModel shaft(BlockEntity be) {
 		return select(be, AllPartialModels.SHAFT, CreateTricksPartialModels.STRESSED_SHAFT);
 	}
@@ -43,6 +48,25 @@ public final class TemporaryStressModel {
 
 	public static PartialModel cogwheelShaft(BlockEntity be) {
 		return select(be, AllPartialModels.COGWHEEL_SHAFT, CreateTricksPartialModels.STRESSED_COGWHEEL_SHAFT);
+	}
+
+	@Nullable
+	public static PartialModel replacement(BlockEntity be, PartialModel model) {
+		if (model == CreateTricksPartialModels.STRESS_MANA_CONVERTER_INNER)
+			return innerStressManaConverter(be);
+		if (model == AllPartialModels.SHAFT)
+			return shaft(be);
+		if (model == AllPartialModels.SHAFT_HALF)
+			return shaftHalf(be);
+		if (model == AllPartialModels.COGWHEEL)
+			return cogwheel(be);
+		if (model == AllPartialModels.SHAFTLESS_COGWHEEL)
+			return shaftlessCogwheel(be);
+		if (model == AllPartialModels.SHAFTLESS_LARGE_COGWHEEL)
+			return shaftlessLargeCogwheel(be);
+		if (model == AllPartialModels.COGWHEEL_SHAFT)
+			return cogwheelShaft(be);
+		return null;
 	}
 
 	@Nullable

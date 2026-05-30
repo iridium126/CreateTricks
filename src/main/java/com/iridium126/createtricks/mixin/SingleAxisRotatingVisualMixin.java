@@ -5,16 +5,19 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.ModifyArg;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.iridium126.createtricks.content.kinetics.TemporaryStress;
+import com.iridium126.createtricks.content.kinetics.TemporaryStressModel;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntityVisual;
 import com.simibubi.create.content.kinetics.base.RotatingInstance;
 import com.simibubi.create.content.kinetics.base.SingleAxisRotatingVisual;
 
 import dev.engine_room.flywheel.api.visualization.VisualizationContext;
+import dev.engine_room.flywheel.lib.model.baked.PartialModel;
 
 @Mixin(value = SingleAxisRotatingVisual.class, remap = false)
 public abstract class SingleAxisRotatingVisualMixin<T extends KineticBlockEntity> extends KineticBlockEntityVisual<T> {
@@ -27,6 +30,13 @@ public abstract class SingleAxisRotatingVisualMixin<T extends KineticBlockEntity
 
 	protected SingleAxisRotatingVisualMixin(VisualizationContext context, T blockEntity, float partialTick) {
 		super(context, blockEntity, partialTick);
+	}
+
+	@ModifyArg(method = { "lambda$of$0", "lambda$ofZ$1" }, at = @At(value = "INVOKE", target = "Ldev/engine_room/flywheel/lib/model/Models;partial(Ldev/engine_room/flywheel/lib/model/baked/PartialModel;)Ldev/engine_room/flywheel/api/model/Model;"))
+	private static PartialModel createtricks$useStressedPartial(PartialModel model,
+			VisualizationContext context, KineticBlockEntity be, float partialTick) {
+		PartialModel replacement = TemporaryStressModel.replacement(be, model);
+		return replacement == null ? model : replacement;
 	}
 
 	@Inject(method = "update", at = @At("RETURN"))

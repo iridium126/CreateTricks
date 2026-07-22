@@ -1,7 +1,7 @@
 {
   "values": [
-    "createmanaindustry:kinetic_mana_generator",
     "createmanaindustry:kinetic_atomizer",
-    "createmanaindustry:condenser"
+    "createmanaindustry:condenser",
+    "createmanaindustry:kinetic_mana_generator"
   ]
 }

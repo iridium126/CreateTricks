@@ -35,6 +35,8 @@ public final class SpellConstructChainHandler {
 
     @SubscribeEvent
     public static void onBlockBreak(final BlockEvent.BreakEvent event) {
+        if (!CreateManaIndustry.TRICKSTER_ACTIVE)
+            return;
         Level level = (Level) event.getLevel();
         if (level.isClientSide())
             return;

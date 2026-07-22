@@ -8,7 +8,6 @@ import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.K
 import com.simibubi.create.api.stress.BlockStressValues;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlockEntity;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorTooltipModifier;
-import com.iridium126.createmanaindustry.content.items.CMIHexItems;
 import com.iridium126.createmanaindustry.hexcasting.CMISlatePatternRecipes;
 import com.iridium126.createmanaindustry.trickster.KineticStressTrickRegister;
 import com.mojang.logging.LogUtils;
@@ -78,10 +77,10 @@ public class CreateManaIndustry {
         CMIFluids.register();
         CMIBlockEntityTypes.register();
         CMIItems.register();
-        if (TRICKSTER_ACTIVE)
+        if (TRICKSTER_ACTIVE) {
             KineticStressTrickRegister.register();
+        }
         if (HEX_ACTIVE) {
-            CMIHexItems.register();
             NeoForge.EVENT_BUS.addListener(CMISlatePatternRecipes::onServerStarted);
         }
         CMIPartialModels.register();

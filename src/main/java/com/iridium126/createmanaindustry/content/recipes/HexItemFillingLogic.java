@@ -3,9 +3,9 @@ package com.iridium126.createmanaindustry.content.recipes;
 import at.petrak.hexcasting.api.item.MediaHolderItem;
 
 import com.iridium126.createmanaindustry.CMIFluids;
+import com.iridium126.createmanaindustry.CMIItems;
 import com.iridium126.createmanaindustry.config.Config;
 import com.iridium126.createmanaindustry.content.fluids.CMIFluidConversions;
-import com.iridium126.createmanaindustry.content.items.CMIHexItems;
 import com.iridium126.createmanaindustry.content.items.IncompleteHexItem;
 import com.iridium126.createmanaindustry.content.items.IncompleteMediaBatteryItem;
 
@@ -45,14 +45,12 @@ public final class HexItemFillingLogic {
             return null;
 
         String path = id.getPath();
-        if ("cypher".equals(path) && CMIHexItems.INCOMPLETE_CYPHER != null)
-            return CMIHexItems.INCOMPLETE_CYPHER.get();
-        if ("trinket".equals(path) && CMIHexItems.INCOMPLETE_TRINKET != null)
-            return CMIHexItems.INCOMPLETE_TRINKET.get();
-        if ("artifact".equals(path) && CMIHexItems.INCOMPLETE_ARTIFACT != null)
-            return CMIHexItems.INCOMPLETE_ARTIFACT.get();
-        if ("battery".equals(path) && CMIHexItems.INCOMPLETE_MEDIA_BATTERY != null)
-            return CMIHexItems.INCOMPLETE_MEDIA_BATTERY.get();
+        if ("cypher".equals(path) && CMIItems.INCOMPLETE_CYPHER != null)
+            return CMIItems.INCOMPLETE_CYPHER.get();
+        if ("trinket".equals(path) && CMIItems.INCOMPLETE_TRINKET != null)
+            return CMIItems.INCOMPLETE_TRINKET.get();
+        if ("artifact".equals(path) && CMIItems.INCOMPLETE_ARTIFACT != null)
+            return CMIItems.INCOMPLETE_ARTIFACT.get();
 
         return null;
     }

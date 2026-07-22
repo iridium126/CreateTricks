@@ -26,12 +26,23 @@ import net.neoforged.neoforge.fluids.FluidStack;
  */
 public final class KnotFillingLogic {
 
-    private static final Map<Item, KnotEntry> KNOTS = Map.of(
-            CMIItems.INCOMPLETE_EMERALD_KNOT.get(), new KnotEntry(knot("emerald_knot"), 512),
-            CMIItems.INCOMPLETE_DIAMOND_KNOT.get(), new KnotEntry(knot("diamond_knot"), 8192),
-            CMIItems.INCOMPLETE_ECHO_KNOT.get(), new KnotEntry(knot("echo_knot"), 65536),
-            CMIItems.INCOMPLETE_ASTRAL_KNOT.get(), new KnotEntry(knot("astral_knot"), 524288),
-            CMIItems.INCOMPLETE_PRISMATIC_KNOT.get(), new KnotEntry(knot("prismatic_knot"), 8192));
+    private static volatile Map<Item, KnotEntry> knots;
+
+    private static Map<Item, KnotEntry> getKnots() {
+        if (knots == null) {
+            synchronized (KnotFillingLogic.class) {
+                if (knots == null) {
+                    knots = Map.of(
+                            CMIItems.INCOMPLETE_EMERALD_KNOT.get(), new KnotEntry(knot("emerald_knot"), 512),
+                            CMIItems.INCOMPLETE_DIAMOND_KNOT.get(), new KnotEntry(knot("diamond_knot"), 8192),
+                            CMIItems.INCOMPLETE_ECHO_KNOT.get(), new KnotEntry(knot("echo_knot"), 65536),
+                            CMIItems.INCOMPLETE_ASTRAL_KNOT.get(), new KnotEntry(knot("astral_knot"), 524288),
+                            CMIItems.INCOMPLETE_PRISMATIC_KNOT.get(), new KnotEntry(knot("prismatic_knot"), 8192));
+                }
+            }
+        }
+        return knots;
+    }
 
     private KnotFillingLogic() {}
 
@@ -49,7 +60,7 @@ public final class KnotFillingLogic {
                 || !availableFluid.getFluid().isSame(CMIFluids.LIQUID_MANA.get()))
             return -1;
 
-        KnotEntry entry = KNOTS.get(stack.getItem());
+        KnotEntry entry = getKnots().get(stack.getItem());
         if (entry == null)
             return -1;
 
@@ -72,7 +83,7 @@ public final class KnotFillingLogic {
      * @return the result stack, or {@link ItemStack#EMPTY} if invalid
      */
     public static ItemStack fillIncompleteKnot(ItemStack stack) {
-        KnotEntry entry = KNOTS.get(stack.getItem());
+        KnotEntry entry = getKnots().get(stack.getItem());
         if (entry == null)
             return ItemStack.EMPTY;
 
@@ -103,7 +114,7 @@ public final class KnotFillingLogic {
      * the stack is not a recognised incomplete knot.
      */
     public static float getCreationCost(ItemStack stack) {
-        KnotEntry entry = KNOTS.get(stack.getItem());
+        KnotEntry entry = getKnots().get(stack.getItem());
         return entry != null ? entry.resolvedCreationCost : 0f;
     }
 

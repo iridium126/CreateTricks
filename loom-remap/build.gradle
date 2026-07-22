@@ -65,3 +65,14 @@ artifacts {
         builtBy tasks.named("exportTricksterNamedJar")
     }
 }
+
+// This subproject exists solely to export a remapped Trickster jar via
+// artifact transforms during configuration resolution. Disable every
+// lifecycle task so they never execute alongside root-project tasks.
+gradle.taskGraph.whenReady { graph ->
+    tasks.configureEach { task ->
+        if (task.name != 'exportTricksterNamedJar') {
+            task.enabled = false
+        }
+    }
+}

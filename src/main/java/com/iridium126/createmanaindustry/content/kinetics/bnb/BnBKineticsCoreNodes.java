@@ -2,17 +2,19 @@ package com.iridium126.createmanaindustry.content.kinetics.bnb;
 
 import org.joml.Vector3f;
 
+import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.content.items.KineticsSpellCoreItem;
 
-import dev.enjarai.trickster.block.ModularSpellConstructBlock;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.Container;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
 
 public final class BnBKineticsCoreNodes {
@@ -28,7 +30,11 @@ public final class BnBKineticsCoreNodes {
     }
 
     public static boolean isModularSpellConstructBlock(Block block) {
-        return block instanceof ModularSpellConstructBlock;
+        if (!CreateManaIndustry.TRICKSTER_ACTIVE)
+            return false;
+        var id = BuiltInRegistries.BLOCK.getKey(block);
+        return "trickster".equals(id.getNamespace())
+                && "modular_spell_construct".equals(id.getPath());
     }
 
     public static boolean hasAnyKineticsCore(Level level, BlockPos pos) {
@@ -84,8 +90,10 @@ public final class BnBKineticsCoreNodes {
     }
 
     public static Direction getFacing(BlockState state) {
-        if (state.getBlock() instanceof ModularSpellConstructBlock) {
-            return state.getValue(ModularSpellConstructBlock.FACING);
+        if (!CreateManaIndustry.TRICKSTER_ACTIVE)
+            return Direction.UP;
+        if (isModularSpellConstructBlock(state.getBlock())) {
+            return state.getValue(BlockStateProperties.FACING);
         }
         return Direction.UP;
     }

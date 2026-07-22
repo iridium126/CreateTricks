@@ -12,12 +12,7 @@ import com.simibubi.create.content.kinetics.base.SingleAxisRotatingVisual;
 import com.tterrag.registrate.util.entry.BlockEntityEntry;
 
 public final class CMIBlockEntityTypes {
-    public static final BlockEntityEntry<KineticManaGeneratorBlockEntity> KINETIC_MANA_GENERATOR = REGISTRATE
-            .blockEntity("kinetic_mana_generator", KineticManaGeneratorBlockEntity::new)
-            .visual(() -> KineticManaGeneratorVisual::new, false)
-            .validBlocks(CMIBlocks.KINETIC_MANA_GENERATOR)
-            .renderer(() -> KineticManaGeneratorRenderer::new)
-            .register();
+    public static BlockEntityEntry<KineticManaGeneratorBlockEntity> KINETIC_MANA_GENERATOR;
 
     public static final BlockEntityEntry<KineticAtomizerBlockEntity> KINETIC_ATOMIZER = REGISTRATE
             .blockEntity("kinetic_atomizer", KineticAtomizerBlockEntity::new)
@@ -33,5 +28,14 @@ public final class CMIBlockEntityTypes {
 
     private CMIBlockEntityTypes() {}
 
-    public static void register() {}
+    public static void register() {
+        if (CreateManaIndustry.TRICKSTER_ACTIVE) {
+            KINETIC_MANA_GENERATOR = REGISTRATE
+                    .blockEntity("kinetic_mana_generator", KineticManaGeneratorBlockEntity::new)
+                    .visual(() -> KineticManaGeneratorVisual::new, false)
+                    .validBlocks(CMIBlocks.KINETIC_MANA_GENERATOR)
+                    .renderer(() -> KineticManaGeneratorRenderer::new)
+                    .register();
+        }
+    }
 }

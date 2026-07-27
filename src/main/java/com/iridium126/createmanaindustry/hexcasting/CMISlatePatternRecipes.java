@@ -80,11 +80,11 @@ public final class CMISlatePatternRecipes {
                     CreateManaIndustry.MODID,
                     RECIPE_PREFIX + actionId.getNamespace() + "/" + actionId.getPath());
 
-            ItemStack resultStack = new ItemStack(HexItems.SLATE);
+            ItemStack resultStack = new ItemStack(HexItems.SLATE.get());
             resultStack.set(HexDataComponents.PATTERN, entry.prototype());
 
             StonecutterRecipe recipe = new StonecutterRecipe("",
-                    Ingredient.of(HexItems.SLATE), resultStack);
+                    Ingredient.of(HexItems.SLATE.get()), resultStack);
             result.add(new RecipeHolder<>(recipeId, recipe));
         }
 

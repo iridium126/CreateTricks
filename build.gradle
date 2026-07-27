@@ -67,7 +67,7 @@ repositories {
         }
     }
     ivy {
-        url = uri("https://ci.blamejared.com/job/petrakat/job/Hexcasting/job/1.21/28/artifact/Neoforge/build/libs")
+        url = uri("https://ci.blamejared.com/job/petrakat/job/Hexcasting/job/1.21/35/artifact/Neoforge/build/libs")
         
         patternLayout {
             artifact "[artifact].[ext]"
@@ -204,7 +204,7 @@ dependencies {
     compileOnly "net.createmod.ponder:Ponder-NeoForge-${minecraft_version}:${ponder_version}"
     implementation "maven.modrinth:3KUWeVhG:dqlL6EvF" // Veil
 
-    implementation "hexcasting:hexcasting-neoforge-1.21.1-0.12.0-devel-pre-28@jar"
+    implementation "hexcasting:hexcasting-neoforge-1.21.1-0.12.0-devel-pre-35@jar"
     localRuntime "paucal:paucal-0.7.1-pre-27+1.21.1-neoforge@jar"
     localRuntime "curse.maven:caelus-308989:5694215"
     localRuntime "curse.maven:inline-971167:6556868"

@@ -31,5 +31,8 @@
   "tooltip.createmanaindustry.variable": "Variable",
   "tooltip.createmanaindustry.variable_impact": "Variable Impact",
   "trickster.trick.createmanaindustry.temporary_kinetic_stress": "Kinetic Stress Ploy",
-  "createmanaindustry.bnb_chain.no_core": "This Modular Spell Construct has no kinetics core to link"
+  "createmanaindustry.bnb_chain.no_core": "This Modular Spell Construct has no kinetics core to link",
+  "createmanaindustry.hex.mishap.invalid_block": "The block at %s is not a Depot or Placard",
+  "createmanaindustry.hex.mishap.empty_item": "The Depot or Placard at %s holds no item",
+  "createmanaindustry.hex.mishap.invalid_item": "The item at %s does not hold an Iota"
 }

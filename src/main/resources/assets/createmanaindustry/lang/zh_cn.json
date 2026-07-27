@@ -28,5 +28,9 @@
   "tooltip.createmanaindustry.variable": "可变",
   "tooltip.createmanaindustry.variable_impact": "可变负载",
   "trickster.trick.createmanaindustry.temporary_kinetic_stress": "动力应力戏法",
-  "createmanaindustry.bnb_chain.no_core": "该模块化法术组构台没有动力法术核心可链接"
+  "createmanaindustry.bnb_chain.no_core": "该模块化法术组构台没有动力法术核心可链接",
+  "hexcasting.action.createmanaindustry:read_iota_from_block": "从方块读取 Iota",
+  "createmanaindustry.hex.mishap.invalid_block": "%s 处的方块不是置物台或置物板",
+  "createmanaindustry.hex.mishap.empty_item": "%s 处的置物台或置物板没有放置物品",
+  "createmanaindustry.hex.mishap.invalid_item": "%s 处的物品不含 Iota"
 }

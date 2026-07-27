@@ -36,9 +36,9 @@ public class CMIMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
-        // BnB cogwheel-chain mixins require Bits 'n' Bobs
+        // BnB cogwheel-chain mixins require Bits 'n' Bobs AND Trickster
         if (mixinClassName.contains(".bnb."))
-            return isLoaded(BNB_MOD_ID);
+            return isLoaded(BNB_MOD_ID) && isLoaded(TRICKSTER_MOD_ID);
 
         // Mixins that target Trickster classes — disable when Trickster is absent
         if (mixinClassName.contains("TricksterSpellConstructSync")

@@ -8,6 +8,7 @@ import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.K
 import com.simibubi.create.api.stress.BlockStressValues;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlockEntity;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorTooltipModifier;
+import com.iridium126.createmanaindustry.hexcasting.CMIHexActions;
 import com.iridium126.createmanaindustry.hexcasting.CMISlatePatternRecipes;
 import com.iridium126.createmanaindustry.trickster.KineticStressTrickRegister;
 import com.mojang.logging.LogUtils;
@@ -63,7 +64,7 @@ public class CreateManaIndustry {
 
     public CreateManaIndustry(IEventBus modEventBus, ModContainer modContainer) {
         TRICKSTER_ACTIVE = ModList.get().isLoaded("trickster");
-        BNB_ACTIVE = ModList.get().isLoaded("bits_n_bobs");
+        BNB_ACTIVE = ModList.get().isLoaded("bits_n_bobs") && ModList.get().isLoaded("trickster");
         HEX_ACTIVE = ModList.get().isLoaded("hexcasting");
         VEIL_ACTIVE = ModList.get().isLoaded("veil");
 
@@ -81,6 +82,7 @@ public class CreateManaIndustry {
             KineticStressTrickRegister.register();
         }
         if (HEX_ACTIVE) {
+            CMIHexActions.register(modEventBus);
             NeoForge.EVENT_BUS.addListener(CMISlatePatternRecipes::onServerStarted);
         }
         CMIPartialModels.register();

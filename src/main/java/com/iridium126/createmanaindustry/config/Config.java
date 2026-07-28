@@ -32,8 +32,8 @@ public final class Config {
             .defineInRange("mistMaxRadius", 16, 1, 32);
 
     private static final ModConfigSpec.IntValue MIST_FLUID_PER_TICK = BUILDER
-            .comment("Base fluid amount (mB) consumed per tick when the atomizer is running at 16 RPM. Scales linearly with actual speed.")
-            .defineInRange("mistFluidPerTick", 1, 1, 100);
+            .comment("Base fluid amount (mB) consumed per tick when the atomizer is running at 256 RPM. Scales linearly with actual speed.")
+            .defineInRange("mistFluidPerTick", 8, 1, 1000);
 
     private static final ModConfigSpec.DoubleValue MIST_BASE_CONCENTRATION = BUILDER
             .comment("Base concentration at distance 0 from the atomizer. Used in the formula: concentration = base * (1 - distance / radius).")
@@ -66,7 +66,7 @@ public final class Config {
     public static int mediaPerBucket = 400000;
     public static double kineticStressTrickManaMultiplier = 2.0;
     public static int mistMaxRadius = 16;
-    public static int mistFluidPerTick = 1;
+    public static int mistFluidPerTick = 8;
     public static double mistBaseConcentration = 1.0;
     public static double condenseEfficiency = 5.0;
     public static long cypherMaxMedia = 6400000L;

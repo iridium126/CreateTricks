@@ -1,0 +1,12 @@
+{
+  "name": "hexcasting.entry.createmanaindustry.media_conversion",
+  "category": "hexcasting:createmanaindustry",
+  "icon": "hexcasting:amethyst_dust",
+  "sortnum": 5,
+  "advancement": "hexcasting:root",
+  "pages": [
+    "hexcasting.page.createmanaindustry.media_conversion.1",
+    "hexcasting.page.createmanaindustry.media_conversion.2",
+    "hexcasting.page.createmanaindustry.media_conversion.3"
+  ]
+}

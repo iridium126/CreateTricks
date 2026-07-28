@@ -137,7 +137,7 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
             }
             currentRadius = newRadius;
 
-            float speedFactor = absSpeed / 16f;
+            float speedFactor = absSpeed / 256f;
             int toConsume = Math.max(1, (int) (Config.mistFluidPerTick * speedFactor));
             FluidStack drained = tank.drain(toConsume, IFluidHandler.FluidAction.EXECUTE);
             if (!drained.isEmpty())

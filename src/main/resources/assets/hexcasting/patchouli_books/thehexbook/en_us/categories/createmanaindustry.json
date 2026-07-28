@@ -1,0 +1,8 @@
+{
+  "name": "hexcasting.category.createmanaindustry",
+  "icon": "createmanaindustry:kinetic_atomizer",
+  "description": "hexcasting.category.createmanaindustry.desc",
+  "sortnum": 98,
+
+  "flag": "mod:createmanaindustry"
+}

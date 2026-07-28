@@ -1,0 +1,12 @@
+{
+  "name": "hexcasting.entry.createmanaindustry.slate_stonecutting",
+  "category": "hexcasting:createmanaindustry",
+  "icon": "hexcasting:slate",
+  "sortnum": 4,
+  "advancement": "hexcasting:root",
+  "pages": [
+    "hexcasting.page.createmanaindustry.slate_stonecutting.1",
+    "hexcasting.page.createmanaindustry.slate_stonecutting.2",
+    "hexcasting.page.createmanaindustry.slate_stonecutting.3"
+  ]
+}

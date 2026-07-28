@@ -106,13 +106,13 @@ config="${mod_id}.mixins.json"
 [[dependencies.${mod_id}]]
     modId="hexcasting"
     type="optional"
-    versionRange="[0.12.0-devel-pre-23,)"
+    versionRange="[0.12.0-devel-pre-30,)"
     ordering="AFTER"
     side="BOTH"
 
 [[dependencies.${mod_id}]]
     modId="veil"
     type="optional"
-    versionRange="[4.3.0,)"
+    versionRange="[4.1.4,)"
     ordering="AFTER"
     side="BOTH"

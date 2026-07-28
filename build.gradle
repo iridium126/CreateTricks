@@ -37,6 +37,7 @@ repositories {
     // Add here additional repositories if required by some of the dependencies below.
     mavenLocal()
     maven { url = "https://cursemaven.com" }
+    maven { url = "https://maven.blamejared.com" }
     // Make sure to add this to the pluginManagement.repositories block in settings.gradle as well
     maven {
         name = "Sinytra"
@@ -203,6 +204,7 @@ dependencies {
     compileOnly "com.tterrag.registrate:Registrate:${registrate_version}"
     compileOnly "net.createmod.ponder:Ponder-NeoForge-${minecraft_version}:${ponder_version}"
     implementation "maven.modrinth:3KUWeVhG:dqlL6EvF" // Veil
+    implementation "mezz.jei:jei-${minecraft_version}-neoforge:${jei_version}"
 
     implementation "hexcasting:hexcasting-neoforge-1.21.1-0.12.0-devel-pre-35@jar"
     localRuntime "paucal:paucal-0.7.1-pre-27+1.21.1-neoforge@jar"
@@ -225,8 +227,7 @@ dependencies {
     compileOnly "org.sinytra:connector:2.0.0-beta.12+1.21.1"
     additionalRuntimeClasspath "org.sinytra:connector:2.0.0-beta.12+1.21.1"
     // Add FFAPI dependency
-    compileOnly "curse.maven:forgified-fabric-api-889079:7658611"
-    runtimeOnly "curse.maven:forgified-fabric-api-889079:7658611"
+    implementation "curse.maven:forgified-fabric-api-889079:7658611"
     // Compile-time deps for Trickster's transitive dependencies (needed for remapped jar)
     compileOnly "net.fabricmc.fabric-api:fabric-api:0.102.0+1.21.1"
     compileOnly "io.vavr:vavr:0.10.4"

@@ -1,6 +1,13 @@
 {
   "createmanaindustry.display_target.argument": "法术参数 %1$s",
   "createmanaindustry.display_target.modular_argument": "法术核心 %1$s，法术参数 %2$s",
+
+  "createmanaindustry.recipe.heated_compacting": "加热辊压",
+  "createmanaindustry.recipe.mist_compacting": "雾气辊压",
+  "createmanaindustry.recipe.mist_mixing": "雾气搅拌",
+  "createmanaindustry.jei.mist_requirement": "需要雾气：%1$s（浓度 ≥ %2$s）",
+  "createmanaindustry.jei.mist_output": "产出雾气：%1$s（半径：%2$s，量：%3$s mB，持续：%4$s tick）",
+
   "block.createmanaindustry.condenser": "冷凝管",
   "block.createmanaindustry.kinetic_atomizer": "动力雾化器",
   "block.createmanaindustry.kinetic_mana_generator": "动力注魔台",
@@ -38,7 +45,7 @@
   "hexcasting.category.createmanaindustry.desc": "在工业化的$(thing)机械动力/$与$(hex)咒法学/$之间架起桥梁，实现$(item)施法物品/$、$(item)媒质之瓶/$等的自动化生产。",
 
   "hexcasting.entry.createmanaindustry.liquid_media": "液态媒质",
-  "hexcasting.page.createmanaindustry.liquid_media.1": "通过对$(l:items/amethyst)$(item)紫水晶/$施加机械力与热能，我发现了将其中蕴含的媒质直接提取为液态的方法。这种$(media)散发粉色光芒的液体/$相比原始紫水晶能量密度极高——一桶约含$(thing)400,000/$媒质单位，足以充满数个$(l:items/hexcasting)$(item)杂件/$。",
+  "hexcasting.page.createmanaindustry.liquid_media.1": "通过对$(l:items/amethyst)$(item)紫水晶/$施加机械力与热能，我发现了将其中蕴含的媒质直接提取为液态的方法。这种$(media)散发浅紫色光芒的液体/$相比原始紫水晶能量密度极高——一桶约含$(thing)400,000/$媒质单位，足以充满数个$(l:items/hexcasting)$(item)杂件/$。",
   "hexcasting.page.createmanaindustry.liquid_media.2": "$(media)液态媒质/$是一种$(thing)机械动力流体/$，将原始咒法学媒质凝聚为可通过$(thing)流体管道/$运输的形式。它发出柔和的浅紫色光芒，在储罐与盆中极易识别。",
   "hexcasting.page.createmanaindustry.liquid_media.3": "$(thing)加热辊压/$可将紫水晶材料直接转化为$(media)液态媒质/$：$(br)$(li)$(item)紫水晶粉/$——25 mB$(br)$(li)$(item)紫水晶碎片/$——125 mB$(br)$(li)$(item)充能紫水晶/$——250 mB$(br2)辊压过程需要$(thing)热量/$；普通的$(item)烈焰人燃烧室/$即可满足需求。各配方产量会根据$(thing)配置文件/$动态调整。",
   "hexcasting.page.createmanaindustry.liquid_media.4": "$(media)液态媒质/$可进一步加工：$(br)$(li)$(thing)加热搅拌/$将其转化为$(item)液态魔力/$，比例为1:1。$(br)$(li)在$(item)动力雾化器/$中进行$(thing)雾化搅拌/$，将$(item)液态魔力/$重新雾化为$(media)液态媒质/$场。$(br)$(li)$(item)冷凝管/$置于雾场中可将其回收为可用的$(media)液态媒质/$，完成循环回路。",
@@ -55,7 +62,7 @@
   "hexcasting.page.createmanaindustry.media_batteries.3": "定型后的$(item)媒质之瓶/$可通过机械动力的$(thing)流体管道/$直接$(thing)填充/$或$(thing)抽取/$$(media)液态媒质/$——将其放在$(thing)置物台/$、传送带或分液池上即可作为$(thing)媒质缓冲器/$，在自动化咒法学系统中平衡媒质供需。",
 
   "hexcasting.entry.createmanaindustry.read_iota_from_block": "从方块读取 Iota",
-  "hexcasting.page.createmanaindustry.read_iota_from_block.1": "我研发了一种图案，可以无需拿起物品，直接从置于机械动力$(item)置物台/$或$(item)置物板/$上的物品中读取$(thing)Iota/$。这打通了物理物品操作与抽象_咒法学之间的桥梁。$(br2)它消耗一个$(thing)向量/$——方块坐标——并将存储的$(thing)Iota/$推入栈中。$(br2)此图案的施放消耗为$(thing)0 媒质/$——仅是一次简单的信息读取。",
+  "hexcasting.page.createmanaindustry.read_iota_from_block.1": "我研发了一种图案，可以无需拿起物品，直接从置于机械动力$(item)置物台/$或$(item)置物板/$上的物品中读取$(thing)Iota/$。这打通了物理物品操作与咒法学之间的桥梁。$(br2)它消耗一个$(thing)向量/$——方块坐标——并将存储的$(thing)Iota/$推入栈中。$(br2)此图案的施放消耗为$(thing)0 媒质/$——仅是一次简单的信息读取。",
   "hexcasting.page.createmanaindustry.read_iota_from_block.2": "若目标方块不是置物台或置物板、方块上没有物品、或物品不含 Iota，则法术将以$(thing)事故/$告终——错误信息中会报告目标位置以便调试。",
   "hexcasting.page.createmanaindustry.read_iota_from_block.3": "此图案也可通过$(thing)切石/$方式施加到$(l:items/slate)$(item)空白石板/$上——只需将空白石板放入$(thing)切石机/$，从列表中选择$(action)从方块读取 Iota/$即可。$(br2)详见$(l:createmanaindustry/slate_stonecutting)$(thing)石板图案切石/$条目。",
 

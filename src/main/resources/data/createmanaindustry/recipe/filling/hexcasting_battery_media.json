@@ -2,7 +2,7 @@
   "type": "create:filling",
   "ingredients": [
     { "item": "createmanaindustry:incomplete_media_battery" },
-    { "type": "neoforge:single", "amount": 1, "fluid": "createmanaindustry:liquid_media" }
+    { "type": "neoforge:single", "amount": 1000, "fluid": "createmanaindustry:liquid_media" }
   ],
   "results": [
     { "id": "createmanaindustry:incomplete_media_battery" }

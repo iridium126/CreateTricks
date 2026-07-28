@@ -106,7 +106,7 @@ config="${mod_id}.mixins.json"
 [[dependencies.${mod_id}]]
     modId="hexcasting"
     type="optional"
-    versionRange="[0.12.0-devel-pre-30,)"
+    versionRange="[0.12.0-devel-pre-35,)"
     ordering="AFTER"
     side="BOTH"
 

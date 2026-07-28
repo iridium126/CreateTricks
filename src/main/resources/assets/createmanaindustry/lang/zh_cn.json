@@ -38,8 +38,8 @@
   "hexcasting.category.createmanaindustry.desc": "在工业化的$(thing)机械动力/$与$(hex)咒法学/$之间架起桥梁，实现$(item)施法物品/$、$(item)媒质之瓶/$等的自动化生产。",
 
   "hexcasting.entry.createmanaindustry.liquid_media": "液态媒质",
-  "hexcasting.page.createmanaindustry.liquid_media.1": "通过对$(l:items/amethyst)$(item)紫水晶/$施加机械力与热能，我发现了将其中蕴含的_媒质直接提取为液态的方法。这种$(media)散发粉色光芒的液体/$相比原始紫水晶能量密度极高——一桶约含$(thing)400,000/$媒质单位，足以充满数个$(l:items/hexcasting)$(item)杂件/$。",
-  "hexcasting.page.createmanaindustry.liquid_media.2": "$(media)液态媒质/$是一种$(thing)机械动力流体/$，将原始咒法学_媒质凝聚为可通过$(thing)流体管道/$运输的形式。它发出柔和的浅紫色光芒，在储罐与盆中极易识别。",
+  "hexcasting.page.createmanaindustry.liquid_media.1": "通过对$(l:items/amethyst)$(item)紫水晶/$施加机械力与热能，我发现了将其中蕴含的媒质直接提取为液态的方法。这种$(media)散发粉色光芒的液体/$相比原始紫水晶能量密度极高——一桶约含$(thing)400,000/$媒质单位，足以充满数个$(l:items/hexcasting)$(item)杂件/$。",
+  "hexcasting.page.createmanaindustry.liquid_media.2": "$(media)液态媒质/$是一种$(thing)机械动力流体/$，将原始咒法学媒质凝聚为可通过$(thing)流体管道/$运输的形式。它发出柔和的浅紫色光芒，在储罐与盆中极易识别。",
   "hexcasting.page.createmanaindustry.liquid_media.3": "$(thing)加热辊压/$可将紫水晶材料直接转化为$(media)液态媒质/$：$(br)$(li)$(item)紫水晶粉/$——25 mB$(br)$(li)$(item)紫水晶碎片/$——125 mB$(br)$(li)$(item)充能紫水晶/$——250 mB$(br2)辊压过程需要$(thing)热量/$；普通的$(item)烈焰人燃烧室/$即可满足需求。各配方产量会根据$(thing)配置文件/$动态调整。",
   "hexcasting.page.createmanaindustry.liquid_media.4": "$(media)液态媒质/$可进一步加工：$(br)$(li)$(thing)加热搅拌/$将其转化为$(item)液态魔力/$，比例为1:1。$(br)$(li)在$(item)动力雾化器/$中进行$(thing)雾化搅拌/$，将$(item)液态魔力/$重新雾化为$(media)液态媒质/$场。$(br)$(li)$(item)冷凝管/$置于雾场中可将其回收为可用的$(media)液态媒质/$，完成循环回路。",
 
@@ -47,7 +47,7 @@
   "hexcasting.page.createmanaindustry.automating_casting_items.1": "$(l:items/hexcasting)$(thing)施法物品/$——$(item)杂件/$、$(item)缀品/$与$(item)造物/$——的生产可通过机械动力的$(thing)机械手/$、$(thing)注液器/$与$(thing)动力辊压机/$实现全自动化三步骤流水线。成品与手工制作无异。",
   "hexcasting.page.createmanaindustry.automating_casting_items.2": "$(bold)第一步：写入图案/$ - 将$(l:items/scroll)$(thing)含 Iota 物品/$（$(item)卷轴/$、$(item)法术书/$、$(item)算盘/$、$(item)石板/$或$(item)核心/$）放入朝向$(thing)置物台/$上崭新施法物品的$(thing)机械手/$中。机械手将物品中的一个图案复制到物品上，生成$(thing)未完成/$变体。多次操作可追加多个 Iota。$(br2)手持物品不会被消耗。",
   "hexcasting.page.createmanaindustry.automating_casting_items.3": "$(bold)第二步：填充媒质/$ - $(thing)注液器/$将$(l:createmanaindustry/liquid_media)$(media)液态媒质/$泵入未完成物品。各物品最大容量：$(br)$(li)$(item)杂件/$——6,400,000 媒质$(br)$(li)$(item)缀品/$——64,000,000 媒质$(br)$(li)$(item)造物/$——640,000,000 媒质$(br2)每次注液操作至多填充一桶媒质。多次操作可填满。容量可在配置文件中调整。",
-  "hexcasting.page.createmanaindustry.automating_casting_items.4": "$(bold)第三步：定型/$ - $(thing)动力辊压机/$将载有图案、充满媒质的未完成物品压制为成品。所有积累的$(thing)Iota/$、$(action)图案/$、_媒质与$(item)颜料/$均完整转移，产出可直接用于$(l:casting/101)$(action)施法/$的完整施法物品。",
+  "hexcasting.page.createmanaindustry.automating_casting_items.4": "$(bold)第三步：定型/$ - $(thing)动力辊压机/$将载有图案、充满媒质的未完成物品压制为成品。所有积累的$(thing)Iota/$、$(action)图案/$、媒质与$(item)颜料/$均完整转移，产出可直接用于$(l:casting/101)$(action)施法/$的完整施法物品。",
 
   "hexcasting.entry.createmanaindustry.media_batteries": "媒质之瓶序列装配",
   "hexcasting.page.createmanaindustry.media_batteries.1": "$(l:greatwork/spellcircles#hexcasting:craft/battery)$(action)媒质之瓶/$可通过机械动力自动化批量生产。将刻有$(action)制作试剂瓶/$图案的$(item)远古卷轴/$放入$(thing)机械手/$中，与$(thing)置物台/$上的$(item)玻璃瓶/$组合，即可创建$(thing)未完成媒质之瓶/$。$(br2)卷轴必须携带正确的图案——否则制作将被拒绝。",

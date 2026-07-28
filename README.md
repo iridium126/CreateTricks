@@ -105,7 +105,7 @@ spell-casting item production, and more — all through Create's mechanical syst
 
 ## Configuration
 
-All values are in the server config (`createmanaindustry-server.toml`):
+All values are in the common config (`createmanaindustry-common.toml`):
 
 | Key | Default | Description |
 |---|---|---|

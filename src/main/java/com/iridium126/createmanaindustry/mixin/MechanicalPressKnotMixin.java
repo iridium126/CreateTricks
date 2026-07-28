@@ -37,10 +37,12 @@ public class MechanicalPressKnotMixin {
         RecipeApplier.applyRecipeOn(entity, recipe, respectChances);
         ItemStack result = entity.getItem();
 
-        // Knot mana transfer
-        ItemStack knotResult = TricksterManaAccess.applyKnotTransfer(entity.level(), inputCopy, result);
-        if (knotResult != result) {
-            entity.setItem(knotResult);
+        // Knot mana transfer (only when Trickster is present)
+        if (CreateManaIndustry.TRICKSTER_ACTIVE) {
+            ItemStack knotResult = TricksterManaAccess.applyKnotTransfer(entity.level(), inputCopy, result);
+            if (knotResult != result) {
+                entity.setItem(knotResult);
+            }
         }
 
         // Hex item data transfer (only when Hexcasting is present)
@@ -63,10 +65,12 @@ public class MechanicalPressKnotMixin {
         for (int i = 0; i < results.size(); i++) {
             ItemStack result = results.get(i);
 
-            // Knot mana transfer
-            ItemStack knotResult = TricksterManaAccess.applyKnotTransfer(level, inputCopy, result);
-            if (knotResult != result) {
-                result = knotResult;
+            // Knot mana transfer (only when Trickster is present)
+            if (CreateManaIndustry.TRICKSTER_ACTIVE) {
+                ItemStack knotResult = TricksterManaAccess.applyKnotTransfer(level, inputCopy, result);
+                if (knotResult != result) {
+                    result = knotResult;
+                }
             }
 
             // Hex item data transfer (only when Hexcasting is present)

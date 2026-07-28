@@ -2,6 +2,7 @@ package com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator;
 
 import java.util.List;
 
+import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.config.Config;
 import com.iridium126.createmanaindustry.trickster.TricksterManaAccess;
 import com.simibubi.create.content.kinetics.simpleRelays.SimpleKineticBlockEntity;
@@ -69,8 +70,10 @@ public class KineticManaGeneratorBlockEntity extends SimpleKineticBlockEntity {
         if (mana <= 0)
             return;
 
-        BlockPos outputPos = KineticManaGeneratorBlock.getManaOutputPos(getBlockState(), worldPosition);
-        TricksterManaAccess.chargeKnotsAt((ServerLevel) level, outputPos, mana);
+        if (CreateManaIndustry.TRICKSTER_ACTIVE) {
+            BlockPos outputPos = KineticManaGeneratorBlock.getManaOutputPos(getBlockState(), worldPosition);
+            TricksterManaAccess.chargeKnotsAt((ServerLevel) level, outputPos, mana);
+        }
     }
 
     public int getStressPerRpm() {

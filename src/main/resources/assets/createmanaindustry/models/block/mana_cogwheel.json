@@ -24,6 +24,10 @@
 		},
 		{
 			"name": "Gear",
+            "neoforge_data": {
+                "block_light": 15,
+                "sky_light": 15
+            },
 			"from": [-1, 6.5, 6.5],
 			"to": [17, 9.5, 9.5],
 			"faces": {
@@ -37,9 +41,12 @@
 		},
 		{
 			"name": "Gear2",
+            "neoforge_data": {
+                "block_light": 15,
+                "sky_light": 15
+            },
 			"from": [-1, 6.5, 6.5],
 			"to": [17, 9.5, 9.5],
-			"neoforge_data": {"calculate_normals": true},
 			"rotation": {"angle": 45, "axis": "y", "origin": [8, 8, 8]},
 			"faces": {
 				"north": {"uv": [7, 8, 16, 9.5], "texture": "#1_2"},
@@ -52,9 +59,12 @@
 		},
 		{
 			"name": "Gear3",
+            "neoforge_data": {
+                "block_light": 15,
+                "sky_light": 15
+            },
 			"from": [-1, 6.5, 6.5],
 			"to": [17, 9.5, 9.5],
-			"neoforge_data": {"calculate_normals": true},
 			"rotation": {"angle": -45, "axis": "y", "origin": [8, 8, 8]},
 			"faces": {
 				"north": {"uv": [7, 8, 16, 9.5], "texture": "#1_2"},
@@ -67,6 +77,10 @@
 		},
 		{
 			"name": "Gear4",
+            "neoforge_data": {
+                "block_light": 15,
+                "sky_light": 15
+            },
 			"from": [6.5, 6.5, -1],
 			"to": [9.5, 9.5, 17],
 			"faces": {
@@ -80,6 +94,10 @@
 		},
 		{
 			"name": "GearCaseInner",
+            "neoforge_data": {
+                "block_light": 15,
+                "sky_light": 15
+            },
 			"from": [2, 6.55, 2],
 			"to": [14, 9.45, 14],
 			"faces": {
@@ -93,6 +111,10 @@
 		},
 		{
 			"name": "GearCaseOuter",
+            "neoforge_data": {
+                "block_light": 15,
+                "sky_light": 15
+            },
 			"from": [4, 6, 4],
 			"to": [12, 10, 12],
 			"faces": {

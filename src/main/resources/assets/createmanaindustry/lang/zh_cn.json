@@ -9,6 +9,8 @@
   "createmanaindustry.jei.mist_output": "产出雾气：%1$s（半径：%2$s，量：%3$s mB，持续：%4$s tick）",
 
   "block.createmanaindustry.mana_cogwheel": "魔力齿轮",
+  "block.createmanaindustry.andesite_encased_mana_cogwheel": "安山机壳魔力齿轮",
+  "block.createmanaindustry.brass_encased_mana_cogwheel": "黄铜机壳魔力齿轮",
   "block.createmanaindustry.condenser": "冷凝管",
   "block.createmanaindustry.kinetic_atomizer": "动力雾化器",
   "block.createmanaindustry.kinetic_mana_generator": "动力注魔台",

@@ -5,10 +5,12 @@ import static com.iridium126.createmanaindustry.CreateManaIndustry.REGISTRATE;
 import com.iridium126.createmanaindustry.content.fluids.condenser.CondenserBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlock;
+import com.iridium126.createmanaindustry.content.kinetics.manacogwheel.EncasedManaCogwheelBlock;
 import com.iridium126.createmanaindustry.content.kinetics.manacogwheel.ManaCogwheelBlock;
 import com.iridium126.createmanaindustry.content.kinetics.manacogwheel.ManaCogwheelBlockItem;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.AllItems;
+import com.simibubi.create.content.decoration.encasing.EncasingRegistry;
 import com.simibubi.create.content.kinetics.simpleRelays.BracketedKineticBlockModel;
 import com.simibubi.create.foundation.data.BlockStateGen;
 import com.simibubi.create.foundation.data.CreateRegistrate;
@@ -89,6 +91,28 @@ public final class CMIBlocks {
 					.save(p, CreateManaIndustry.modLoc(c.getName()));
 			})
             .build()
+            .register();
+
+    public static final BlockEntry<EncasedManaCogwheelBlock> ANDESITE_ENCASED_MANA_COGWHEEL = REGISTRATE
+            .block("andesite_encased_mana_cogwheel",
+                    p -> new EncasedManaCogwheelBlock(p, AllBlocks.ANDESITE_CASING::get))
+            .initialProperties(() -> Blocks.IRON_BLOCK)
+            .properties(p -> p.noOcclusion().mapColor(MapColor.PODZOL))
+            .transform(CMIStress.setNoImpact())
+            .transform(EncasingRegistry.addVariantTo(CMIBlocks.MANA_COGWHEEL))
+            .loot((p, lb) -> p.dropOther(lb, CMIBlocks.MANA_COGWHEEL.get()))
+            .transform(TagGen.axeOrPickaxe())
+            .register();
+
+    public static final BlockEntry<EncasedManaCogwheelBlock> BRASS_ENCASED_MANA_COGWHEEL = REGISTRATE
+            .block("brass_encased_mana_cogwheel",
+                    p -> new EncasedManaCogwheelBlock(p, AllBlocks.BRASS_CASING::get))
+            .initialProperties(() -> Blocks.IRON_BLOCK)
+            .properties(p -> p.noOcclusion().mapColor(MapColor.TERRACOTTA_BROWN))
+            .transform(CMIStress.setNoImpact())
+            .transform(EncasingRegistry.addVariantTo(CMIBlocks.MANA_COGWHEEL))
+            .loot((p, lb) -> p.dropOther(lb, CMIBlocks.MANA_COGWHEEL.get()))
+            .transform(TagGen.axeOrPickaxe())
             .register();
 
     private CMIBlocks() {

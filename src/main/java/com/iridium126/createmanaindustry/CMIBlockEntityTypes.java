@@ -10,6 +10,7 @@ import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.K
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorVisual;
 import com.iridium126.createmanaindustry.content.kinetics.manacogwheel.ManaCogwheelBlockEntity;
 import com.iridium126.createmanaindustry.content.kinetics.manacogwheel.ManaCogwheelRenderer;
+import com.iridium126.createmanaindustry.content.kinetics.manacogwheel.ManaCogwheelVisual;
 import com.simibubi.create.content.kinetics.base.SingleAxisRotatingVisual;
 import com.tterrag.registrate.util.entry.BlockEntityEntry;
 
@@ -30,8 +31,10 @@ public final class CMIBlockEntityTypes {
 
     public static final BlockEntityEntry<ManaCogwheelBlockEntity> MANA_COGWHEEL = REGISTRATE
             .blockEntity("mana_cogwheel", ManaCogwheelBlockEntity::new)
-            .visual(() -> SingleAxisRotatingVisual.of(CMIPartialModels.MANA_COGWHEEL), false)
-            .validBlocks(CMIBlocks.MANA_COGWHEEL)
+            .visual(() -> ManaCogwheelVisual::create, false)
+            .validBlocks(CMIBlocks.MANA_COGWHEEL,
+                    CMIBlocks.ANDESITE_ENCASED_MANA_COGWHEEL,
+                    CMIBlocks.BRASS_ENCASED_MANA_COGWHEEL)
             .renderer(() -> ManaCogwheelRenderer::new)
             .register();
 

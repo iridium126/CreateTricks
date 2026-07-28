@@ -1,11 +1,11 @@
 {
   "parent": "minecraft:recipes/root",
   "criteria": {
-    "has_pipe": {
+    "has_liquid_mana": {
       "conditions": {
         "items": [
           {
-            "items": "create:fluid_pipe"
+            "items": "createmanaindustry:liquid_mana_bucket"
           }
         ]
       },
@@ -13,7 +13,7 @@
     },
     "has_the_recipe": {
       "conditions": {
-        "recipe": "createmanaindustry:condenser"
+        "recipe": "createmanaindustry:mana_cogwheel"
       },
       "trigger": "minecraft:recipe_unlocked"
     }
@@ -21,12 +21,12 @@
   "requirements": [
     [
       "has_the_recipe",
-      "has_pipe"
+      "has_liquid_mana"
     ]
   ],
   "rewards": {
     "recipes": [
-      "createmanaindustry:condenser"
+      "createmanaindustry:mana_cogwheel"
     ]
   }
 }

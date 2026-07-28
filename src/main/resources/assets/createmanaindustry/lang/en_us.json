@@ -8,6 +8,7 @@
   "createmanaindustry.jei.mist_requirement": "Requires mist of %1$s (≥ %2$s)",
   "createmanaindustry.jei.mist_output": "Emits mist of %1$s (radius: %2$s, amount: %3$s mB, duration: %4$s ticks)",
 
+  "block.createmanaindustry.mana_cogwheel": "Mana Cogwheel",
   "block.createmanaindustry.kinetic_atomizer": "Kinetic Atomizer",
   "block.createmanaindustry.kinetic_mana_generator": "Kinetic Mana Generator",
   "block.createmanaindustry.condenser": "Condenser",

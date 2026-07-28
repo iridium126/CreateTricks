@@ -2,6 +2,7 @@
   "values": [
     "createmanaindustry:kinetic_atomizer",
     "createmanaindustry:condenser",
+    "createmanaindustry:mana_cogwheel",
     "createmanaindustry:kinetic_mana_generator"
   ]
 }

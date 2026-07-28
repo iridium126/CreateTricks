@@ -15,6 +15,7 @@ public final class CMIPartialModels {
     public static final PartialModel STRESSED_SHAFT_HALF = block("temporary_stress/shaft_half");
     public static final PartialModel STRESSED_SHAFT = block("temporary_stress/shaft");
     public static final PartialModel STRESSED_COGWHEEL = block("temporary_stress/cogwheel");
+    public static final PartialModel MANA_COGWHEEL = block("mana_cogwheel");
 
     private CMIPartialModels() {}
 

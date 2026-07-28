@@ -8,6 +8,7 @@
   "createmanaindustry.jei.mist_requirement": "需要雾气：%1$s（浓度 ≥ %2$s）",
   "createmanaindustry.jei.mist_output": "产出雾气：%1$s（半径：%2$s，量：%3$s mB，持续：%4$s tick）",
 
+  "block.createmanaindustry.mana_cogwheel": "魔力齿轮",
   "block.createmanaindustry.condenser": "冷凝管",
   "block.createmanaindustry.kinetic_atomizer": "动力雾化器",
   "block.createmanaindustry.kinetic_mana_generator": "动力注魔台",

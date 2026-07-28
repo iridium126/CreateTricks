@@ -2,20 +2,17 @@
   "type": "minecraft:crafting_shaped",
   "category": "misc",
   "key": {
-    "C": {
-      "item": "minecraft:copper_block"
-    },
-    "I": {
-      "item": "minecraft:copper_ingot"
-    },
     "P": {
       "item": "create:fluid_pipe"
+    },
+    "S": {
+      "item": "create:copper_sheet"
     }
   },
   "pattern": [
-    " I ",
-    "PCP",
-    " I "
+    "SSS",
+    "SPS",
+    "SSS"
   ],
   "result": {
     "count": 1,

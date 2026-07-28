@@ -5,9 +5,13 @@ import static com.iridium126.createmanaindustry.CreateManaIndustry.REGISTRATE;
 import com.iridium126.createmanaindustry.content.fluids.condenser.CondenserBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlock;
+import com.iridium126.createmanaindustry.content.kinetics.manacogwheel.ManaCogwheelBlock;
+import com.iridium126.createmanaindustry.content.kinetics.manacogwheel.ManaCogwheelBlockItem;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.AllItems;
+import com.simibubi.create.content.kinetics.simpleRelays.BracketedKineticBlockModel;
 import com.simibubi.create.foundation.data.BlockStateGen;
+import com.simibubi.create.foundation.data.CreateRegistrate;
 import com.simibubi.create.foundation.data.ModelGen;
 import com.simibubi.create.foundation.data.TagGen;
 import com.iridium126.createmanaindustry.config.CMIStress;
@@ -19,6 +23,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.material.MapColor;
 import net.minecraft.data.recipes.RecipeCategory;
 import net.minecraft.data.recipes.ShapedRecipeBuilder;
+import net.minecraft.data.recipes.ShapelessRecipeBuilder;
 
 public final class CMIBlocks {
     public static BlockEntry<KineticManaGeneratorBlock> KINETIC_MANA_GENERATOR;
@@ -27,7 +32,7 @@ public final class CMIBlocks {
             .block("kinetic_atomizer", KineticAtomizerBlock::new)
             .initialProperties(() -> Blocks.IRON_BLOCK)
             .properties(p -> p.noOcclusion()
-                .mapColor(MapColor.TERRACOTTA_YELLOW))
+                .mapColor(MapColor.COLOR_YELLOW))
             .blockstate(BlockStateGen.directionalBlockProvider(true))
             .transform(TagGen.pickaxeOnly())
             .transform(CMIStress.setImpact(4.0))
@@ -57,15 +62,33 @@ public final class CMIBlocks {
             .transform(ModelGen.customItemModel())
             .recipe((c, p) -> {
                 ShapedRecipeBuilder.shaped(RecipeCategory.MISC, c.get())
-                        .define('I', Items.COPPER_INGOT)
+                        .define('S', AllItems.COPPER_SHEET)
                         .define('P', AllBlocks.FLUID_PIPE.asItem())
-                        .define('C', Items.COPPER_BLOCK)
-                        .pattern(" I ")
-                        .pattern("PCP")
-                        .pattern(" I ")
-                        .unlockedBy("has_copper", RegistrateRecipeProvider.has(Items.COPPER_INGOT))
+                        .pattern("SSS")
+                        .pattern("SPS")
+                        .pattern("SSS")
+                        .unlockedBy("has_pipe", RegistrateRecipeProvider.has(AllBlocks.FLUID_PIPE.asItem()))
                         .save(p, CreateManaIndustry.modLoc(c.getName()));
             })
+            .register();
+
+    public static final BlockEntry<ManaCogwheelBlock> MANA_COGWHEEL = REGISTRATE
+            .block("mana_cogwheel", ManaCogwheelBlock::new)
+            .initialProperties(() -> Blocks.IRON_BLOCK)
+            .properties(p -> p.mapColor(MapColor.COLOR_LIGHT_BLUE))
+            .transform(CMIStress.setCapacity(8.0))
+            .transform(TagGen.axeOrPickaxe())
+            .blockstate(BlockStateGen.axisBlockProvider(false))
+            .onRegister(CreateRegistrate.blockModel(() -> BracketedKineticBlockModel::new))
+            .item(ManaCogwheelBlockItem::new)
+            .recipe((c, p) -> {
+				ShapelessRecipeBuilder.shapeless(RecipeCategory.MISC, c.get())
+					.requires(AllBlocks.COGWHEEL.asItem())
+					.requires(CMIFluids.LIQUID_MANA.getBucket().get())
+					.unlockedBy("has_liquid_mana", RegistrateRecipeProvider.has(CMIFluids.LIQUID_MANA.getBucket().get()))
+					.save(p, CreateManaIndustry.modLoc(c.getName()));
+			})
+            .build()
             .register();
 
     private CMIBlocks() {
@@ -76,7 +99,7 @@ public final class CMIBlocks {
             KINETIC_MANA_GENERATOR = REGISTRATE
                     .block("kinetic_mana_generator", KineticManaGeneratorBlock::new)
                     .initialProperties(() -> Blocks.IRON_BLOCK)
-                    .properties(p -> p.mapColor(MapColor.TERRACOTTA_YELLOW))
+                    .properties(p -> p.mapColor(MapColor.COLOR_YELLOW))
                     .blockstate(BlockStateGen.directionalBlockProvider(true))
                     .transform(TagGen.pickaxeOnly())
                     .item()

@@ -4,13 +4,11 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.iridium126.createmanaindustry.config.Config;
-import com.iridium126.createmanaindustry.content.fluids.condenser.CondenserBlock;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.fluids.FluidStack;
 
 /**
@@ -94,10 +92,6 @@ public final class MistFieldStore {
     /** Combined query — avoids double iteration over both maps. */
     private static DominantResult getDominant(Level level, BlockPos pos) {
         if (level == null || pos == null)
-            return DominantResult.NONE;
-
-        BlockState state = level.getBlockState(pos);
-        if (!state.isAir() && !(state.getBlock() instanceof CondenserBlock))
             return DominantResult.NONE;
 
         ResourceKey<Level> dim = level.dimension();

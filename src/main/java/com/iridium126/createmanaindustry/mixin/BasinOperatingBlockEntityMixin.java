@@ -23,9 +23,9 @@ public class BasinOperatingBlockEntityMixin {
             return;
         // heated_compacting always takes priority over all other recipe types,
         // regardless of ingredient count. Among the rest, more ingredients first.
+        var heatedType = CMIRecipeTypes.HEATED_COMPACTING.getType();
         list.sort(
-                Comparator.<Recipe<?>, Boolean>comparing(
-                        r -> r.getType() != CMIRecipeTypes.HEATED_COMPACTING.getType())
+                Comparator.<Recipe<?>, Boolean>comparing(r -> r.getType() != heatedType)
                         .thenComparing(Comparator.<Recipe<?>, Integer>comparing(
                                 r -> r.getIngredients().size()).reversed()));
     }

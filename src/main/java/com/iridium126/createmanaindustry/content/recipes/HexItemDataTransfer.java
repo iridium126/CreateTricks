@@ -13,7 +13,6 @@ import com.iridium126.createmanaindustry.content.items.IncompleteMediaBatteryIte
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.Level;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -46,7 +45,7 @@ public final class HexItemDataTransfer {
      * @return the output stack with data applied, or the original output
      *         if no transfer was needed
      */
-    public static ItemStack applyPressTransfer(Level level, ItemStack input, ItemStack output) {
+    public static ItemStack applyPressTransfer(ItemStack input, ItemStack output) {
         // Case 1: IncompleteHexItem → HexHolderItem (cypher/trinket/artifact)
         if (input.getItem() instanceof IncompleteHexItem hexItem) {
             if (output.getItem() instanceof HexHolderItem outputHolder) {

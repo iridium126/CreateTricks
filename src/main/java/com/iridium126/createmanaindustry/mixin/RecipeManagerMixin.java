@@ -40,7 +40,7 @@ public class RecipeManagerMixin {
      */
     @Inject(method = "apply(Ljava/util/Map;Lnet/minecraft/server/packs/resources/ResourceManager;Lnet/minecraft/util/profiling/ProfilerFiller;)V",
             at = @At("TAIL"))
-    private void onCreateManaIndustry$injectSlatePatternRecipes(CallbackInfo ci) {
+    private void createmanaindustry$injectSlatePatternRecipes(CallbackInfo ci) {
         List<RecipeHolder<?>> dynamic = CMISlatePatternRecipes.createRecipes();
         if (dynamic.isEmpty())
             return;

@@ -47,9 +47,8 @@ public class MechanicalPressKnotMixin {
 
         // Hex item data transfer (only when Hexcasting is present)
         if (CreateManaIndustry.HEX_ACTIVE) {
-            ItemStack hexResult = HexItemDataTransfer.applyPressTransfer(entity.level(), inputCopy,
-                    entity.getItem());
-            if (hexResult != entity.getItem()) {
+            ItemStack hexResult = HexItemDataTransfer.applyPressTransfer(inputCopy, result);
+            if (hexResult != result) {
                 entity.setItem(hexResult);
             }
         }
@@ -75,7 +74,7 @@ public class MechanicalPressKnotMixin {
 
             // Hex item data transfer (only when Hexcasting is present)
             if (CreateManaIndustry.HEX_ACTIVE) {
-                ItemStack hexResult = HexItemDataTransfer.applyPressTransfer(level, inputCopy, result);
+                ItemStack hexResult = HexItemDataTransfer.applyPressTransfer(inputCopy, result);
                 if (hexResult != result) {
                     result = hexResult;
                 }

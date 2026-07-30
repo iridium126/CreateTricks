@@ -64,10 +64,12 @@ public class CondenserBlockEntity extends SmartBlockEntity {
             }
 
             BlockState state = getBlockState();
-            Direction facing = state.getValue(BlockStateProperties.FACING);
+            Direction.Axis axis = state.getValue(BlockStateProperties.AXIS);
+            Direction dir1 = Direction.fromAxisAndDirection(axis, Direction.AxisDirection.POSITIVE);
+            Direction dir2 = Direction.fromAxisAndDirection(axis, Direction.AxisDirection.NEGATIVE);
             float flowPressure = 0f;
             boolean waterFlowing = false;
-            for (Direction side : new Direction[]{facing, facing.getOpposite()}) {
+            for (Direction side : new Direction[]{dir1, dir2}) {
                 PipeConnection.Flow flow = fluidBehaviour.getFlow(side);
                 if (flow != null && flow.complete && flow.fluid.is(FluidTags.WATER)) {
                     waterFlowing = true;
@@ -151,8 +153,8 @@ public class CondenserBlockEntity extends SmartBlockEntity {
             // Client side: spawn particles
             if (condensing) {
                 BlockState state = getBlockState();
-                Direction facing = state.getValue(BlockStateProperties.FACING);
-                spawnCondensationParticles(facing, condensingFluid);
+                Direction.Axis axis = state.getValue(BlockStateProperties.AXIS);
+                spawnCondensationParticles(axis, condensingFluid);
             }
         }
     }
@@ -190,7 +192,7 @@ public class CondenserBlockEntity extends SmartBlockEntity {
         }
     }
 
-    private void spawnCondensationParticles(Direction facing, FluidStack fluidStack) {
+    private void spawnCondensationParticles(Direction.Axis axis, FluidStack fluidStack) {
         double cx = worldPosition.getX() + 0.5;
         double cy = worldPosition.getY() + 0.5;
         double cz = worldPosition.getZ() + 0.5;
@@ -205,7 +207,7 @@ public class CondenserBlockEntity extends SmartBlockEntity {
 
         double x, y, z;
 
-        switch (facing.getAxis()) {
+        switch (axis) {
             case X -> {
                 x = cx + level.random.nextDouble() * (halfHeight * 2) - halfHeight;
                 y = cy + radius * sin;
@@ -239,8 +241,8 @@ public class CondenserBlockEntity extends SmartBlockEntity {
 
         @Override
         public boolean canHaveFlowToward(BlockState state, Direction direction) {
-            Direction facing = state.getValue(BlockStateProperties.FACING);
-            return direction == facing || direction == facing.getOpposite();
+            Direction.Axis axis = state.getValue(BlockStateProperties.AXIS);
+            return direction.getAxis() == axis;
         }
 
         @Override

@@ -68,7 +68,7 @@ repositories {
         }
     }
     ivy {
-        url = uri("https://ci.blamejared.com/job/petrakat/job/Hexcasting/job/1.21/35/artifact/Neoforge/build/libs")
+        url = uri("https://ci.blamejared.com/job/petrakat/job/Hexcasting/job/1.21/38/artifact/Neoforge/build/libs")
         
         patternLayout {
             artifact "[artifact].[ext]"
@@ -206,7 +206,7 @@ dependencies {
     implementation "maven.modrinth:3KUWeVhG:dqlL6EvF" // Veil
     implementation "mezz.jei:jei-${minecraft_version}-neoforge:${jei_version}"
 
-    implementation "hexcasting:hexcasting-neoforge-1.21.1-0.12.0-devel-pre-35@jar"
+    implementation "hexcasting:hexcasting-neoforge-1.21.1-0.12.0-devel-pre-38@jar"
     localRuntime "paucal:paucal-0.7.1-pre-27+1.21.1-neoforge@jar"
     localRuntime "curse.maven:caelus-308989:5694215"
     localRuntime "curse.maven:inline-971167:6556868"
@@ -214,6 +214,11 @@ dependencies {
     localRuntime "curse.maven:cloth-config-348521:5729127"
     localRuntime "curse.maven:architectury-api-419699:5786327"
     localRuntime "curse.maven:kotlin-for-forge-351264:7471280"
+
+    implementation "curse.maven:ars-nouveau-401955:8517890"
+    localRuntime "curse.maven:curios-309927:6529130"
+    localRuntime "curse.maven:geckolib-388172:8350073"
+    //localRuntime "curse.maven:accessories-compat-layer-1315611:7585673"
 
     implementation "maven.modrinth:T8bvmqVZ:zNDKNuBZ" // Create: Bits 'n' Bobs
     implementation "curse.maven:azimuth-api-1466331:8317127"

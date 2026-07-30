@@ -3,6 +3,8 @@
     "createmanaindustry:kinetic_atomizer",
     "createmanaindustry:condenser",
     "createmanaindustry:mana_cogwheel",
+    "createmanaindustry:andesite_encased_mana_cogwheel",
+    "createmanaindustry:brass_encased_mana_cogwheel",
     "createmanaindustry:kinetic_mana_generator"
   ]
 }

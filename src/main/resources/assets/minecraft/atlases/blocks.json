@@ -15,6 +15,14 @@
     {
       "type": "single",
       "resource": "createmanaindustry:fluid/liquid_media_still"
+    },
+    {
+      "type": "single",
+      "resource": "createmanaindustry:fluid/liquid_source_flow"
+    },
+    {
+      "type": "single",
+      "resource": "createmanaindustry:fluid/liquid_source_still"
     }
   ]
 }

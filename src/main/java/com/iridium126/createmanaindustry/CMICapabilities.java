@@ -13,9 +13,13 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
+
+import com.hollingsworth.arsnouveau.api.source.AbstractSourceMachine;
+import com.iridium126.createmanaindustry.compat.ars.SourceJarFluidHandler;
 
 public final class CMICapabilities {
     private CMICapabilities() {}
@@ -37,6 +41,30 @@ public final class CMICapabilities {
             if (mediaBattery != Items.AIR) {
                 event.registerItem(Capabilities.FluidHandler.ITEM,
                         (stack, ctx) -> new MediaBatteryFluidHandler(stack), mediaBattery);
+            }
+        }
+
+        // Source Jar — bridges Liquid Source to Ars Nouveau source.
+        // Only UP and DOWN faces are exposed so pipes connect to top/bottom only.
+        if (CreateManaIndustry.ARS_ACTIVE) {
+            BlockEntityType<?> sourceJarType = BuiltInRegistries.BLOCK_ENTITY_TYPE
+                    .get(ResourceLocation.fromNamespaceAndPath("ars_nouveau", "source_jar"));
+            if (sourceJarType != null) {
+                event.registerBlockEntity(Capabilities.FluidHandler.BLOCK,
+                        sourceJarType,
+                        (be, side) -> side == Direction.UP || side == Direction.DOWN
+                                ? new SourceJarFluidHandler((AbstractSourceMachine) be)
+                                : null);
+            }
+
+            BlockEntityType<?> creativeJarType = BuiltInRegistries.BLOCK_ENTITY_TYPE
+                    .get(ResourceLocation.fromNamespaceAndPath("ars_nouveau", "creative_source_jar"));
+            if (creativeJarType != null) {
+                event.registerBlockEntity(Capabilities.FluidHandler.BLOCK,
+                        creativeJarType,
+                        (be, side) -> side == Direction.UP || side == Direction.DOWN
+                                ? new SourceJarFluidHandler((AbstractSourceMachine) be)
+                                : null);
             }
         }
 

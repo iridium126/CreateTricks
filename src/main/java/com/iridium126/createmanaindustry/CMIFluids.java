@@ -70,6 +70,23 @@ public class CMIFluids {
                     .build()
                     .register();
 
+    public static final FluidEntry<BaseFlowingFluid.Flowing> LIQUID_SOURCE =
+            REGISTRATE.standardFluid("liquid_source")
+                    .properties(b -> b.viscosity(1000).density(1000))
+                    .fluidProperties(p -> p.levelDecreasePerBlock(1)
+                            .tickRate(5)
+                            .slopeFindDistance(4)
+                            .explosionResistance(100f))
+                    .source(BaseFlowingFluid.Source::new)
+                    .block()
+                    .properties(p -> p.mapColor(MapColor.COLOR_PURPLE))
+                    .build()
+                    .bucket()
+                    .onRegister(CMIFluids::registerFluidDispenseBehavior)
+                    .tag(Tags.Items.BUCKETS)
+                    .build()
+                    .register();
+
     public static void register() {}
 
     private static final DispenseItemBehavior DISPENSE_FLUID = new DefaultDispenseItemBehavior() {

@@ -44,6 +44,7 @@ public class CreateManaIndustry {
     public static boolean BNB_ACTIVE = false;
     public static boolean HEX_ACTIVE = false;
     public static boolean VEIL_ACTIVE = false;
+    public static boolean ARS_ACTIVE = false;
 
     public static final CreateRegistrate REGISTRATE = CreateRegistrate.create(MODID);
 
@@ -67,6 +68,7 @@ public class CreateManaIndustry {
         BNB_ACTIVE = ModList.get().isLoaded("bits_n_bobs") && ModList.get().isLoaded("trickster");
         HEX_ACTIVE = ModList.get().isLoaded("hexcasting");
         VEIL_ACTIVE = ModList.get().isLoaded("veil");
+        ARS_ACTIVE = ModList.get().isLoaded("ars_nouveau");
 
         REGISTRATE.registerEventListeners(modEventBus);
         modEventBus.addListener(CMICapabilities::register);
@@ -78,6 +80,7 @@ public class CreateManaIndustry {
         CMIFluids.register();
         CMIBlockEntityTypes.register();
         CMIItems.register();
+        CMIPartialModels.register();
         if (TRICKSTER_ACTIVE) {
             KineticStressTrickRegister.register();
         }
@@ -85,14 +88,13 @@ public class CreateManaIndustry {
             CMIHexActions.register(modEventBus);
             NeoForge.EVENT_BUS.addListener(CMISlatePatternRecipes::onServerStarted);
         }
-        CMIPartialModels.register();
-        {
-            ModConfigSpec.Builder stressBuilder = new ModConfigSpec.Builder();
-            CMIStress.INSTANCE.registerAll(stressBuilder);
-            modContainer.registerConfig(ModConfig.Type.SERVER, stressBuilder.build());
-            BlockStressValues.IMPACTS.registerProvider(CMIStress.INSTANCE::getImpact);
-            BlockStressValues.CAPACITIES.registerProvider(CMIStress.INSTANCE::getCapacity);
-        }
+
+        ModConfigSpec.Builder stressBuilder = new ModConfigSpec.Builder();
+        CMIStress.INSTANCE.registerAll(stressBuilder);
+        modContainer.registerConfig(ModConfig.Type.SERVER, stressBuilder.build());
+        BlockStressValues.IMPACTS.registerProvider(CMIStress.INSTANCE::getImpact);
+        BlockStressValues.CAPACITIES.registerProvider(CMIStress.INSTANCE::getCapacity);
+
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
     }
 

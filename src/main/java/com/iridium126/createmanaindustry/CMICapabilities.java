@@ -2,6 +2,7 @@ package com.iridium126.createmanaindustry;
 
 import net.minecraft.resources.ResourceLocation;
 
+import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlockEntity;
 import com.iridium126.createmanaindustry.content.fluids.EsotericManaFluidHandler;
 import com.iridium126.createmanaindustry.content.fluids.MediaBatteryFluidHandler;
 import com.iridium126.createmanaindustry.content.fluids.TricksterKnotFluidHandler;
@@ -25,6 +26,13 @@ public final class CMICapabilities {
     private CMICapabilities() {}
 
     public static void register(RegisterCapabilitiesEvent event) {
+        // Allay Burner fluid handler — all faces, filtered to Liquid Media by
+        // the wrapper (insert only; extraction refused).
+        event.registerBlockEntity(
+                Capabilities.FluidHandler.BLOCK,
+                CMIBlockEntityTypes.ALLAY_BURNER.get(),
+                (be, side) -> ((AllayBurnerBlockEntity) be).getFluidCapability());
+
         // Kinetic Atomizer fluid handler — only accepts input from the bottom face.
         event.registerBlockEntity(
                 Capabilities.FluidHandler.BLOCK,

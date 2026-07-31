@@ -30,7 +30,11 @@
     "bnb.CogwheelChainPlacementInteractionMixin",
     "bnb.CogwheelChainCandidateMixin",
     "bnb.PlacingCogwheelChainMixin",
-    "bnb.PlaceCogwheelChainPacketMixin"
+    "bnb.PlaceCogwheelChainPacketMixin",
+    "HeatConditionAllayHeatedMixin",
+    "BasinBlockEntityHeatMixin",
+    "BasinRecipeAllayHeatMixin",
+    "BaseSpawnerAccessor"
   ],
   "client": [
     "CachedBuffersMixin",

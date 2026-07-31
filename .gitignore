@@ -40,4 +40,4 @@ repo/
 !**/src/**/repo/
 
 .refs/
-.claude/skills/shader-dev/
+.claude/skills/

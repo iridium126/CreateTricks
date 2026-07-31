@@ -8,6 +8,10 @@ public final class CMIPartialModels {
 
     public static final PartialModel KINETIC_ATOMIZER_COG = block("kinetic_atomizer/cog");
 
+    public static final PartialModel ALLAY_BURNER_FLAME = block("allay_burner/flame");
+    public static final PartialModel ALLAY_BURNER_RODS_SMALL = block("allay_burner/allayheated_rods_small");
+    public static final PartialModel ALLAY_BURNER_RODS_LARGE = block("allay_burner/allayheated_rods_large");
+
     public static final PartialModel STRESSED_KINETIC_MANA_GENERATOR_INNER = block("kinetic_mana_generator/inner_stressed");
     public static final PartialModel STRESSED_SHAFTLESS_COGWHEEL = block("temporary_stress/cogwheel_shaftless");
     public static final PartialModel STRESSED_SHAFTLESS_LARGE_COGWHEEL = block("temporary_stress/large_cogwheel_shaftless");

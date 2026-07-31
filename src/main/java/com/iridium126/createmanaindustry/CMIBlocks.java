@@ -2,6 +2,8 @@ package com.iridium126.createmanaindustry;
 
 import static com.iridium126.createmanaindustry.CreateManaIndustry.REGISTRATE;
 
+import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlock;
+import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlockItem;
 import com.iridium126.createmanaindustry.content.fluids.condenser.CondenserBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlock;
@@ -19,7 +21,10 @@ import com.simibubi.create.foundation.data.TagGen;
 import com.iridium126.createmanaindustry.config.CMIStress;
 import com.tterrag.registrate.providers.RegistrateRecipeProvider;
 import com.tterrag.registrate.util.entry.BlockEntry;
+import com.tterrag.registrate.util.entry.ItemEntry;
+import com.tterrag.registrate.util.nullness.NonNullBiConsumer;
 
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.material.MapColor;
@@ -29,6 +34,26 @@ import net.minecraft.data.recipes.ShapelessRecipeBuilder;
 
 public final class CMIBlocks {
     public static BlockEntry<KineticManaGeneratorBlock> KINETIC_MANA_GENERATOR;
+
+    public static final BlockEntry<AllayBurnerBlock> ALLAY_BURNER = REGISTRATE
+            .block("allay_burner", AllayBurnerBlock::new)
+            .initialProperties(() -> Blocks.IRON_BLOCK)
+            .properties(p -> p.noOcclusion()
+                    .mapColor(MapColor.COLOR_LIGHT_BLUE)
+                    .lightLevel(AllayBurnerBlock::getLight))
+            .addLayer(() -> RenderType::cutoutMipped)
+            .transform(TagGen.pickaxeOnly())
+            .blockstate((c, p) -> {})
+            .loot((lt, block) -> lt.add(block, AllayBurnerBlock.buildLootTable()))
+            .item(AllayBurnerBlockItem::withAllay)
+            .model(NonNullBiConsumer.noop())
+            .build()
+            .register();
+
+    public static final ItemEntry<AllayBurnerBlockItem> EMPTY_ALLAY_BURNER = REGISTRATE
+            .item("empty_allay_burner", p -> AllayBurnerBlockItem.empty(CMIBlocks.ALLAY_BURNER.get(), p))
+            .model(NonNullBiConsumer.noop())
+            .register();
 
     public static final BlockEntry<KineticAtomizerBlock> KINETIC_ATOMIZER = REGISTRATE
             .block("kinetic_atomizer", KineticAtomizerBlock::new)

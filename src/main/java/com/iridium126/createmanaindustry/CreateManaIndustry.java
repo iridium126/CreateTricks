@@ -81,6 +81,7 @@ public class CreateManaIndustry {
         CMIBlockEntityTypes.register();
         CMIItems.register();
         CMIPartialModels.register();
+        CMISpriteShifts.register();
         if (TRICKSTER_ACTIVE) {
             KineticStressTrickRegister.register();
         }

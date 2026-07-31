@@ -1,0 +1,21 @@
+{
+	"parent": "block/block",
+	"loader": "neoforge:obj",
+	"flip_v": true,
+	"model": "createmanaindustry:models/block/allay_burner/item.obj",
+	"textures": {
+		"0": "createmanaindustry:block/allay_burner/allay_burner",
+		"1": "minecraft:textures/entity/allay/allay",
+		"particle": "create:block/dark_metal_block"
+	},
+	"display": {
+		"gui": {
+			"rotation": [30, 315, 0],
+			"scale": [0.7, 0.7, 0.7]
+		},
+		"fixed": {
+			"rotation": [0, 180, 0],
+			"scale": [0.5, 0.5, 0.5]
+		}
+	}
+}

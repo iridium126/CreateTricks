@@ -23,6 +23,10 @@ public final class Config {
             .comment("The amount of media contained in one bucket (1000mB) of Liquid Media.")
             .defineInRange("mediaPerBucket", 400000, 1000, Integer.MAX_VALUE);
 
+    private static final ModConfigSpec.IntValue MEDIA_CONSUMED_PER_TICK = BUILDER
+            .comment("Media consumed per tick while the Allay Burner is burning. Drives the burn duration of all fuels: an item worth N media burns N / mediaConsumedPerTick * 20 ticks, and Liquid Media is consumed at (mediaPerBucket / 1000) / mediaConsumedPerTick mB per tick.")
+            .defineInRange("mediaConsumedPerTick", 50, 1, 10000);
+
     private static final ModConfigSpec.IntValue SOURCE_PER_BUCKET = BUILDER
             .comment("The amount of source contained in one bucket (1000mB) of Liquid Source.")
             .defineInRange("sourcePerBucket", 1000, 1, 1000000);
@@ -68,6 +72,7 @@ public final class Config {
     public static double manaPerStress = 0.001;
     public static int manaPerBucket = 2048;
     public static int mediaPerBucket = 400000;
+    public static int mediaConsumedPerTick = 50;
     public static int sourcePerBucket = 1000;
     public static double kineticStressTrickManaMultiplier = 2.0;
     public static int mistMaxRadius = 16;
@@ -87,6 +92,7 @@ public final class Config {
             manaPerStress = MANA_PER_STRESS.get();
             manaPerBucket = MANA_PER_BUCKET.get();
             mediaPerBucket = MEDIA_PER_BUCKET.get();
+            mediaConsumedPerTick = MEDIA_CONSUMED_PER_TICK.get();
             sourcePerBucket = SOURCE_PER_BUCKET.get();
             kineticStressTrickManaMultiplier = KINETIC_STRESS_TRICK_MANA_MULTIPLIER.get();
             mistMaxRadius = MIST_MAX_RADIUS.get();

@@ -2,6 +2,8 @@ package com.iridium126.createmanaindustry;
 
 import static com.iridium126.createmanaindustry.CreateManaIndustry.REGISTRATE;
 
+import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlockEntity;
+import com.iridium126.createmanaindustry.content.burner.AllayBurnerRenderer;
 import com.iridium126.createmanaindustry.content.fluids.condenser.CondenserBlockEntity;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlockEntity;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerRenderer;
@@ -16,6 +18,12 @@ import com.tterrag.registrate.util.entry.BlockEntityEntry;
 
 public final class CMIBlockEntityTypes {
     public static BlockEntityEntry<KineticManaGeneratorBlockEntity> KINETIC_MANA_GENERATOR;
+
+    public static final BlockEntityEntry<AllayBurnerBlockEntity> ALLAY_BURNER = REGISTRATE
+            .blockEntity("allay_burner", AllayBurnerBlockEntity::new)
+            .validBlocks(CMIBlocks.ALLAY_BURNER)
+            .renderer(() -> AllayBurnerRenderer::new)
+            .register();
 
     public static final BlockEntityEntry<KineticAtomizerBlockEntity> KINETIC_ATOMIZER = REGISTRATE
             .blockEntity("kinetic_atomizer", KineticAtomizerBlockEntity::new)

@@ -1,0 +1,60 @@
+{
+  "type": "minecraft:block",
+  "pools": [
+    {
+      "bonus_rolls": 0.0,
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "conditions": [
+            {
+              "condition": "minecraft:survives_explosion"
+            },
+            {
+              "block": "createmanaindustry:allay_burner",
+              "condition": "minecraft:block_state_property",
+              "properties": {
+                "heat_level": "none"
+              }
+            }
+          ],
+          "name": "createmanaindustry:empty_allay_burner"
+        },
+        {
+          "type": "minecraft:item",
+          "conditions": [
+            {
+              "condition": "minecraft:survives_explosion"
+            },
+            {
+              "block": "createmanaindustry:allay_burner",
+              "condition": "minecraft:block_state_property",
+              "properties": {
+                "heat_level": "idle"
+              }
+            }
+          ],
+          "name": "createmanaindustry:allay_burner"
+        },
+        {
+          "type": "minecraft:item",
+          "conditions": [
+            {
+              "condition": "minecraft:survives_explosion"
+            },
+            {
+              "block": "createmanaindustry:allay_burner",
+              "condition": "minecraft:block_state_property",
+              "properties": {
+                "heat_level": "allayheated"
+              }
+            }
+          ],
+          "name": "createmanaindustry:allay_burner"
+        }
+      ],
+      "rolls": 1.0
+    }
+  ],
+  "random_sequence": "createmanaindustry:blocks/allay_burner"
+}

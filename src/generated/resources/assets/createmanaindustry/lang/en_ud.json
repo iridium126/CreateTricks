@@ -1,4 +1,5 @@
 {
+  "block.createmanaindustry.allay_burner": "ɹǝuɹnᗺ ʎɐןןⱯ",
   "block.createmanaindustry.andesite_encased_mana_cogwheel": "ןǝǝɥʍboƆ ɐuɐW pǝsɐɔuƎ ǝʇısǝpuⱯ",
   "block.createmanaindustry.brass_encased_mana_cogwheel": "ןǝǝɥʍboƆ ɐuɐW pǝsɐɔuƎ ssɐɹᗺ",
   "block.createmanaindustry.condenser": "ɹǝsuǝpuoƆ",
@@ -10,6 +11,7 @@
   "block.createmanaindustry.mana_cogwheel": "ןǝǝɥʍboƆ ɐuɐW",
   "fluid.createmanaindustry.liquid_media": "ɐıpǝW pınbıꞀ",
   "fluid.createmanaindustry.liquid_source": "ǝɔɹnoS pınbıꞀ",
+  "item.createmanaindustry.empty_allay_burner": "ɹǝuɹnᗺ ʎɐןןⱯ ʎʇdɯƎ",
   "item.createmanaindustry.incomplete_artifact": "ʇɔɐɟıʇɹⱯ ǝʇǝןdɯoɔuI",
   "item.createmanaindustry.incomplete_astral_knot": "ʇouʞ ןɐɹʇsⱯ ǝʇǝןdɯoɔuI",
   "item.createmanaindustry.incomplete_cypher": "ɹǝɥdʎƆ ǝʇǝןdɯoɔuI",

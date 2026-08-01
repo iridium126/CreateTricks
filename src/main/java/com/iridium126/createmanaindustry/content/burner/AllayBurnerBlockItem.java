@@ -144,6 +144,12 @@ public class AllayBurnerBlockItem extends BlockItem {
         if (world.isClientSide)
             return InteractionResult.FAIL;
 
+        // Drop whatever the allay is holding before capturing it (mirrors
+        // vanilla mob drops — spawnAtLocation sets a short pickup delay).
+        ItemStack held = entity.getMainHandItem();
+        if (!held.isEmpty())
+            entity.spawnAtLocation(held);
+
         giveBurnerItemTo(player, heldItem, hand);
         entity.discard();
         return InteractionResult.FAIL;

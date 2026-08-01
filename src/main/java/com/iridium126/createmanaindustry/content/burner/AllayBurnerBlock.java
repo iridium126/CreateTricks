@@ -8,8 +8,11 @@ import com.iridium126.createmanaindustry.CMIBlockEntityTypes;
 import com.iridium126.createmanaindustry.CMIBlocks;
 import com.mojang.serialization.MapCodec;
 import com.simibubi.create.AllShapes;
+import com.simibubi.create.api.schematic.requirement.SpecialBlockItemRequirement;
 import com.simibubi.create.content.equipment.wrench.IWrenchable;
 import com.simibubi.create.content.processing.basin.BasinBlockEntity;
+import com.simibubi.create.content.schematics.requirement.ItemRequirement;
+import com.simibubi.create.content.schematics.requirement.ItemRequirement.ItemUseType;
 import com.simibubi.create.foundation.block.IBE;
 
 import net.createmod.catnip.lang.Lang;
@@ -65,7 +68,7 @@ import net.neoforged.neoforge.common.util.FakePlayer;
 @MethodsReturnNonnullByDefault
 @ParametersAreNonnullByDefault
 public class AllayBurnerBlock extends HorizontalDirectionalBlock
-        implements IBE<AllayBurnerBlockEntity>, IWrenchable {
+        implements IBE<AllayBurnerBlockEntity>, IWrenchable, SpecialBlockItemRequirement {
 
     public static final EnumProperty<HeatLevel> HEAT_LEVEL = EnumProperty.create("heat_level", HeatLevel.class);
 
@@ -252,6 +255,11 @@ public class AllayBurnerBlock extends HorizontalDirectionalBlock
         }
         builder.withPool(poolBuilder.setRolls(ConstantValue.exactly(1)));
         return builder;
+    }
+
+    @Override
+    public ItemRequirement getRequiredItems(BlockState state, @Nullable BlockEntity blockEntity) {
+        return new ItemRequirement(ItemUseType.CONSUME, getEmptyOrCapturedStack(state));
     }
 
     private static ItemStack getEmptyOrCapturedStack(BlockState state) {

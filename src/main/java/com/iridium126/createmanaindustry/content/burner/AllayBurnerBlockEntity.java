@@ -4,11 +4,12 @@ import java.util.List;
 
 import org.jetbrains.annotations.Nullable;
 
-import com.iridium126.createmanaindustry.CMIFluids;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.config.Config;
 import com.iridium126.createmanaindustry.hexcasting.HexCompat;
 import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
+import com.simibubi.create.content.fluids.tank.FluidTankBlock;
+import com.simibubi.create.content.processing.basin.BasinBlock;
 import com.simibubi.create.content.processing.burner.BlazeBurnerBlockEntity;
 import com.simibubi.create.foundation.blockEntity.SmartBlockEntity;
 import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour;
@@ -18,7 +19,6 @@ import net.createmod.catnip.animation.LerpedFloat;
 import net.createmod.catnip.animation.LerpedFloat.Chaser;
 import net.createmod.catnip.math.AngleHelper;
 import net.createmod.catnip.math.VecHelper;
-import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -49,12 +49,13 @@ import net.neoforged.neoforge.fluids.capability.IFluidHandler;
  * shard / charged amethyst) fed by right-click, or Liquid Media drawn from a
  * 1-bucket internal tank. Solid fuel always takes priority — liquid is only
  * consumed when the burn time has run out. Fuel/overfill logic mirrors
- * Create's {@link BlazeBurnerBlockEntity} (MAX_HEAT_CAPACITY /
- * INSERTION_THRESHOLD semantics).
+ * Create's {@link BlazeBurnerBlockEntity} (INSERTION_THRESHOLD semantics;
+ * overflow is uncapped — players may keep adding fuel indefinitely). Burn
+ * durations derive from {@code Config.mediaConsumedPerTick} media consumed
+ * per tick.
  */
 public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGoggleInformation {
 
-    public static final int MAX_HEAT_CAPACITY = 10000;
     public static final int INSERTION_THRESHOLD = 500;
     public static final int TANK_CAPACITY = 1000;
 
@@ -98,7 +99,8 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
             // Client-side animation and particles (mirrors BlazeBurnerBlockEntity).
             if (level != null && level.isClientSide) {
                 tickHeadAngle();
-                spawnParticles(getHeatLevelFromBlock(), 1);
+                if (!isVirtual())
+                    spawnParticles(getHeatLevelFromBlock(), 1);
             }
             return;
         }
@@ -113,11 +115,17 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
             boolean wasBurning = activeFuel != FuelType.NONE;
             activeFuel = FuelType.NONE;
             // Liquid Media is consumed only when no solid fuel remains (solid priority).
-            // One mB is converted into its share of burn ticks so the consumption
-            // rate matches (mediaPerBucket / 1000) / mediaConsumedPerTick mB per tick.
+            // One mB is converted into its share of burn ticks so Liquid Media is
+            // consumed at mediaConsumedPerTick media per tick (1 mB = max(1,
+            // mediaPerMb / mediaConsumedPerTick) ticks).
             if (hasLiquidMedia()) {
                 IFluidHandler handler = tank.getPrimaryHandler();
-                FluidStack drained = handler.drain(liquidMediaStack(1), IFluidHandler.FluidAction.EXECUTE);
+                // Drain by amount, not by fluid identity: the tank may hold
+                // either the source or flowing variant of Liquid Media
+                // (pipes/buckets/condenser inject source; the Hexcasting media
+                // battery injects flowing), and FluidTank.drain(FluidStack)
+                // matches on the exact fluid instance.
+                FluidStack drained = handler.drain(1, IFluidHandler.FluidAction.EXECUTE);
                 if (drained.getAmount() > 0) {
                     remainingBurnTime = liquidBurnTicksPerMb();
                     activeFuel = FuelType.LIQUID;
@@ -143,10 +151,6 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
         IFluidHandler capability =
             level.getCapability(Capabilities.FluidHandler.BLOCK, worldPosition, null);
         containedFluidTooltip(tooltip, isPlayerSneaking, capability);
-        if (remainingBurnTime > 0) {
-            tooltip.add(Component.translatable("createmanaindustry.goggles.allay_burner.burning")
-                .withStyle(ChatFormatting.GOLD));
-        }
         return true;
     }
 
@@ -209,7 +213,7 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
             if (remainingBurnTime <= INSERTION_THRESHOLD) {
                 newBurnTime += remainingBurnTime;
             } else if (forceOverflow) {
-                newBurnTime = Math.min(remainingBurnTime + newBurnTime, MAX_HEAT_CAPACITY);
+                newBurnTime += remainingBurnTime;
             } else {
                 return false;
             }
@@ -222,6 +226,11 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
                 return true;
             activeFuel = FuelType.SOLID;
             remainingBurnTime = newBurnTime;
+        }
+
+        if (level.isClientSide) {
+            spawnParticleBurst(true);
+            return true;
         }
 
         AllayBurnerBlock.HeatLevel prev = getHeatLevelFromBlock();
@@ -246,6 +255,11 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
         remainingBurnTime = 0;
         isCreative = true;
 
+        if (level.isClientSide) {
+            spawnParticleBurst(true);
+            return;
+        }
+
         playSound();
         setBlockHeat(AllayBurnerBlock.HeatLevel.ALLAYHEATED);
     }
@@ -262,19 +276,20 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
     }
 
     /**
-     * Burn ticks granted per millibucket of Liquid Media: one bucket holds
-     * {@code mediaPerBucket} media, consumed at {@code mediaConsumedPerTick}
-     * media/tick → 1 mB = (mediaPerBucket / 1000) / mediaConsumedPerTick * 20
-     * ticks. With defaults (400000 media/bucket, 50 media/tick) that is 160
-     * ticks per mB — exactly one bucket per 160000 ticks.
+     * Burn ticks granted per millibucket of Liquid Media: one mB holds
+     * {@code mediaPerBucket / 1000} media, consumed at
+     * {@code mediaConsumedPerTick} media per tick → 1 mB =
+     * max(1, mediaPerMb / mediaConsumedPerTick) ticks. With defaults
+     * (400000 media/bucket, 50 media/tick) that is 8 ticks per mB — a full
+     * bucket burns 8000 ticks.
      */
     protected int liquidBurnTicksPerMb() {
         long mediaPerMb = Math.max(1, Config.mediaPerBucket / 1000L);
-        return (int) Math.max(1, mediaPerMb * 20 / Config.mediaConsumedPerTick);
+        return (int) Math.max(1, mediaPerMb / Config.mediaConsumedPerTick);
     }
 
     protected int burnTicksForMedia(long media) {
-        return (int) Math.max(1, media * 20 / Config.mediaConsumedPerTick);
+        return (int) Math.max(1, media / Config.mediaConsumedPerTick);
     }
 
     protected long getMediaAmount(Item item) {
@@ -299,12 +314,15 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
         return registry.containsKey(id) ? registry.get(id) : null;
     }
 
-    private FluidStack liquidMediaStack(int amount) {
-        return new FluidStack(CMIFluids.LIQUID_MEDIA.get(), amount);
-    }
-
     private boolean hasLiquidMedia() {
         return tank != null && !tank.getPrimaryHandler().getFluidInTank(0).isEmpty();
+    }
+
+    public boolean isValidBlockAbove() {
+        if (isVirtual())
+            return false;
+        BlockState blockState = level.getBlockState(worldPosition.above());
+        return BasinBlock.isBasin(level, worldPosition.above()) || blockState.getBlock() instanceof FluidTankBlock;
     }
 
     protected void playSound() {
@@ -317,14 +335,24 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
      * burning burners hold FACING (mirrors {@code BlazeBurnerBlockEntity.tickAnimation}).
      */
     private void tickHeadAngle() {
-        boolean active = getHeatLevelFromBlock() == AllayBurnerBlock.HeatLevel.ALLAYHEATED;
+        boolean active =
+            getHeatLevelFromBlock() == AllayBurnerBlock.HeatLevel.ALLAYHEATED && isValidBlockAbove();
 
         if (!active) {
             float target = 0;
             LocalPlayer player = Minecraft.getInstance().player;
             if (player != null && !player.isInvisible()) {
-                double dx = player.getX() - (getBlockPos().getX() + 0.5);
-                double dz = player.getZ() - (getBlockPos().getZ() + 0.5);
+                double x;
+                double z;
+                if (isVirtual()) {
+                    x = -4;
+                    z = -10;
+                } else {
+                    x = player.getX();
+                    z = player.getZ();
+                }
+                double dx = x - (getBlockPos().getX() + 0.5);
+                double dz = z - (getBlockPos().getZ() + 0.5);
                 target = AngleHelper.deg(-Mth.atan2(dz, dx)) - 90;
             }
             target = headAngle.getValue() + AngleHelper.getShortestAngleDiff(headAngle.getValue(), target);
@@ -370,6 +398,27 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
             .add(0, .5, 0);
 
         level.addParticle(ParticleTypes.SOUL_FIRE_FLAME, v2.x, v2.y, v2.z, 0, yMotion, 0);
+    }
+
+    /**
+     * Particle burst on fuel application, mirrors
+     * {@code BlazeBurnerBlockEntity.spawnParticleBurst}. The Allay Burner has
+     * a single solid fuel tier, so callers always pass soulFlame = true.
+     */
+    public void spawnParticleBurst(boolean soulFlame) {
+        Vec3 c = VecHelper.getCenterOf(worldPosition);
+        RandomSource r = level.random;
+        for (int i = 0; i < 20; i++) {
+            Vec3 offset = VecHelper.offsetRandomly(Vec3.ZERO, r, .5f)
+                .multiply(1, .25f, 1)
+                .normalize();
+            Vec3 v = c.add(offset.scale(.5 + r.nextDouble() * .125f))
+                .add(0, .125, 0);
+            Vec3 m = offset.scale(1 / 32f);
+
+            level.addParticle(soulFlame ? ParticleTypes.SOUL_FIRE_FLAME : ParticleTypes.FLAME, v.x, v.y, v.z, m.x, m.y,
+                m.z);
+        }
     }
 
     public enum FuelType {

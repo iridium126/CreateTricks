@@ -4,6 +4,7 @@ import com.iridium126.createmanaindustry.CMIFluids;
 import com.iridium126.createmanaindustry.hexcasting.HexCompat;
 
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.material.Fluid;
 import net.neoforged.neoforge.fluids.FluidStack;
 import net.neoforged.neoforge.fluids.capability.IFluidHandlerItem;
 
@@ -47,8 +48,14 @@ public class MediaBatteryFluidHandler implements IFluidHandlerItem {
             return FluidStack.EMPTY;
         long media = HexCompat.getMedia(container);
         int amount = CMIFluidConversions.mediaToFluidAmount(media);
+        // Report the source variant, matching buckets / world fluid / recipes:
+        // get() returns the flowing variant, which breaks identity-matching
+        // consumers (e.g. FluidTank.drain(FluidStack)). The local is needed —
+        // getSource() is a generic method and direct use would make the
+        // FluidStack(Holder<Fluid>, int) constructor ambiguous.
+        Fluid liquidMedia = CMIFluids.LIQUID_MEDIA.getSource();
         return amount > 0
-                ? new FluidStack(CMIFluids.LIQUID_MEDIA.get(), amount)
+                ? new FluidStack(liquidMedia, amount)
                 : FluidStack.EMPTY;
     }
 
@@ -154,6 +161,7 @@ public class MediaBatteryFluidHandler implements IFluidHandlerItem {
             HexCompat.withdrawMedia(container, mediaToWithdraw);
         }
 
-        return new FluidStack(CMIFluids.LIQUID_MEDIA.get(), fluidToDrain);
+        Fluid liquidMedia = CMIFluids.LIQUID_MEDIA.getSource();
+        return new FluidStack(liquidMedia, fluidToDrain);
     }
 }

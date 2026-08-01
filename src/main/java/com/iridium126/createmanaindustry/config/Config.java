@@ -24,7 +24,7 @@ public final class Config {
             .defineInRange("mediaPerBucket", 400000, 1000, Integer.MAX_VALUE);
 
     private static final ModConfigSpec.IntValue MEDIA_CONSUMED_PER_TICK = BUILDER
-            .comment("Media consumed per tick while the Allay Burner is burning. Drives the burn duration of all fuels: an item worth N media burns N / mediaConsumedPerTick * 20 ticks, and Liquid Media is consumed at (mediaPerBucket / 1000) / mediaConsumedPerTick mB per tick.")
+            .comment("Media consumed per tick while the Allay Burner is burning. Drives the burn duration of all fuels: an item worth N media burns N / mediaConsumedPerTick ticks, and 1 mB of Liquid Media burns (mediaPerBucket / 1000) / mediaConsumedPerTick ticks.")
             .defineInRange("mediaConsumedPerTick", 50, 1, 10000);
 
     private static final ModConfigSpec.IntValue SOURCE_PER_BUCKET = BUILDER

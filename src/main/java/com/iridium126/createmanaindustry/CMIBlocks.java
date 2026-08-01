@@ -1,9 +1,11 @@
 package com.iridium126.createmanaindustry;
 
 import static com.iridium126.createmanaindustry.CreateManaIndustry.REGISTRATE;
+import static com.simibubi.create.api.behaviour.movement.MovementBehaviour.movementBehaviour;
 
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlock;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlockItem;
+import com.iridium126.createmanaindustry.content.burner.AllayBurnerMovementBehaviour;
 import com.iridium126.createmanaindustry.content.fluids.condenser.CondenserBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlock;
@@ -24,7 +26,6 @@ import com.tterrag.registrate.util.entry.BlockEntry;
 import com.tterrag.registrate.util.entry.ItemEntry;
 import com.tterrag.registrate.util.nullness.NonNullBiConsumer;
 
-import net.minecraft.client.renderer.RenderType;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.material.MapColor;
@@ -41,10 +42,10 @@ public final class CMIBlocks {
             .properties(p -> p.noOcclusion()
                     .mapColor(MapColor.COLOR_LIGHT_BLUE)
                     .lightLevel(AllayBurnerBlock::getLight))
-            .addLayer(() -> RenderType::cutoutMipped)
             .transform(TagGen.pickaxeOnly())
             .blockstate((c, p) -> {})
             .loot((lt, block) -> lt.add(block, AllayBurnerBlock.buildLootTable()))
+            .onRegister(movementBehaviour(new AllayBurnerMovementBehaviour()))
             .item(AllayBurnerBlockItem::withAllay)
             .model(NonNullBiConsumer.noop())
             .build()

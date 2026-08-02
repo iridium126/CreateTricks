@@ -1,7 +1,7 @@
 package com.iridium126.createmanaindustry.content.fluids;
 
 import com.iridium126.createmanaindustry.CMIFluids;
-import com.iridium126.createmanaindustry.trickster.TricksterManaAccess;
+import com.iridium126.createmanaindustry.compat.trickster.TricksterManaAccess;
 
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;

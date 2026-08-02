@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.hexcasting;
+package com.iridium126.createmanaindustry.compat.hexcasting;
 
 import at.petrak.hexcasting.api.casting.eval.CastingEnvironment;
 import at.petrak.hexcasting.api.casting.iota.GarbageIota;

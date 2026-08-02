@@ -8,7 +8,6 @@ import com.iridium126.createmanaindustry.content.fluids.MediaBatteryFluidHandler
 import com.iridium126.createmanaindustry.content.fluids.TricksterKnotFluidHandler;
 import com.iridium126.createmanaindustry.content.items.TricksterKnotItemHandler;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlockEntity;
-import com.iridium126.createmanaindustry.trickster.TricksterKnotUtils;
 
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.item.Item;
@@ -21,6 +20,7 @@ import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
 
 import com.hollingsworth.arsnouveau.api.source.AbstractSourceMachine;
 import com.iridium126.createmanaindustry.compat.ars.SourceJarFluidHandler;
+import com.iridium126.createmanaindustry.compat.trickster.TricksterKnotUtils;
 
 public final class CMICapabilities {
     private CMICapabilities() {}

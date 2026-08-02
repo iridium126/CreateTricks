@@ -5,8 +5,8 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import com.iridium126.createmanaindustry.display.SpellConstructDisplayArguments;
-import com.iridium126.createmanaindustry.trickster.TricksterDisplaySync;
+import com.iridium126.createmanaindustry.compat.trickster.TricksterDisplaySync;
+import com.iridium126.createmanaindustry.content.display.SpellConstructDisplayArguments;
 
 import net.minecraft.world.level.block.entity.BlockEntity;
 

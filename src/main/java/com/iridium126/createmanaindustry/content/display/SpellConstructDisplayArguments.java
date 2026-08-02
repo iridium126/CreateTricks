@@ -1,10 +1,10 @@
-package com.iridium126.createmanaindustry.display;
+package com.iridium126.createmanaindustry.content.display;
 
 import java.util.List;
 
 import org.jetbrains.annotations.Nullable;
 
-import com.iridium126.createmanaindustry.trickster.TricksterDisplaySync;
+import com.iridium126.createmanaindustry.compat.trickster.TricksterDisplaySync;
 
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.MutableComponent;

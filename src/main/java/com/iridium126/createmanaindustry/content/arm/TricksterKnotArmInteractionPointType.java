@@ -1,7 +1,7 @@
 package com.iridium126.createmanaindustry.content.arm;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.trickster.TricksterKnotUtils;
+import com.iridium126.createmanaindustry.compat.trickster.TricksterKnotUtils;
 import com.simibubi.create.content.kinetics.mechanicalArm.ArmInteractionPoint;
 import com.simibubi.create.content.kinetics.mechanicalArm.ArmInteractionPointType;
 

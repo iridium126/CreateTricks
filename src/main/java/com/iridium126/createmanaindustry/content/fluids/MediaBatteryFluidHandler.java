@@ -1,7 +1,7 @@
 package com.iridium126.createmanaindustry.content.fluids;
 
 import com.iridium126.createmanaindustry.CMIFluids;
-import com.iridium126.createmanaindustry.hexcasting.HexCompat;
+import com.iridium126.createmanaindustry.compat.hexcasting.HexCompat;
 
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.material.Fluid;

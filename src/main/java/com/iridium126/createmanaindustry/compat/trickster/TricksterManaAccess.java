@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.trickster;
+package com.iridium126.createmanaindustry.compat.trickster;
 
 import org.jetbrains.annotations.Nullable;
 

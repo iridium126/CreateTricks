@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.hexcasting;
+package com.iridium126.createmanaindustry.compat.hexcasting;
 
 import java.util.List;
 

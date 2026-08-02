@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.hexcasting;
+package com.iridium126.createmanaindustry.compat.hexcasting;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 

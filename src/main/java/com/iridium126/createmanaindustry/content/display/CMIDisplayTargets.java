@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.display;
+package com.iridium126.createmanaindustry.content.display;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.simibubi.create.api.behaviour.display.DisplayTarget;

@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.hexcasting.CMISlatePatternRecipes;
+import com.iridium126.createmanaindustry.compat.hexcasting.CMISlatePatternRecipes;
 
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.crafting.RecipeHolder;

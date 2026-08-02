@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.display;
+package com.iridium126.createmanaindustry.content.display;
 
 import java.util.List;
 

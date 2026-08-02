@@ -1,6 +1,6 @@
 package com.iridium126.createmanaindustry.content.items;
 
-import com.iridium126.createmanaindustry.trickster.TricksterKnotUtils;
+import com.iridium126.createmanaindustry.compat.trickster.TricksterKnotUtils;
 
 import net.minecraft.world.Container;
 import net.minecraft.world.item.ItemStack;

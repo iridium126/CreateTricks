@@ -7,8 +7,8 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
+import com.iridium126.createmanaindustry.compat.trickster.TricksterManaAccess;
 import com.iridium126.createmanaindustry.content.recipes.HexItemDataTransfer;
-import com.iridium126.createmanaindustry.trickster.TricksterManaAccess;
 import com.simibubi.create.content.kinetics.press.MechanicalPressBlockEntity;
 import com.simibubi.create.foundation.recipe.RecipeApplier;
 

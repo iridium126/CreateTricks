@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.trickster;
+package com.iridium126.createmanaindustry.compat.trickster;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Optional;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.display.SpellConstructDisplayArguments;
+import com.iridium126.createmanaindustry.content.display.SpellConstructDisplayArguments;
 
 import dev.enjarai.trickster.block.ModularSpellConstructBlockEntity;
 import dev.enjarai.trickster.block.SpellConstructBlockEntity;

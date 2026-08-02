@@ -5,8 +5,8 @@ import java.util.List;
 import org.jetbrains.annotations.Nullable;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
+import com.iridium126.createmanaindustry.compat.hexcasting.HexCompat;
 import com.iridium126.createmanaindustry.config.Config;
-import com.iridium126.createmanaindustry.hexcasting.HexCompat;
 import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
 import com.simibubi.create.content.fluids.tank.FluidTankBlock;
 import com.simibubi.create.content.processing.basin.BasinBlock;

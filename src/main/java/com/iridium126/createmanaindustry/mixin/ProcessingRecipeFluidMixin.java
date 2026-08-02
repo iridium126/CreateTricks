@@ -2,8 +2,8 @@ package com.iridium126.createmanaindustry.mixin;
 
 import com.iridium126.createmanaindustry.CMIFluids;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
+import com.iridium126.createmanaindustry.compat.hexcasting.HexCompat;
 import com.iridium126.createmanaindustry.content.fluids.CMIFluidConversions;
-import com.iridium126.createmanaindustry.hexcasting.HexCompat;
 import com.simibubi.create.content.processing.recipe.ProcessingRecipe;
 import net.minecraft.core.NonNullList;
 import net.minecraft.core.registries.BuiltInRegistries;

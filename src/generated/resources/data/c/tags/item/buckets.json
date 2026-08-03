@@ -2,6 +2,7 @@
   "values": [
     "createmanaindustry:liquid_mana_bucket",
     "createmanaindustry:liquid_media_bucket",
-    "createmanaindustry:liquid_source_bucket"
+    "createmanaindustry:liquid_source_bucket",
+    "createmanaindustry:liquid_soul_bucket"
   ]
 }

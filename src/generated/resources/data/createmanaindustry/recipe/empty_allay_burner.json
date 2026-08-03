@@ -1,0 +1,21 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "A": {
+      "item": "minecraft:amethyst_block"
+    },
+    "S": {
+      "item": "create:iron_sheet"
+    }
+  },
+  "pattern": [
+    " S ",
+    "SAS",
+    " S "
+  ],
+  "result": {
+    "count": 1,
+    "id": "createmanaindustry:empty_allay_burner"
+  }
+}

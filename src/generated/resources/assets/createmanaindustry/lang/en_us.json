@@ -7,9 +7,11 @@
   "block.createmanaindustry.kinetic_mana_generator": "Kinetic Mana Generator",
   "block.createmanaindustry.liquid_mana": "Liquid Mana",
   "block.createmanaindustry.liquid_media": "Liquid Media",
+  "block.createmanaindustry.liquid_soul": "Liquid Soul",
   "block.createmanaindustry.liquid_source": "Liquid Source",
   "block.createmanaindustry.mana_cogwheel": "Mana Cogwheel",
   "fluid.createmanaindustry.liquid_media": "Liquid Media",
+  "fluid.createmanaindustry.liquid_soul": "Liquid Soul",
   "fluid.createmanaindustry.liquid_source": "Liquid Source",
   "item.createmanaindustry.empty_allay_burner": "Empty Allay Burner",
   "item.createmanaindustry.incomplete_artifact": "Incomplete Artifact",
@@ -24,5 +26,6 @@
   "item.createmanaindustry.kinetics_spell_core": "Kinetics Spell Core",
   "item.createmanaindustry.liquid_mana_bucket": "Liquid Mana Bucket",
   "item.createmanaindustry.liquid_media_bucket": "Liquid Media Bucket",
+  "item.createmanaindustry.liquid_soul_bucket": "Liquid Soul Bucket",
   "item.createmanaindustry.liquid_source_bucket": "Liquid Source Bucket"
 }

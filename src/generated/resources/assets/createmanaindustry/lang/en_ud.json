@@ -7,9 +7,11 @@
   "block.createmanaindustry.kinetic_mana_generator": "ɹoʇɐɹǝuǝ⅁ ɐuɐW ɔıʇǝuıʞ",
   "block.createmanaindustry.liquid_mana": "ɐuɐW pınbıꞀ",
   "block.createmanaindustry.liquid_media": "ɐıpǝW pınbıꞀ",
+  "block.createmanaindustry.liquid_soul": "ןnoS pınbıꞀ",
   "block.createmanaindustry.liquid_source": "ǝɔɹnoS pınbıꞀ",
   "block.createmanaindustry.mana_cogwheel": "ןǝǝɥʍboƆ ɐuɐW",
   "fluid.createmanaindustry.liquid_media": "ɐıpǝW pınbıꞀ",
+  "fluid.createmanaindustry.liquid_soul": "ןnoS pınbıꞀ",
   "fluid.createmanaindustry.liquid_source": "ǝɔɹnoS pınbıꞀ",
   "item.createmanaindustry.empty_allay_burner": "ɹǝuɹnᗺ ʎɐןןⱯ ʎʇdɯƎ",
   "item.createmanaindustry.incomplete_artifact": "ʇɔɐɟıʇɹⱯ ǝʇǝןdɯoɔuI",
@@ -24,5 +26,6 @@
   "item.createmanaindustry.kinetics_spell_core": "ǝɹoƆ ןןǝdS sɔıʇǝuıʞ",
   "item.createmanaindustry.liquid_mana_bucket": "ʇǝʞɔnᗺ ɐuɐW pınbıꞀ",
   "item.createmanaindustry.liquid_media_bucket": "ʇǝʞɔnᗺ ɐıpǝW pınbıꞀ",
+  "item.createmanaindustry.liquid_soul_bucket": "ʇǝʞɔnᗺ ןnoS pınbıꞀ",
   "item.createmanaindustry.liquid_source_bucket": "ʇǝʞɔnᗺ ǝɔɹnoS pınbıꞀ"
 }

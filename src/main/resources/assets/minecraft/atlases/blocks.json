@@ -23,6 +23,14 @@
     {
       "type": "single",
       "resource": "createmanaindustry:fluid/liquid_source_still"
+    },
+    {
+      "type": "single",
+      "resource": "createmanaindustry:fluid/liquid_soul_flow"
+    },
+    {
+      "type": "single",
+      "resource": "createmanaindustry:fluid/liquid_soul_still"
     }
   ]
 }

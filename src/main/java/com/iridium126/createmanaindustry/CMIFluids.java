@@ -54,7 +54,7 @@ public class CMIFluids {
 
     public static final FluidEntry<BaseFlowingFluid.Flowing> LIQUID_MEDIA =
             REGISTRATE.standardFluid("liquid_media")
-                    .properties(b -> b.viscosity(1000).density(1000).lightLevel(15))
+                    .properties(b -> b.viscosity(1000).density(1000).lightLevel(10))
                     .fluidProperties(p -> p.levelDecreasePerBlock(1)
                             .tickRate(5)
                             .slopeFindDistance(4)
@@ -82,6 +82,24 @@ public class CMIFluids {
                     .properties(p -> p.mapColor(MapColor.COLOR_PURPLE))
                     .build()
                     .bucket()
+                    .onRegister(CMIFluids::registerFluidDispenseBehavior)
+                    .tag(Tags.Items.BUCKETS)
+                    .build()
+                    .register();
+
+    public static final FluidEntry<BaseFlowingFluid.Flowing> LIQUID_SOUL =
+            REGISTRATE.standardFluid("liquid_soul")
+                    .properties(b -> b.viscosity(1000).density(1000).lightLevel(15))
+                    .fluidProperties(p -> p.levelDecreasePerBlock(1)
+                            .tickRate(5)
+                            .slopeFindDistance(4)
+                            .explosionResistance(100f))
+                    .source(BaseFlowingFluid.Source::new)
+                    .block()
+                    .properties(p -> p.mapColor(MapColor.COLOR_LIGHT_BLUE))
+                    .build()
+                    .bucket()
+                    .model(NonNullBiConsumer.noop())
                     .onRegister(CMIFluids::registerFluidDispenseBehavior)
                     .tag(Tags.Items.BUCKETS)
                     .build()

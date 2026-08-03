@@ -54,6 +54,16 @@ public final class CMIBlocks {
     public static final ItemEntry<AllayBurnerBlockItem> EMPTY_ALLAY_BURNER = REGISTRATE
             .item("empty_allay_burner", p -> AllayBurnerBlockItem.empty(CMIBlocks.ALLAY_BURNER.get(), p))
             .model(NonNullBiConsumer.noop())
+            .recipe((c, p) -> {
+                ShapedRecipeBuilder.shaped(RecipeCategory.MISC, c.get())
+                        .define('S', AllItems.IRON_SHEET)
+                        .define('A', Blocks.AMETHYST_BLOCK.asItem())
+                        .pattern(" S ")
+                        .pattern("SAS")
+                        .pattern(" S ")
+                        .unlockedBy("has_amethyst_block", RegistrateRecipeProvider.has(Blocks.AMETHYST_BLOCK.asItem()))
+                        .save(p, CreateManaIndustry.modLoc(c.getName()));
+            })
             .register();
 
     public static final BlockEntry<KineticAtomizerBlock> KINETIC_ATOMIZER = REGISTRATE

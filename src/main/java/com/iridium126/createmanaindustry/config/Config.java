@@ -59,6 +59,10 @@ public final class Config {
             .comment("Liquid Soul mist capacity (mB) added per tick by a burning Allay Burner.")
             .defineInRange("allayBurnerMistPerTick", 1, 1, 1000);
 
+    private static final ModConfigSpec.DoubleValue MIST_GLOW_STRENGTH = BUILDER
+            .comment("Global multiplier for the glow of volumetric mist produced by glowing fluids (per-fluid glow derives from the fluid's light level).")
+            .defineInRange("mistGlowStrength", 1.0, 0.0, 100.0);
+
     private static final ModConfigSpec.LongValue CYPHER_MAX_MEDIA = BUILDER
             .comment("Maximum media capacity for incomplete cyphers (in Hexcasting dust units, 1 dust = 10,000).")
             .defineInRange("cypherMaxMedia", 6400000L, 10000L, Long.MAX_VALUE);
@@ -89,6 +93,7 @@ public final class Config {
     public static double condenseEfficiency = 5.0;
     public static int allayBurnerMistRadius = 4;
     public static int allayBurnerMistPerTick = 1;
+    public static double mistGlowStrength = 1.0;
     public static long cypherMaxMedia = 6400000L;
     public static long trinketMaxMedia = 64000000L;
     public static long artifactMaxMedia = 640000000L;
@@ -111,6 +116,7 @@ public final class Config {
             condenseEfficiency = CONDENSE_EFFICIENCY.get();
             allayBurnerMistRadius = ALLAY_BURNER_MIST_RADIUS.get();
             allayBurnerMistPerTick = ALLAY_BURNER_MIST_PER_TICK.get();
+            mistGlowStrength = MIST_GLOW_STRENGTH.get();
             cypherMaxMedia = CYPHER_MAX_MEDIA.get();
             trinketMaxMedia = TRINKET_MAX_MEDIA.get();
             artifactMaxMedia = ARTIFACT_MAX_MEDIA.get();

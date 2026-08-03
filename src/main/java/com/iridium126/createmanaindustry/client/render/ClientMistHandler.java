@@ -1,11 +1,14 @@
 package com.iridium126.createmanaindustry.client.render;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.CMIFluids;
+import com.iridium126.createmanaindustry.config.Config;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistEmitter;
 import com.mojang.blaze3d.platform.NativeImage;
 
@@ -19,6 +22,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.level.material.Fluids;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.extensions.common.IClientFluidTypeExtensions;
 import net.neoforged.neoforge.fluids.FluidStack;
 
@@ -36,9 +40,15 @@ import net.neoforged.neoforge.fluids.FluidStack;
 public final class ClientMistHandler {
 
     private static final ResourceLocation PIPELINE_ID = CreateManaIndustry.modLoc("mist");
-    private static final int MAX_ATOMIZERS = 16;
+    private static final int MAX_ATOMIZERS = 32;
     /** Radius units per render frame during appear/disappear/change transitions. */
     private static final float RADIUS_LERP_SPEED = 0.5f;
+    /** Below this radius a source is considered vanished and not mergeable. */
+    private static final float MIN_MERGE_RADIUS = 0.01f;
+    /** Absorption multiplier when the camera is outside every mist volume. */
+    private static final float OUTSIDE_ABSORPTION = 0.25f;
+    /** Mist concentration at which absorption reaches its full value. */
+    private static final float FULL_ABSORPTION_CONC = 0.5f;
 
     /** Per-source client data with animation state for smooth radius transitions. */
     private static final class MistSourceData {
@@ -62,9 +72,15 @@ public final class ClientMistHandler {
     /** Client-side registry of active atomizer positions and their per-source data. */
     private static final Map<BlockPos, MistSourceData> activeSources = new ConcurrentHashMap<>();
 
-    private static final float[] atomizerData = new float[MAX_ATOMIZERS * 4];
-    private static final float[] atomizerColorData = new float[MAX_ATOMIZERS * 3];
+    // Per-source layout: x, y, z, invRadiusSq, colorIndex, absorptionScale (6 floats).
+    // invRadiusSq (0 for vanished sources) lets the shader test d2 * invR2 <= 1
+    // with a multiply instead of a division in the hot loop.
+    private static final float[] atomizerData = new float[MAX_ATOMIZERS * 6];
+    // One RGBA entry per distinct fluid present among the packed sources:
+    // r, g, b plus the glow emission (light level derived, mistGlowStrength scaled).
+    private static final float[] paletteData = new float[MAX_ATOMIZERS * 4];
     private static int atomizerCount = 0;
+    private static int paletteCount = 0;
     private static boolean initialized = false;
     private static boolean dirty = true;
     private static boolean pipelineActive = false;
@@ -180,6 +196,8 @@ public final class ClientMistHandler {
             packAtomizerData();
             dirty = false;
         }
+        // Camera-dependent per-source absorption — refresh every frame
+        updateAbsorptionScales();
 
         var countUniform = pipeline.getUniform("AtomizerCount");
         if (countUniform != null)
@@ -189,9 +207,13 @@ public final class ClientMistHandler {
         if (dataUniform != null)
             dataUniform.setFloats(atomizerData);
 
-        var colorDataUniform = pipeline.getUniform("AtomizerColors");
-        if (colorDataUniform != null)
-            colorDataUniform.setFloats(atomizerColorData);
+        var paletteUniform = pipeline.getUniform("MistPalette");
+        if (paletteUniform != null)
+            paletteUniform.setFloats(paletteData);
+
+        var paletteCountUniform = pipeline.getUniform("PaletteCount");
+        if (paletteCountUniform != null)
+            paletteCountUniform.setInt(paletteCount);
 
         var opacityUniform = pipeline.getUniform("MistOpacity");
         if (opacityUniform != null)
@@ -218,31 +240,194 @@ public final class ClientMistHandler {
     }
 
     private static void packAtomizerData() {
-        int count = 0;
+        // Collect sources in a deterministic order (largest radius first).
+        List<SourceEntry> sources = new ArrayList<>();
         for (var entry : activeSources.entrySet()) {
-            if (count >= MAX_ATOMIZERS)
-                break;
-            BlockPos pos = entry.getKey();
             MistSourceData data = entry.getValue();
+            BlockPos pos = entry.getKey();
+            sources.add(new SourceEntry(pos.getX() + 0.5f, pos.getY() + 0.5f, pos.getZ() + 0.5f,
+                    data.displayRadius, data.fluid, data.fading, data.targetRadius));
+        }
+        sources.sort((a, b) -> Float.compare(b.radius, a.radius));
 
-            float[] color = getCachedFluidColor(data.fluid);
+        // Merge adjacent same-fluid sources only when over the slot budget.
+        List<PackedSource> packed = new ArrayList<>();
+        if (sources.size() > MAX_ATOMIZERS) {
+            packed = mergeSources(sources);
+            // Deterministic fallback: if merging cannot fit everything, keep the
+            // largest-radius sources instead of dropping arbitrary ones.
+            if (packed.size() > MAX_ATOMIZERS) {
+                packed.sort((a, b) -> Float.compare(b.radius, a.radius));
+                packed = packed.subList(0, MAX_ATOMIZERS);
+            }
+        } else {
+            for (SourceEntry s : sources)
+                packed.add(s.asPacked());
+        }
 
-            // Position + radius
-            int base = count * 4;
-            atomizerData[base] = pos.getX() + 0.5f;
-            atomizerData[base + 1] = pos.getY() + 0.5f;
-            atomizerData[base + 2] = pos.getZ() + 0.5f;
-            atomizerData[base + 3] = data.displayRadius;
-
-            // Color (r, g, b)
-            int cBase = count * 3;
-            atomizerColorData[cBase] = color[0];
-            atomizerColorData[cBase + 1] = color[1];
-            atomizerColorData[cBase + 2] = color[2];
-
+        // Build the color palette (one entry per distinct fluid) and pack.
+        Map<Fluid, Integer> paletteIndex = new HashMap<>();
+        paletteCount = 0;
+        int count = 0;
+        for (PackedSource s : packed) {
+            int idx = paletteIndex.computeIfAbsent(s.fluid.getFluid(), fluid -> {
+                float[] color = getCachedFluidColor(s.fluid);
+                int i = paletteCount;
+                paletteData[i * 4] = color[0];
+                paletteData[i * 4 + 1] = color[1];
+                paletteData[i * 4 + 2] = color[2];
+                // Glow emission mirrors the fluid's own light level (mana/soul 15,
+                // media 10, water 0), scaled by the global config multiplier.
+                int lightLevel = fluid.getFluidType().getLightLevel(new FluidStack(fluid, 1));
+                paletteData[i * 4 + 3] = (float) Math.min(1.0, lightLevel / 15.0)
+                        * (float) Config.mistGlowStrength;
+                paletteCount++;
+                return i;
+            });
+            int base = count * 6;
+            atomizerData[base] = s.x;
+            atomizerData[base + 1] = s.y;
+            atomizerData[base + 2] = s.z;
+            atomizerData[base + 3] = s.radius <= MIN_MERGE_RADIUS ? 0f : 1f / (s.radius * s.radius);
+            atomizerData[base + 4] = idx;
+            atomizerData[base + 5] = 1.0f; // overwritten every frame by updateAbsorptionScales
             count++;
         }
         atomizerCount = count;
+    }
+
+    /**
+     * Updates each packed source's own absorption scale from the camera's
+     * position relative to that source, continuously in the source's
+     * concentration at the camera (same packed data the shader renders):
+     * {@link #OUTSIDE_ABSORPTION} at the rim, ramping up linearly to full
+     * absorption at {@link #FULL_ABSORPTION_CONC}. Called every frame — the
+     * camera moves even when the sources do not.
+     */
+    private static void updateAbsorptionScales() {
+        Vec3 cam = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
+        for (int i = 0; i < atomizerCount; i++) {
+            int base = i * 6;
+            float dx = atomizerData[base] - (float) cam.x;
+            float dy = atomizerData[base + 1] - (float) cam.y;
+            float dz = atomizerData[base + 2] - (float) cam.z;
+            float invR2 = atomizerData[base + 3];
+            float conc = 0.0f;
+            if (invR2 > 0.0f) {
+                float r = (float) (1.0 / Math.sqrt(invR2));
+                float d = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+                if (d <= r)
+                    conc = 1.0f - d / r;
+            }
+            float t = Math.min(1.0f, conc / FULL_ABSORPTION_CONC);
+            atomizerData[base + 5] = OUTSIDE_ABSORPTION + (1.0f - OUTSIDE_ABSORPTION) * t;
+        }
+    }
+
+    /**
+     * Merges adjacent same-fluid sources when the active count exceeds the slot
+     * budget, so no source silently vanishes. Render-only (the server-side
+     * field is untouched) and stateless per frame.
+     * <p>
+     * Fading sources are never merged — they must keep their shrinking radius
+     * so fade-outs stay smooth. A pair (a, b) of the same fluid merges when the
+     * centers are close ({@code d <= 0.5 * min(r)} — small visual error: halo
+     * up to ~19% extra area, peak dip up to 20%) or when one disk fully
+     * contains the other (support-exact). The merged source sits at the
+     * midpoint with radius {@code max(rA, rB) + d / 2}, which covers both
+     * original supports. The pair with the smallest {@code d / min(r)} error is
+     * merged first; merging stops when the budget is met or no valid pair
+     * remains.
+     */
+    private static List<PackedSource> mergeSources(List<SourceEntry> sources) {
+        List<PackedSource> result = new ArrayList<>();
+        List<PackedSource> pool = new ArrayList<>();
+        for (SourceEntry s : sources) {
+            if (s.fading || s.targetRadius <= MIN_MERGE_RADIUS)
+                result.add(s.asPacked());
+            else
+                pool.add(s.asPacked());
+        }
+
+        while (result.size() + pool.size() > MAX_ATOMIZERS) {
+            int bestA = -1;
+            int bestB = -1;
+            float bestScore = Float.MAX_VALUE;
+            for (int i = 0; i < pool.size(); i++) {
+                for (int j = i + 1; j < pool.size(); j++) {
+                    PackedSource a = pool.get(i);
+                    PackedSource b = pool.get(j);
+                    if (a.fluid.getFluid() != b.fluid.getFluid())
+                        continue;
+                    float d = (float) Math.sqrt(sq(a.x - b.x) + sq(a.y - b.y) + sq(a.z - b.z));
+                    float minR = Math.min(a.radius, b.radius);
+                    if (d <= 0.5f * minR || d + minR <= Math.max(a.radius, b.radius)) {
+                        float score = d / minR;
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestA = i;
+                            bestB = j;
+                        }
+                    }
+                }
+            }
+            if (bestA < 0)
+                break; // no mergeable pair remains — the budget cannot be met
+
+            PackedSource a = pool.remove(bestB); // remove the higher index first
+            PackedSource b = pool.remove(bestA);
+            float d = (float) Math.sqrt(sq(a.x - b.x) + sq(a.y - b.y) + sq(a.z - b.z));
+            float cx = (a.x + b.x) * 0.5f;
+            float cy = (a.y + b.y) * 0.5f;
+            float cz = (a.z + b.z) * 0.5f;
+            float radius = Math.max(a.radius, b.radius) + d * 0.5f;
+            pool.add(new PackedSource(cx, cy, cz, radius, a.fluid));
+        }
+
+        result.addAll(pool);
+        return result;
+    }
+
+    private static float sq(float v) {
+        return v * v;
+    }
+
+    /** A live source snapshot for packing. */
+    private static final class SourceEntry {
+        final float x, y, z;
+        final float radius;
+        final FluidStack fluid;
+        final boolean fading;
+        final float targetRadius;
+
+        SourceEntry(float x, float y, float z, float radius, FluidStack fluid, boolean fading, float targetRadius) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.radius = radius;
+            this.fluid = fluid;
+            this.fading = fading;
+            this.targetRadius = targetRadius;
+        }
+
+        PackedSource asPacked() {
+            return new PackedSource(x, y, z, radius, fluid);
+        }
+    }
+
+    /** A source ready for the uniform arrays: a single source or a merged cluster. */
+    private static final class PackedSource {
+        final float x, y, z;
+        final float radius;
+        final FluidStack fluid;
+
+        PackedSource(float x, float y, float z, float radius, FluidStack fluid) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.radius = radius;
+            this.fluid = fluid;
+        }
     }
 
     // --- Fluid color extraction ---

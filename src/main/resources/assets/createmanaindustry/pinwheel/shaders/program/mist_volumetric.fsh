@@ -4,9 +4,10 @@ uniform sampler2D DiffuseSampler0;
 uniform sampler2D DiffuseDepthSampler;
 
 uniform int AtomizerCount;
-uniform float AtomizerData[64]; // packed: x,y,z,radius per atomizer
+uniform float AtomizerData[192]; // packed: x,y,z,invRadiusSq,colorIndex,absorptionScale per source, max 32
+uniform int PaletteCount;
 
-uniform float AtomizerColors[48]; // packed: r,g,b per atomizer, max 16
+uniform vec4 MistPalette[32]; // packed: r,g,b,emission per distinct fluid color
 uniform float MistOpacity;
 uniform float MistDensity;
 uniform float MistStepScale;
@@ -78,34 +79,41 @@ float henyey_greenstein_phase(float nu, float g) {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns vec2(concentration, index) where index is the atomizer that has
- * the maximum concentration at the given world position. If no atomizer
+ * Returns vec2(concentration, index) where index is the source that has
+ * the maximum concentration at the given world position. If no source
  * contributes, returns vec2(0.0, -1.0).
  */
 vec2 getConcentrationAndIdx(vec3 worldPos) {
-    float maxConc = 0.0;
+    // Sqrt-free dominant selection: conc = 1 - d/r is monotonically ordered by
+    // d^2 / r^2, so the winner is the source minimizing d^2 / r^2, and only the
+    // winner needs a single sqrt at the end (keeps the per-step cost flat when
+    // the source count grows).
+    float best = 1e9;
     float maxIdx = -1.0;
     for (int i = 0; i < AtomizerCount; i++) {
         vec4 atomizer = vec4(
-            AtomizerData[i * 4],
-            AtomizerData[i * 4 + 1],
-            AtomizerData[i * 4 + 2],
-            AtomizerData[i * 4 + 3]
+            AtomizerData[i * 6],
+            AtomizerData[i * 6 + 1],
+            AtomizerData[i * 6 + 2],
+            AtomizerData[i * 6 + 3]
         );
+        float invR2 = atomizer.w;
+        if (invR2 <= 0.0) // vanished source
+            continue;
         float dx = worldPos.x - atomizer.x;
         float dy = worldPos.y - atomizer.y;
         float dz = worldPos.z - atomizer.z;
-        float dist = sqrt(dx * dx + dy * dy + dz * dz);
-        float radius = atomizer.w;
-        if (dist <= radius) {
-            float conc = 1.0 - dist / radius;
-            if (conc > maxConc) {
-                maxConc = conc;
-                maxIdx = float(i);
-            }
+        float t = (dx * dx + dy * dy + dz * dz) * invR2; // d2/r2, multiply instead of divide
+        if (t > 1.0) // outside the radius — contributes nothing
+            continue;
+        if (t < best) {
+            best = t;
+            maxIdx = float(i);
         }
     }
-    return vec2(maxConc, maxIdx);
+    if (maxIdx < 0.0)
+        return vec2(0.0, -1.0);
+    return vec2(1.0 - sqrt(best), maxIdx);
 }
 
 // ---------------------------------------------------------------------------
@@ -151,11 +159,45 @@ void main() {
     stepCount = int(rayLength / stepSize);
     stepCount = min(stepCount, MAX_STEPS);
 
+    // --- Ray-source bounds: skip the march entirely when the ray reaches no
+    // source, and only march within the span the ray spends near any source.
+    // Exact: a sample can only land inside a source if the ray passes within
+    // its radius, which is exactly what the loop below tests. ---
+
+    float marchStart = 1e9;
+    float marchEnd = -1e9;
+    for (int i = 0; i < AtomizerCount; i++) {
+        vec4 atomizer = vec4(
+            AtomizerData[i * 6],
+            AtomizerData[i * 6 + 1],
+            AtomizerData[i * 6 + 2],
+            AtomizerData[i * 6 + 3]
+        );
+        float invR2 = atomizer.w;
+        if (invR2 <= 0.0)
+            continue;
+        vec3 oc = atomizer.xyz - rayStart;
+        float tc = clamp(dot(oc, rayDir), 0.0, rayLength);
+        float d2 = dot(oc, oc) - tc * tc;
+        float r2 = 1.0 / invR2;
+        if (d2 <= r2) {
+            float dt = sqrt(r2 - d2);
+            marchStart = min(marchStart, max(tc - dt, 0.0));
+            marchEnd = max(marchEnd, min(tc + dt, rayLength));
+        }
+    }
+    if (marchEnd < marchStart) {
+        // The ray reaches no mist volume — pass the scene through
+        fragColor = sceneColor;
+        gl_FragDepth = sceneDepth;
+        return;
+    }
+
     // --- Dither start to hide banding (from Photon r1) ---
 
     float dither = hash1(vec3(gl_FragCoord.xy, 0.0));
 
-    float t = stepSize * dither;
+    float t = marchStart + stepSize * dither;
 
     // --- Ray march loop ---
 
@@ -165,7 +207,7 @@ void main() {
     float transmittance = 1.0;
 
     for (int i = 0; i < stepCount; i++) {
-        if (t > rayLength) break;
+        if (t > marchEnd) break;
         if (transmittance < 0.01) break;
 
         vec3 pos = rayStart + rayDir * t;
@@ -184,21 +226,23 @@ void main() {
             // Combined sun + ambient scattering
             float scatter = 0.5 + 0.5 * miePhase;
 
-            // Per-atomizer color from the dominant atomizer
+            // Per-source color from the fluid palette (dominant source)
             int idx = int(ci.y);
-            vec3 atomizerCol = vec3(
-                AtomizerColors[idx * 3],
-                AtomizerColors[idx * 3 + 1],
-                AtomizerColors[idx * 3 + 2]
-            );
-            vec3 mistLit = atomizerCol * scatter;
+            int palIdx = clamp(int(AtomizerData[idx * 6 + 4] + 0.5), 0, max(PaletteCount - 1, 0));
+            vec3 atomizerCol = MistPalette[palIdx].rgb;
+            // Glowing fluids make the mist luminous: self-emission, brighter
+            // toward the center (conc-weighted), composited with the scattered fog.
+            vec3 mistLit = atomizerCol * scatter
+                    + atomizerCol * MistPalette[palIdx].a * (0.5 + 0.5 * baseConc);
 
-            // Front-to-back alpha compositing
+            // Front-to-back alpha compositing. Absorption uses the dominant
+            // source's own scale (full while the camera sits inside it, very
+            // weak from the outside) so the scene behind stays nearly un-dimmed.
             float stepDensity = density * stepSize;
             vec4 sampleCol = vec4(mistLit, density * MistOpacity);
             sampleCol.rgb *= sampleCol.a;
             accumulatedMist += sampleCol * transmittance;
-            transmittance *= exp(-stepDensity * 0.5);
+            transmittance *= exp(-stepDensity * 0.5 * AtomizerData[idx * 6 + 5]);
         }
 
         t += stepSize;

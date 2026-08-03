@@ -17,12 +17,16 @@ public final class CMIArmInteractionPoints {
 
     @SubscribeEvent
     public static void registerArmInteractionPointType(RegisterEvent event) {
-        if (!CreateManaIndustry.TRICKSTER_ACTIVE)
-            return;
         if (!event.getRegistryKey().equals(CreateRegistries.ARM_INTERACTION_POINT_TYPE))
             return;
 
-        event.register(CreateRegistries.ARM_INTERACTION_POINT_TYPE, ID,
-                TricksterKnotArmInteractionPointType::new);
+        // The Allay Burner point is core (not optional-dependency gated).
+        event.register(CreateRegistries.ARM_INTERACTION_POINT_TYPE,
+                ResourceLocation.fromNamespaceAndPath(CreateManaIndustry.MODID, "allay_burner"),
+                AllayBurnerArmInteractionPointType::new);
+
+        if (CreateManaIndustry.TRICKSTER_ACTIVE)
+            event.register(CreateRegistries.ARM_INTERACTION_POINT_TYPE, ID,
+                    TricksterKnotArmInteractionPointType::new);
     }
 }

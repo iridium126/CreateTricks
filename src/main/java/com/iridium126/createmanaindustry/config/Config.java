@@ -51,6 +51,14 @@ public final class Config {
             .comment("Base amount (mB/tick) of mist fluid condensed per unit of concentration when water flows through a Condenser.")
             .defineInRange("condenseEfficiency", 5.0, 0.0, 1000.0);
 
+    private static final ModConfigSpec.IntValue ALLAY_BURNER_MIST_RADIUS = BUILDER
+            .comment("Radius (in blocks) of the Liquid Soul mist field emitted while the Allay Burner is burning.")
+            .defineInRange("allayBurnerMistRadius", 4, 1, 32);
+
+    private static final ModConfigSpec.IntValue ALLAY_BURNER_MIST_PER_TICK = BUILDER
+            .comment("Liquid Soul mist capacity (mB) added per tick by a burning Allay Burner.")
+            .defineInRange("allayBurnerMistPerTick", 1, 1, 1000);
+
     private static final ModConfigSpec.LongValue CYPHER_MAX_MEDIA = BUILDER
             .comment("Maximum media capacity for incomplete cyphers (in Hexcasting dust units, 1 dust = 10,000).")
             .defineInRange("cypherMaxMedia", 6400000L, 10000L, Long.MAX_VALUE);
@@ -79,6 +87,8 @@ public final class Config {
     public static int mistFluidPerTick = 8;
     public static double mistBaseConcentration = 1.0;
     public static double condenseEfficiency = 5.0;
+    public static int allayBurnerMistRadius = 4;
+    public static int allayBurnerMistPerTick = 1;
     public static long cypherMaxMedia = 6400000L;
     public static long trinketMaxMedia = 64000000L;
     public static long artifactMaxMedia = 640000000L;
@@ -99,6 +109,8 @@ public final class Config {
             mistFluidPerTick = MIST_FLUID_PER_TICK.get();
             mistBaseConcentration = MIST_BASE_CONCENTRATION.get();
             condenseEfficiency = CONDENSE_EFFICIENCY.get();
+            allayBurnerMistRadius = ALLAY_BURNER_MIST_RADIUS.get();
+            allayBurnerMistPerTick = ALLAY_BURNER_MIST_PER_TICK.get();
             cypherMaxMedia = CYPHER_MAX_MEDIA.get();
             trinketMaxMedia = TRINKET_MAX_MEDIA.get();
             artifactMaxMedia = ARTIFACT_MAX_MEDIA.get();

@@ -1,6 +1,7 @@
 package com.iridium126.createmanaindustry.ponder;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
+import com.iridium126.createmanaindustry.CMIBlocks;
 import com.simibubi.create.infrastructure.ponder.AllCreatePonderTags;
 
 import net.createmod.ponder.api.registration.PonderPlugin;
@@ -44,5 +45,7 @@ public class CMIPonderPlugin implements PonderPlugin {
             itemHelper.addToTag(AllCreatePonderTags.DISPLAY_TARGETS).add(modularSpellConstruct);
             itemHelper.addToTag(AllCreatePonderTags.ARM_TARGETS).add(modularSpellConstruct);
         }
+
+        itemHelper.addToTag(AllCreatePonderTags.ARM_TARGETS).add(CMIBlocks.ALLAY_BURNER);
     }
 }

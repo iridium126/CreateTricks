@@ -1,10 +1,13 @@
 package com.iridium126.createmanaindustry.content.burner;
 
 import java.util.List;
+import java.util.Optional;
 
 import org.jetbrains.annotations.Nullable;
 
+import com.iridium126.createmanaindustry.CMIFluids;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
+import com.iridium126.createmanaindustry.content.fluids.mist.MistEmitter;
 import com.iridium126.createmanaindustry.compat.hexcasting.HexCompat;
 import com.iridium126.createmanaindustry.config.Config;
 import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
@@ -23,6 +26,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.Holder;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.Registry;
 import net.minecraft.core.particles.ParticleTypes;
@@ -33,14 +37,22 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.Container;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.JukeboxSong;
+import net.minecraft.world.item.JukeboxSongPlayer;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
-import net.neoforged.neoforge.capabilities.Capabilities;
+import net.minecraft.world.level.gameevent.GameEvent;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.ticks.ContainerSingleItem;
+import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.fluids.FluidStack;
 import net.neoforged.neoforge.fluids.capability.IFluidHandler;
 
@@ -54,16 +66,30 @@ import net.neoforged.neoforge.fluids.capability.IFluidHandler;
  * durations derive from {@code Config.mediaConsumedPerTick} media consumed
  * per tick.
  */
-public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGoggleInformation {
+public class AllayBurnerBlockEntity extends SmartBlockEntity
+        implements IHaveGoggleInformation, ContainerSingleItem.BlockContainerSingleItem {
 
     public static final int INSERTION_THRESHOLD = 500;
     public static final int TANK_CAPACITY = 1000;
+
+    public static final String SONG_ITEM_TAG_ID = "RecordItem";
+    public static final String TICKS_SINCE_SONG_STARTED_TAG_ID = "ticks_since_song_started";
 
     protected FuelType activeFuel;
     protected int remainingBurnTime;
     protected boolean isCreative;
 
     protected SmartFluidTankBehaviour tank;
+
+    // Jukebox mirror: the inserted record and the server-side song player
+    // (exactly like JukeboxBlockEntity).
+    protected ItemStack item = ItemStack.EMPTY;
+    protected final JukeboxSongPlayer jukeboxSongPlayer = new JukeboxSongPlayer(this::onSongChanged, this.getBlockPos());
+
+    // Liquid Soul mist emission while burning, synced to the client like the
+    // Kinetic Atomizer's mist field.
+    private boolean wasActive = false;
+    private int currentRadius = 0;
 
     // Client-side: the allay's facing angle (mirrors Create's blaze headAngle).
     // Idle burners look at the nearest player; burning burners face FACING.
@@ -103,6 +129,34 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
                     spawnParticles(getHeatLevelFromBlock(), 1);
             }
             return;
+        }
+
+        // Jukebox mirror: tick the song player (fires 1011 + game events when
+        // the song ends; mirrors JukeboxBlockEntity.tick).
+        jukeboxSongPlayer.tick(level, getBlockState());
+
+        // Burning burners emit a Liquid Soul mist field as a byproduct.
+        // Uses the computed heat level (not the block state) so the mist turns
+        // on the same tick fuel is applied and off the tick it runs out.
+        boolean burning = getHeatLevel() == AllayBurnerBlock.HeatLevel.ALLAYHEATED;
+        if (burning) {
+            int radius = Config.allayBurnerMistRadius;
+            if (!wasActive) {
+                MistEmitter.activate(level, worldPosition, new FluidStack(CMIFluids.LIQUID_SOUL.get(), 1), radius);
+                currentRadius = radius;
+                wasActive = true;
+                sendData();
+            } else if (currentRadius != radius) {
+                MistEmitter.updateRadius(level, worldPosition, radius);
+                currentRadius = radius;
+                sendData();
+            }
+            MistEmitter.addCapacity(level, worldPosition, Config.allayBurnerMistPerTick);
+        } else if (wasActive) {
+            MistEmitter.deactivate(level, worldPosition);
+            wasActive = false;
+            currentRadius = 0;
+            sendData();
         }
 
         if (isCreative)
@@ -162,6 +216,15 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
         } else {
             compound.putBoolean("isCreative", true);
         }
+        // Jukebox mirror: persist the record and song progress (vanilla tag names).
+        if (!item.isEmpty())
+            compound.put(SONG_ITEM_TAG_ID, item.save(registries));
+        if (jukeboxSongPlayer.getSong() != null)
+            compound.putLong(TICKS_SINCE_SONG_STARTED_TAG_ID, jukeboxSongPlayer.getTicksSinceSongStarted());
+        if (clientPacket) {
+            compound.putBoolean("MistActive", wasActive);
+            compound.putInt("MistRadius", currentRadius);
+        }
         super.write(compound, registries, clientPacket);
     }
 
@@ -170,7 +233,108 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity implements IHaveGog
         activeFuel = FuelType.values()[compound.getInt("fuelLevel")];
         remainingBurnTime = compound.getInt("burnTimeRemaining");
         isCreative = compound.getBoolean("isCreative");
+        if (compound.contains(SONG_ITEM_TAG_ID, CompoundTag.TAG_COMPOUND))
+            item = ItemStack.parse(registries, compound.getCompound(SONG_ITEM_TAG_ID)).orElse(ItemStack.EMPTY);
+        else
+            item = ItemStack.EMPTY;
+        if (compound.contains(TICKS_SINCE_SONG_STARTED_TAG_ID, CompoundTag.TAG_LONG))
+            JukeboxSong.fromStack(registries, item).ifPresent(song ->
+                jukeboxSongPlayer.setSongWithoutPlaying(song, compound.getLong(TICKS_SINCE_SONG_STARTED_TAG_ID)));
+        if (clientPacket) {
+            wasActive = compound.getBoolean("MistActive");
+            currentRadius = compound.getInt("MistRadius");
+            MistEmitter.notifyClientSync(worldPosition,
+                wasActive ? new FluidStack(CMIFluids.LIQUID_SOUL.get(), 1) : FluidStack.EMPTY, currentRadius);
+        }
         super.read(compound, registries, clientPacket);
+    }
+
+    // ---- Jukebox mirror: exact port of JukeboxBlockEntity -------------------
+
+    public JukeboxSongPlayer getSongPlayer() {
+        return jukeboxSongPlayer;
+    }
+
+    public void onSongChanged() {
+        level.updateNeighborsAt(worldPosition, getBlockState().getBlock());
+        setChanged();
+    }
+
+    private void notifyItemChangedInJukebox(boolean hasRecord) {
+        if (level != null && level.getBlockState(worldPosition) == getBlockState()) {
+            level.setBlock(worldPosition, getBlockState().setValue(AllayBurnerBlock.HAS_RECORD, hasRecord), 2);
+            level.gameEvent(GameEvent.BLOCK_CHANGE, worldPosition, GameEvent.Context.of(getBlockState()));
+        }
+    }
+
+    public void popOutTheItem() {
+        if (level != null && !level.isClientSide) {
+            ItemStack itemstack = getTheItem();
+            if (!itemstack.isEmpty()) {
+                removeTheItem();
+                Vec3 vec3 = Vec3.atLowerCornerWithOffset(worldPosition, 0.5, 1.01, 0.5)
+                    .offsetRandom(level.random, 0.7F);
+                ItemEntity itementity = new ItemEntity(level, vec3.x(), vec3.y(), vec3.z(), itemstack.copy());
+                itementity.setDefaultPickUpDelay();
+                level.addFreshEntity(itementity);
+            }
+        }
+    }
+
+    public void setTheItem(ItemStack item) {
+        this.item = item;
+        boolean hasRecord = !this.item.isEmpty();
+        Optional<Holder<JukeboxSong>> optional = JukeboxSong.fromStack(level.registryAccess(), this.item);
+        this.notifyItemChangedInJukebox(hasRecord);
+        if (hasRecord && optional.isPresent())
+            this.jukeboxSongPlayer.play(this.level, optional.get());
+        else
+            this.jukeboxSongPlayer.stop(this.level, getBlockState());
+    }
+
+    @Override
+    public ItemStack getTheItem() {
+        return item;
+    }
+
+    @Override
+    public ItemStack splitTheItem(int amount) {
+        // Mirrors vanilla: removing the record also stops the song and clears
+        // HAS_RECORD (hopper extraction included).
+        ItemStack itemstack = this.item;
+        this.setTheItem(ItemStack.EMPTY);
+        return itemstack;
+    }
+
+    @Override
+    public int getMaxStackSize() {
+        return 1;
+    }
+
+    @Override
+    public BlockEntity getContainerBlockEntity() {
+        return this;
+    }
+
+    @Override
+    public boolean canPlaceItem(int slot, ItemStack stack) {
+        return stack.has(DataComponents.JUKEBOX_PLAYABLE) && getItem(slot).isEmpty();
+    }
+
+    @Override
+    public boolean canTakeItem(Container target, int slot, ItemStack stack) {
+        return target.hasAnyMatching(ItemStack::isEmpty);
+    }
+
+    @Override
+    public void invalidate() {
+        super.invalidate();
+        // Removes the mist field on break / chunk unload / contraption capture
+        // (SmartBlockEntity.setRemoved is final and calls invalidate). The song
+        // player is intentionally NOT stopped here: on contraption capture the
+        // client sound must keep playing so the movement behaviour can adopt it.
+        if (level != null && !level.isClientSide)
+            MistEmitter.deactivate(level, worldPosition);
     }
 
     public AllayBurnerBlock.HeatLevel getHeatLevelFromBlock() {

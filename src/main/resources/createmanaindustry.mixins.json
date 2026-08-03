@@ -41,6 +41,7 @@
     "LiquidBlockRendererMixin",
     "ModularSpellConstructBlockEntityRendererMixin",
     "SafeBlockEntityRendererMixin",
+    "LevelRendererAccessor",
     "bnb.CogwheelChainBehaviourRendererMixin",
     "bnb.CogwheelChainBehaviourVisualMixin",
     "bnb.RenderedChainPathNodeMixin"

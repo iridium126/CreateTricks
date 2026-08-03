@@ -21,6 +21,7 @@ import net.minecraft.advancements.critereon.StatePropertiesPredicate;
 import net.minecraft.core.BlockPos;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.stats.Stats;
 import net.minecraft.util.RandomSource;
 import net.minecraft.util.StringRepresentable;
 import net.minecraft.world.InteractionHand;
@@ -30,6 +31,7 @@ import net.minecraft.world.ItemInteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.ItemLike;
@@ -41,7 +43,10 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition.Builder;
+import net.minecraft.world.level.block.state.properties.BooleanProperty;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.EnumProperty;
+import net.minecraft.world.level.gameevent.GameEvent;
 import net.minecraft.world.level.pathfinder.PathComputationType;
 import net.minecraft.world.level.storage.loot.LootPool;
 import net.minecraft.world.level.storage.loot.LootTable;
@@ -72,17 +77,37 @@ public class AllayBurnerBlock extends HorizontalDirectionalBlock
 
     public static final EnumProperty<HeatLevel> HEAT_LEVEL = EnumProperty.create("heat_level", HeatLevel.class);
 
+    public static final BooleanProperty HAS_RECORD = BlockStateProperties.HAS_RECORD;
+
     public static final MapCodec<AllayBurnerBlock> CODEC = simpleCodec(AllayBurnerBlock::new);
 
     public AllayBurnerBlock(Properties properties) {
         super(properties);
-        registerDefaultState(defaultBlockState().setValue(HEAT_LEVEL, HeatLevel.NONE));
+        registerDefaultState(defaultBlockState().setValue(HEAT_LEVEL, HeatLevel.NONE)
+            .setValue(HAS_RECORD, false));
     }
 
     @Override
     protected void createBlockStateDefinition(Builder<Block, BlockState> builder) {
         super.createBlockStateDefinition(builder);
-        builder.add(HEAT_LEVEL, FACING);
+        builder.add(HEAT_LEVEL, FACING, HAS_RECORD);
+    }
+
+    /**
+     * Jukebox mirror: popping the record out on any real removal (mirrors
+     * {@code JukeboxBlock.onRemove}). Create contraption capture removes blocks
+     * with {@code UPDATE_MOVE_BY_PISTON} (isMoving = true), so the guard keeps
+     * the record inside the block entity NBT to travel with the contraption
+     * instead of dropping into the world (same pattern as Create's
+     * {@code AxisPipeBlock.onRemove}).
+     */
+    @Override
+    protected void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean isMoving) {
+        if (!state.is(newState.getBlock())) {
+            if (!isMoving && level.getBlockEntity(pos) instanceof AllayBurnerBlockEntity burner)
+                burner.popOutTheItem();
+            super.onRemove(state, level, pos, newState, isMoving);
+        }
     }
 
     @Override
@@ -125,6 +150,28 @@ public class AllayBurnerBlock extends HorizontalDirectionalBlock
         if (state.getValue(HEAT_LEVEL) == HeatLevel.NONE)
             return ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION;
 
+        // In 1.21.1 an empty hand always enters useItemOn(ItemStack.EMPTY)
+        // first — useWithoutItem is only reached as the PASS fallback (main
+        // hand). Pass through so an empty-hand click pops the record (vanilla
+        // jukebox behavior); a FAIL here would suppress the fallback entirely.
+        if (stack.isEmpty())
+            return ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION;
+
+        // Jukebox mirror: insert a record disc before any fuel logic. Written
+        // by hand because JukeboxPlayable.tryInsertIntoJukebox hardcodes
+        // Blocks.JUKEBOX. Discs never reach the fuel path (no media value).
+        if (!state.getValue(HAS_RECORD) && stack.has(DataComponents.JUKEBOX_PLAYABLE)) {
+            if (!level.isClientSide) {
+                ItemStack disc = stack.consumeAndReturn(1, player);
+                if (level.getBlockEntity(pos) instanceof AllayBurnerBlockEntity burner) {
+                    burner.setTheItem(disc);
+                    level.gameEvent(GameEvent.BLOCK_CHANGE, pos, GameEvent.Context.of(player, state));
+                }
+                player.awardStat(Stats.PLAY_RECORD);
+            }
+            return ItemInteractionResult.sidedSuccess(level.isClientSide);
+        }
+
         boolean doNotConsume = player.isCreative();
         boolean forceOverflow = !(player instanceof FakePlayer);
 
@@ -140,8 +187,28 @@ public class AllayBurnerBlock extends HorizontalDirectionalBlock
             }
         }
 
-        return res.getResult() == InteractionResult.SUCCESS ? ItemInteractionResult.SUCCESS
+        if (res.getResult() == InteractionResult.SUCCESS)
+            return ItemInteractionResult.SUCCESS;
+        // A failed fuel click must not fall through to useWithoutItem while a
+        // record is inserted, or the record would pop out on every failed feed
+        // (e.g. feeding a full burner).
+        return state.getValue(HAS_RECORD) ? ItemInteractionResult.FAIL
             : ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION;
+    }
+
+    /**
+     * Jukebox mirror: an empty-hand right-click pops the record out (mirrors
+     * {@code JukeboxBlock.useWithoutItem}). Only the empty hand reaches this
+     * method — clicks with an item in hand go through {@link #useItemOn}.
+     */
+    @Override
+    protected InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player,
+            BlockHitResult hitResult) {
+        if (state.getValue(HAS_RECORD) && level.getBlockEntity(pos) instanceof AllayBurnerBlockEntity jukebox) {
+            jukebox.popOutTheItem();
+            return InteractionResult.sidedSuccess(level.isClientSide);
+        }
+        return InteractionResult.PASS;
     }
 
     public static InteractionResultHolder<ItemStack> tryInsert(BlockState state, Level world, BlockPos pos,

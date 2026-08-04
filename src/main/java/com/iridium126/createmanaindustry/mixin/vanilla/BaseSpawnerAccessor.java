@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.mixin;
+package com.iridium126.createmanaindustry.mixin.vanilla;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;

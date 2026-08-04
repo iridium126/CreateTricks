@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.iridium126.createmanaindustry.mixin.KineticBlockEntityAccessor;
+import com.iridium126.createmanaindustry.mixin.kinetics.KineticBlockEntityAccessor;
 import com.simibubi.create.content.kinetics.KineticNetwork;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.content.kinetics.base.IRotate.SpeedLevel;

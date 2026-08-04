@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.mixin;
+package com.iridium126.createmanaindustry.mixin.basin;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -18,7 +18,7 @@ import net.minecraft.world.level.block.state.BlockState;
  * tag — its idle state must provide no heat.
  */
 @Mixin(value = BasinBlockEntity.class, remap = false)
-public class BasinBlockEntityHeatMixin {
+public class BasinBlockEntityMixin {
 
     @Inject(method = "getHeatLevelOf(Lnet/minecraft/world/level/block/state/BlockState;)Lcom/simibubi/create/content/processing/burner/BlazeBurnerBlock$HeatLevel;",
             at = @At("HEAD"), cancellable = true)

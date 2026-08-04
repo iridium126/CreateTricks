@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.mixin;
+package com.iridium126.createmanaindustry.mixin.hexcasting;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -20,10 +20,10 @@ import net.neoforged.neoforge.fluids.FluidStack;
  * same pattern — but delegates to {@link HexItemFillingLogic}.
  */
 @Mixin(value = FillingBySpout.class, remap = false)
-public class HexItemFillingSpoutMixin {
+public class FillingBySpoutHexMixin {
 
     @Inject(method = "getRequiredAmountForItem", at = @At("HEAD"), cancellable = true)
-    private static void hex$overrideIncompleteHexItemFluidAmount(Level world, ItemStack stack,
+    private static void createmanaindustry$overrideIncompleteHexItemFluidAmount(Level world, ItemStack stack,
             FluidStack availableFluid, CallbackInfoReturnable<Integer> cir) {
         int requiredAmount = HexItemFillingLogic.getRequiredFluidAmount(stack, availableFluid);
         if (requiredAmount >= 0)
@@ -31,7 +31,7 @@ public class HexItemFillingSpoutMixin {
     }
 
     @Inject(method = "fillItem", at = @At("HEAD"), cancellable = true)
-    private static void hex$fillIncompleteHexItem(Level level, int requiredAmount, ItemStack stack,
+    private static void createmanaindustry$fillIncompleteHexItem(Level level, int requiredAmount, ItemStack stack,
             FluidStack availableFluid, CallbackInfoReturnable<ItemStack> cir) {
         ItemStack result = HexItemFillingLogic.fillIncompleteHexItem(stack, requiredAmount);
         if (!result.isEmpty()) {

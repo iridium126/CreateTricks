@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.mixin;
+package com.iridium126.createmanaindustry.mixin.kinetics;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -16,7 +16,7 @@ import net.minecraft.world.item.crafting.RecipeHolder;
  * recipes in addition to the vanilla {@code create:mixing} type.
  */
 @Mixin(value = MechanicalMixerBlockEntity.class, remap = false)
-public class MechanicalMixerMistMixin {
+public class MechanicalMixerBlockEntityMixin {
 
     @Inject(method = "matchStaticFilters", at = @At("RETURN"), cancellable = true)
     private void createmanaindustry$matchMistMixing(RecipeHolder<? extends Recipe<?>> recipe,

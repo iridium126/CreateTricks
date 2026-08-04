@@ -9,7 +9,7 @@ import javax.annotation.ParametersAreNonnullByDefault;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.CMIBlocks;
-import com.iridium126.createmanaindustry.mixin.BaseSpawnerAccessor;
+import com.iridium126.createmanaindustry.mixin.vanilla.BaseSpawnerAccessor;
 
 import net.createmod.catnip.math.VecHelper;
 import net.createmod.catnip.registry.RegisteredObjectsHelper;

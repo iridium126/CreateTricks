@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.mixin;
+package com.iridium126.createmanaindustry.mixin.fluids;
 
 import com.iridium126.createmanaindustry.CMIFluids;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
@@ -37,7 +37,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * (safe fallback defaults) and the project's own {@code Config}.
  */
 @Mixin(value = ProcessingRecipe.class, remap = false)
-public class ProcessingRecipeFluidMixin {
+public class ProcessingRecipeMixin {
 
     private static final ResourceLocation AMETHYST_DUST_ID =
             ResourceLocation.fromNamespaceAndPath("hexcasting", "amethyst_dust");

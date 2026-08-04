@@ -1,4 +1,7 @@
-package com.iridium126.createmanaindustry.mixin;
+package com.iridium126.createmanaindustry.mixin.basin;
+
+import java.util.Comparator;
+import java.util.List;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -8,6 +11,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
+import com.iridium126.createmanaindustry.CMIRecipeTypes;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistEmitter;
 import com.iridium126.createmanaindustry.content.recipes.MistRecipe;
 import com.iridium126.createmanaindustry.content.recipes.MistOutput;
@@ -20,11 +24,15 @@ import net.minecraft.world.item.crafting.Recipe;
 import net.neoforged.neoforge.fluids.FluidStack;
 
 /**
- * Activates/deactivates persistent mist at the basin position when a
- * {@link MistRecipe} is being processed.
+ * Basin operating machines (press, mixer, deployer...):
+ * <ul>
+ *   <li>Sorts matching recipes so heated_compacting always wins.</li>
+ *   <li>Activates/deactivates persistent mist at the basin position when a
+ *       {@link MistRecipe} is being processed.</li>
+ * </ul>
  */
 @Mixin(value = BasinOperatingBlockEntity.class, remap = false)
-public class BasinOperatingBlockEntityMistMixin {
+public class BasinOperatingBlockEntityMixin {
 
     @Shadow
     protected Recipe<?> currentRecipe;
@@ -34,6 +42,20 @@ public class BasinOperatingBlockEntityMistMixin {
 
     @Unique
     private BlockPos createmanaindustry$activeMistPos;
+
+    @Inject(method = "getMatchingRecipes", at = @At("RETURN"))
+    private void createmanaindustry$prioritizeHeatedCompacting(CallbackInfoReturnable<List<Recipe<?>>> cir) {
+        List<Recipe<?>> list = cir.getReturnValue();
+        if (list.size() <= 1)
+            return;
+        // heated_compacting always takes priority over all other recipe types,
+        // regardless of ingredient count. Among the rest, more ingredients first.
+        var heatedType = CMIRecipeTypes.HEATED_COMPACTING.getType();
+        list.sort(
+                Comparator.<Recipe<?>, Boolean>comparing(r -> r.getType() != heatedType)
+                        .thenComparing(Comparator.<Recipe<?>, Integer>comparing(
+                                r -> r.getIngredients().size()).reversed()));
+    }
 
     /** After recipe completes, emit/extend timed mist if the recipe has mist output. */
     @Inject(method = "applyBasinRecipe", at = @At("RETURN"))

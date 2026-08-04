@@ -12,6 +12,17 @@ import net.neoforged.fml.loading.FMLLoader;
 /**
  * Conditionally enables mixins based on which optional dependencies are loaded.
  * <p>
+ * Gating is purely package-based — the mixin class FQCN decides:
+ * <ul>
+ *   <li>{@code .bnb.}        → Bits 'n' Bobs AND Trickster required</li>
+ *   <li>{@code .trickster.}  → Trickster required</li>
+ *   <li>{@code .hexcasting.} → Hexcasting required</li>
+ *   <li>anything else        → always applied</li>
+ * </ul>
+ * Subpackages are part of the FQCN, so every mixin under
+ * {@code com.iridium126.createmanaindustry.mixin} is covered; new mixins must
+ * be placed in the subpackage matching their gate.
+ * <p>
  * Uses {@link FMLLoader#getLoadingModList()} rather than {@code ModList.get()}
  * because the mixin plugin runs during the bootstrap phase — before NeoForge's
  * {@code ModList} singleton is populated.  {@code FMLLoader.getLoadingModList()}
@@ -40,18 +51,12 @@ public class CMIMixinPlugin implements IMixinConfigPlugin {
         if (mixinClassName.contains(".bnb."))
             return isLoaded(BNB_MOD_ID) && isLoaded(TRICKSTER_MOD_ID);
 
-        // Mixins that target Trickster classes — disable when Trickster is absent
-        if (mixinClassName.contains("TricksterSpellConstructSync")
-                || mixinClassName.contains("ModularSpellConstructBlockEntityRenderer"))
+        // Mixins targeting Trickster classes — disable when Trickster is absent
+        if (mixinClassName.contains(".trickster."))
             return isLoaded(TRICKSTER_MOD_ID);
 
-        // RecipeManagerMixin injects slate pattern stonecutting recipes from Hexcasting
-        if (mixinClassName.contains("RecipeManagerMixin"))
-            return isLoaded(HEX_MOD_ID);
-
-        // Mixins that handle incomplete hexcasting items via Create machines
-        if (mixinClassName.contains("HexItem")
-                || mixinClassName.contains("IotaTransfer"))
+        // Mixins handling Hexcasting items/recipes — disable when Hexcasting is absent
+        if (mixinClassName.contains(".hexcasting."))
             return isLoaded(HEX_MOD_ID);
 
         return true;

@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.mixin;
+package com.iridium126.createmanaindustry.mixin.basin;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -26,12 +26,12 @@ import net.minecraft.util.StringRepresentable;
  * <p>
  * The new constant rejects all {@link HeatCondition#testBlazeBurner} calls by
  * default; the actual "only an actively burning Allay Burner satisfies this"
- * check lives in {@link BasinRecipeAllayHeatMixin}, which has the basin context.
+ * check lives in {@link BasinRecipeMixin}, which has the basin context.
  * {@code visualizeAsBlazeBurner} maps it to {@code SEETHING} so JEI shows the
  * heater lit.
  */
 @Mixin(value = HeatCondition.class, remap = false)
-public abstract class HeatConditionAllayHeatedMixin {
+public abstract class HeatConditionMixin {
 
     @Inject(method = "<clinit>", at = @At("RETURN"))
     private static void createmanaindustry$injectAllayHeated(CallbackInfo ci) {

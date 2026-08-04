@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.mixin;
+package com.iridium126.createmanaindustry.mixin.hexcasting;
 
 import java.util.List;
 
@@ -29,12 +29,12 @@ import net.minecraft.world.level.Level;
  * Iota from the held item to the recipe output.
  */
 @Mixin(value = BeltDeployerCallbacks.class, remap = false)
-public class BeltDeployerIotaTransferMixin {
+public class BeltDeployerCallbacksMixin {
 
     private static final ThreadLocal<ItemStack> HELD_ITEM = new ThreadLocal<>();
 
     @Inject(method = "activate", at = @At("HEAD"), cancellable = true)
-    private static void hex$captureHeldItem(TransportedItemStack transported,
+    private static void createmanaindustry$captureHeldItem(TransportedItemStack transported,
             TransportedItemStackHandlerBehaviour handler,
             DeployerBlockEntity blockEntity, Recipe<?> recipe, CallbackInfo ci) {
         DeployerFakePlayer player = blockEntity.getPlayer();
@@ -54,7 +54,7 @@ public class BeltDeployerIotaTransferMixin {
     @Redirect(method = "activate",
             at = @At(value = "INVOKE",
                     target = "Lcom/simibubi/create/foundation/recipe/RecipeApplier;applyRecipeOn(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/item/ItemStack;Lnet/minecraft/world/item/crafting/Recipe;Z)Ljava/util/List;"))
-    private static List<ItemStack> hex$appendIotaOnDeployer(Level level, ItemStack stack, Recipe<?> recipe,
+    private static List<ItemStack> createmanaindustry$appendIotaOnDeployer(Level level, ItemStack stack, Recipe<?> recipe,
             boolean respectChances) {
         ItemStack heldItem = HELD_ITEM.get();
         HELD_ITEM.remove();

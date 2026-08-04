@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.mixin;
+package com.iridium126.createmanaindustry.mixin.fluids;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -14,7 +14,7 @@ import net.minecraft.world.level.Level;
 import net.neoforged.neoforge.fluids.FluidStack;
 
 @Mixin(value = GenericItemEmptying.class, remap = false)
-public class GenericItemEmptyingContextMixin {
+public class GenericItemEmptyingMixin {
     @Inject(method = "canItemBeEmptied", at = @At("HEAD"))
     private static void createmanaindustry$setLevelForEmptyCheck(Level world, ItemStack stack,
             CallbackInfoReturnable<Boolean> cir) {

@@ -1,11 +1,14 @@
-package com.iridium126.createmanaindustry.mixin;
+package com.iridium126.createmanaindustry.mixin.kinetics;
 
 import java.util.List;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
+import com.iridium126.createmanaindustry.CMIRecipeTypes;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.compat.trickster.TricksterManaAccess;
 import com.iridium126.createmanaindustry.content.recipes.HexItemDataTransfer;
@@ -15,18 +18,34 @@ import com.simibubi.create.foundation.recipe.RecipeApplier;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.Recipe;
+import net.minecraft.world.item.crafting.RecipeHolder;
 import net.minecraft.world.level.Level;
 
 /**
- * Post-processes Mechanical Press recipe outputs to transfer data from
- * incomplete items to final items.
- * <p>
- * Handles both Trickster knot mana transfer and Hexcasting hex-item data
- * transfer from a single set of {@code @Redirect} injections (Mixin only
- * allows one redirect per target method).
+ * Mechanical Press extensions:
+ * <ul>
+ *   <li>Accepts {@code heated_compacting} and {@code mist_compacting} recipes
+ *       in the static recipe filters.</li>
+ *   <li>Post-processes recipe outputs to transfer data from incomplete items to
+ *       final items — both Trickster knot mana and Hexcasting hex-item data
+ *       from a single set of {@code @Redirect} injections (Mixin only allows
+ *       one redirect per target method).</li>
+ * </ul>
  */
 @Mixin(value = MechanicalPressBlockEntity.class, remap = false)
-public class MechanicalPressKnotMixin {
+public class MechanicalPressBlockEntityMixin {
+
+    @Inject(method = "matchStaticFilters", at = @At("RETURN"), cancellable = true)
+    private void createmanaindustry$matchCustomCompacting(RecipeHolder<? extends Recipe<?>> recipe,
+            CallbackInfoReturnable<Boolean> cir) {
+        if (cir.getReturnValue())
+            return;
+        var type = recipe.value().getType();
+        if (type == CMIRecipeTypes.HEATED_COMPACTING.getType()
+                || type == CMIRecipeTypes.MIST_COMPACTING.getType()) {
+            cir.setReturnValue(true);
+        }
+    }
 
     @Redirect(method = "tryProcessInWorld",
             at = @At(value = "INVOKE",

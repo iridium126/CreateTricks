@@ -2,7 +2,7 @@ package com.iridium126.createmanaindustry.content.burner;
 
 import java.util.Map;
 
-import com.iridium126.createmanaindustry.mixin.LevelRendererAccessor;
+import com.iridium126.createmanaindustry.mixin.render.LevelRendererAccessor;
 import com.simibubi.create.api.behaviour.movement.MovementBehaviour;
 import com.simibubi.create.content.contraptions.behaviour.MovementContext;
 import com.simibubi.create.content.contraptions.render.ContraptionMatrices;
@@ -35,7 +35,7 @@ import net.neoforged.api.distmarker.OnlyIn;
  * Animates and renders the Allay Burner on contraptions, mirroring Create's
  * {@code BlazeBurnerMovementBehaviour}. The block state (HEAT_LEVEL) is a
  * static snapshot captured at assembly time, so heat provided to basins above
- * keeps working via {@code BasinBlockEntityHeatMixin} without any dynamic
+ * keeps working via {@code BasinBlockEntityMixin} without any dynamic
  * sync. This behaviour only handles the client-side look: smoke particles,
  * player-facing head angle, and the dancing allay with rods/flame.
  */

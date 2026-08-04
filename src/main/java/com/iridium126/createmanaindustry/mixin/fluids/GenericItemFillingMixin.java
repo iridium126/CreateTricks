@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.mixin;
+package com.iridium126.createmanaindustry.mixin.fluids;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -13,7 +13,7 @@ import net.minecraft.world.level.Level;
 import net.neoforged.neoforge.fluids.FluidStack;
 
 @Mixin(value = GenericItemFilling.class, remap = false)
-public class GenericItemFillingContextMixin {
+public class GenericItemFillingMixin {
     @Inject(method = "canItemBeFilled", at = @At("HEAD"))
     private static void createmanaindustry$setLevelForFillCheck(Level world, ItemStack stack,
             CallbackInfoReturnable<Boolean> cir) {

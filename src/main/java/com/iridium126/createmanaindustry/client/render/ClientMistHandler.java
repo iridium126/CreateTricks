@@ -14,6 +14,8 @@ import com.mojang.blaze3d.platform.NativeImage;
 
 import foundry.veil.api.client.render.VeilRenderSystem;
 import foundry.veil.api.client.render.post.PostPipeline;
+import foundry.veil.api.client.render.shader.program.UniformAccess;
+import foundry.veil.api.event.VeilRenderLevelStageEvent;
 import foundry.veil.platform.VeilEventPlatform;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
@@ -106,6 +108,20 @@ public final class ClientMistHandler {
 
         // Listen for Veil post-processing to inject uniforms
         VeilEventPlatform.INSTANCE.preVeilPostProcessing(ClientMistHandler::onPrePostProcessing);
+
+        // Iris shaderpack path: render mist into the iris gbuffer via the
+        // iris-veil-compat world render hook, and reconcile the vanilla post
+        // pipeline every frame so the two paths never run simultaneously.
+        // AFTER_LEVEL fires every frame even when Iris has taken over the
+        // world rendering, covering the gap where the hook is silent.
+        if (CreateManaIndustry.IRISVEIL_ACTIVE) {
+            IrisMistHook.init();
+            VeilEventPlatform.INSTANCE.onVeilRenderLevelStage((stage, levelRenderer, bufferSource,
+                    matrixStack, frustumMatrix, projectionMatrix, renderTick, deltaTracker, camera, frustum) -> {
+                if (stage == VeilRenderLevelStageEvent.Stage.AFTER_LEVEL)
+                    syncMistPipeline();
+            });
+        }
     }
 
     /**
@@ -134,11 +150,9 @@ public final class ClientMistHandler {
         }
         dirty = true;
 
-        // Add pipeline immediately on first source; removal is deferred to updateAnimations()
-        if (!activeSources.isEmpty() && !pipelineActive) {
-            pipelineActive = true;
-            VeilRenderSystem.renderer().getPostProcessingManager().add(PIPELINE_ID);
-        }
+        // Pipeline activation is reconciled in syncMistPipeline() (invariant:
+        // post pipeline active iff mist present AND the iris path is not on).
+        syncMistPipeline();
     }
 
     // --- animation ------------------------------------------------------------
@@ -174,11 +188,8 @@ public final class ClientMistHandler {
             }
         }
 
-        // Clean up pipeline when all sources are gone (fade-outs finished)
-        if (activeSources.isEmpty() && pipelineActive) {
-            pipelineActive = false;
-            VeilRenderSystem.renderer().getPostProcessingManager().remove(PIPELINE_ID);
-        }
+        // Pipeline cleanup is reconciled in syncMistPipeline()
+        syncMistPipeline();
 
         return anyAnimating;
     }
@@ -190,7 +201,16 @@ public final class ClientMistHandler {
         if (!PIPELINE_ID.equals(name))
             return;
 
-        // Always tick animations; repack if dirty or animating
+        tickMist();
+        applyMistUniforms(pipeline);
+    }
+
+    /**
+     * Advances animations, repacks data if needed and refreshes absorption.
+     * Called exactly once per render frame by whichever render path is active
+     * (the Veil post-processing event, or the iris gbuffer hook).
+     */
+    static void tickMist() {
         boolean animating = updateAnimations();
         if (dirty || animating) {
             packAtomizerData();
@@ -198,36 +218,67 @@ public final class ClientMistHandler {
         }
         // Camera-dependent per-source absorption — refresh every frame
         updateAbsorptionScales();
+    }
 
-        var countUniform = pipeline.getUniform("AtomizerCount");
+    /** True while any mist source is present (fade-outs included). */
+    static boolean isMistActive() {
+        return !activeSources.isEmpty();
+    }
+
+    /**
+     * Reconciles the Veil post pipeline against the current render path.
+     * Invariant: the post pipeline is active iff mist is present AND the iris
+     * shaderpack hook is not taking over. Called from {@link #setActive},
+     * {@link #updateAnimations()}, the AFTER_LEVEL stage event and the iris
+     * hook's shouldRender — all idempotent.
+     */
+    static void syncMistPipeline() {
+        boolean want = isMistActive() && !IrisMistHook.isActivePath();
+        if (want == pipelineActive)
+            return;
+        pipelineActive = want;
+        var manager = VeilRenderSystem.renderer().getPostProcessingManager();
+        if (want)
+            manager.add(PIPELINE_ID);
+        else
+            manager.remove(PIPELINE_ID);
+    }
+
+    /**
+     * Injects all mist uniforms into the given shader program or post pipeline
+     * (both implement {@link UniformAccess}). Shared by the vanilla Veil post
+     * path and the iris gbuffer hook.
+     */
+    static void applyMistUniforms(UniformAccess shader) {
+        var countUniform = shader.getUniform("AtomizerCount");
         if (countUniform != null)
             countUniform.setInt(atomizerCount);
 
-        var dataUniform = pipeline.getUniform("AtomizerData");
+        var dataUniform = shader.getUniform("AtomizerData");
         if (dataUniform != null)
             dataUniform.setFloats(atomizerData);
 
-        var paletteUniform = pipeline.getUniform("MistPalette");
+        var paletteUniform = shader.getUniform("MistPalette");
         if (paletteUniform != null)
             paletteUniform.setFloats(paletteData);
 
-        var paletteCountUniform = pipeline.getUniform("PaletteCount");
+        var paletteCountUniform = shader.getUniform("PaletteCount");
         if (paletteCountUniform != null)
             paletteCountUniform.setInt(paletteCount);
 
-        var opacityUniform = pipeline.getUniform("MistOpacity");
+        var opacityUniform = shader.getUniform("MistOpacity");
         if (opacityUniform != null)
             opacityUniform.setFloat(0.4f);
 
-        var densityUniform = pipeline.getUniform("MistDensity");
+        var densityUniform = shader.getUniform("MistDensity");
         if (densityUniform != null)
             densityUniform.setFloat(0.25f);
 
-        var stepUniform = pipeline.getUniform("MistStepScale");
+        var stepUniform = shader.getUniform("MistStepScale");
         if (stepUniform != null)
             stepUniform.setFloat(0.8f);
 
-        var sunUniform = pipeline.getUniform("SunDirection");
+        var sunUniform = shader.getUniform("SunDirection");
         if (sunUniform != null) {
             Minecraft mc = Minecraft.getInstance();
             if (mc.level != null) {

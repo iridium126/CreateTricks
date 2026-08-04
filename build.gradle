@@ -204,6 +204,7 @@ dependencies {
     compileOnly "com.tterrag.registrate:Registrate:${registrate_version}"
     compileOnly "net.createmod.ponder:Ponder-NeoForge-${minecraft_version}:${ponder_version}"
     implementation "maven.modrinth:3KUWeVhG:dqlL6EvF" // Veil
+    compileOnly "curse.maven:iris-veil-compat-1541252:8280410"
     implementation "mezz.jei:jei-${minecraft_version}-neoforge:${jei_version}"
 
     implementation "hexcasting:hexcasting-neoforge-1.21.1-0.12.0-devel-pre-38@jar"

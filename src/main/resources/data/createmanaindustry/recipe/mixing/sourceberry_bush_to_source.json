@@ -1,0 +1,11 @@
+{
+  "type": "create:mixing",
+  "ingredients": [
+    { "item": "ars_nouveau:sourceberry_bush" },
+    { "type": "neoforge:single", "amount": 100, "fluid": "minecraft:water" }
+  ],
+  "results": [
+    { "id": "createmanaindustry:liquid_source", "amount": 100 }
+  ],
+  "heat_requirement": "none"
+}

@@ -1,0 +1,11 @@
+{
+  "type": "create:mixing",
+  "ingredients": [
+    { "item": "minecraft:sweet_berries" },
+    { "type": "neoforge:single", "amount": 25, "fluid": "minecraft:water" }
+  ],
+  "results": [
+    { "id": "createmanaindustry:liquid_source", "amount": 25 }
+  ],
+  "heat_requirement": "none"
+}

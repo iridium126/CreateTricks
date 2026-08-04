@@ -29,7 +29,7 @@ public final class Config {
 
     private static final ModConfigSpec.IntValue SOURCE_PER_BUCKET = BUILDER
             .comment("The amount of source contained in one bucket (1000mB) of Liquid Source.")
-            .defineInRange("sourcePerBucket", 1000, 1, 1000000);
+            .defineInRange("sourcePerBucket", 1000, 100, 1000000);
 
     private static final ModConfigSpec.DoubleValue KINETIC_STRESS_TRICK_MANA_MULTIPLIER = BUILDER
             .comment("The multiplier applied to the kinetic stress mana trick when costing mana.")
@@ -61,7 +61,7 @@ public final class Config {
 
     private static final ModConfigSpec.DoubleValue MIST_GLOW_STRENGTH = BUILDER
             .comment("Global multiplier for the glow of volumetric mist produced by glowing fluids (per-fluid glow derives from the fluid's light level).")
-            .defineInRange("mistGlowStrength", 1.0, 0.0, 100.0);
+            .defineInRange("mistGlowStrength", 0.5, 0.0, 100.0);
 
     private static final ModConfigSpec.LongValue CYPHER_MAX_MEDIA = BUILDER
             .comment("Maximum media capacity for incomplete cyphers (in Hexcasting dust units, 1 dust = 10,000).")
@@ -93,7 +93,7 @@ public final class Config {
     public static double condenseEfficiency = 5.0;
     public static int allayBurnerMistRadius = 4;
     public static int allayBurnerMistPerTick = 1;
-    public static double mistGlowStrength = 1.0;
+    public static double mistGlowStrength = 0.5;
     public static long cypherMaxMedia = 6400000L;
     public static long trinketMaxMedia = 64000000L;
     public static long artifactMaxMedia = 640000000L;

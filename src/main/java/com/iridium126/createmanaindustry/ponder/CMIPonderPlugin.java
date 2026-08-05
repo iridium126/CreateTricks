@@ -5,6 +5,7 @@ import com.iridium126.createmanaindustry.CMIBlocks;
 import com.simibubi.create.infrastructure.ponder.AllCreatePonderTags;
 
 import net.createmod.ponder.api.registration.PonderPlugin;
+import net.createmod.ponder.api.registration.PonderSceneRegistrationHelper;
 import net.createmod.ponder.api.registration.PonderTagRegistrationHelper;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
@@ -23,6 +24,19 @@ public class CMIPonderPlugin implements PonderPlugin {
     @Override
     public String getModId() {
         return CreateManaIndustry.MODID;
+    }
+
+    @Override
+    public void registerScenes(PonderSceneRegistrationHelper<ResourceLocation> helper) {
+        PonderSceneRegistrationHelper<ItemLike> itemHelper =
+                helper.withKeyFunction(itemLike -> BuiltInRegistries.ITEM.getKey(itemLike.asItem()));
+
+        // Solid fuel, Liquid Media, and mist scenes share the basic schematic;
+        // the capture scene has its own with a basin on top.
+        itemHelper.addStoryBoard(CMIBlocks.ALLAY_BURNER, "allay_burner/basic", AllayBurnerPonderScenes::solidFuel);
+        itemHelper.addStoryBoard(CMIBlocks.ALLAY_BURNER, "allay_burner/basic", AllayBurnerPonderScenes::liquidMedia);
+        itemHelper.addStoryBoard(CMIBlocks.ALLAY_BURNER, "allay_burner/basic", AllayBurnerPonderScenes::mistEmission);
+        itemHelper.addStoryBoard(CMIBlocks.EMPTY_ALLAY_BURNER, "allay_burner/capture", AllayBurnerPonderScenes::captureAllay);
     }
 
     @Override

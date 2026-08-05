@@ -93,5 +93,22 @@
   "hexcasting.entry.createmanaindustry.media_conversion": "媒质与液体转换",
   "hexcasting.page.createmanaindustry.media_conversion.1": "紫水晶原料与$(media)液态媒质/$之间的转换通过$(thing)加热冲压/$实现：$(br)$(li)1x $(item)紫水晶粉/$→25 mB（约合10,000媒质）$(br)$(li)1x $(item)紫水晶碎片/$→125 mB（约合50,000媒质）$(br)$(li)1x $(item)充能紫水晶/$→250 mB（约合100,000媒质）$(br2)输出量会根据服务器的$(thing)mediaPerBucket/$配置与咒法学自身的$(thing)媒质数值/$配置动态缩放。",
   "hexcasting.page.createmanaindustry.media_conversion.2": "$(media)液态媒质/$与$(item)液态魔力/$可相互转换：$(br)$(li)$(thing)加热搅拌/$：$(media)液态媒质/$→$(item)液态魔力/$（1:1）$(br)$(li)$(thing)雾化搅拌/$（动力雾化器）：$(item)液态魔力/$→$(media)液态媒质/$蒸气$(br)$(li)$(thing)冷凝管/$：从雾中回收$(media)液态媒质/$$(br2)这种双向转换让你可以在制造充能$(item)晶结/$与为$(thing)施法物品/$填充媒质之间灵活平衡。",
-  "hexcasting.page.createmanaindustry.media_conversion.3": "$(bold)配置/$ - 以下参数控制媒质转换（均可在服务器配置中修改）：$(br)$(li)$(thing)mediaPerBucket/$——400,000（每桶液态媒质所含媒质量）$(br)$(li)$(thing)cypherMaxMedia/$——6,400,000$(br)$(li)$(thing)trinketMaxMedia/$——64,000,000$(br)$(li)$(thing)artifactMaxMedia/$——640,000,000$(br)$(li)$(thing)batteryMaxMedia/$——640,000,000$(br2)修改这些值也会自动更新配方输出量。"
+  "hexcasting.page.createmanaindustry.media_conversion.3": "$(bold)配置/$ - 以下参数控制媒质转换（均可在服务器配置中修改）：$(br)$(li)$(thing)mediaPerBucket/$——400,000（每桶液态媒质所含媒质量）$(br)$(li)$(thing)cypherMaxMedia/$——6,400,000$(br)$(li)$(thing)trinketMaxMedia/$——64,000,000$(br)$(li)$(thing)artifactMaxMedia/$——640,000,000$(br)$(li)$(thing)batteryMaxMedia/$——640,000,000$(br2)修改这些值也会自动更新配方输出量。",
+
+  "createmanaindustry.ponder.allay_burner/solid_fuel.header": "为悦灵燃烧室添加燃料",
+  "createmanaindustry.ponder.allay_burner/solid_fuel.text_1": "紫水晶类材料可以为悦灵燃烧室提供燃料",
+  "createmanaindustry.ponder.allay_burner/solid_fuel.text_2": "用紫水晶碎片、紫水晶粉或充能紫水晶右键点击燃烧室，即可增加燃烧时间",
+  "createmanaindustry.ponder.allay_burner/solid_fuel.text_3": "燃烧时长与紫水晶所含的媒质价值成正比",
+  "createmanaindustry.ponder.allay_burner/liquid_media.header": "以液态媒质为燃料",
+  "createmanaindustry.ponder.allay_burner/liquid_media.text_1": "液态媒质可通过管道或直接倒入燃烧室内置的储罐",
+  "createmanaindustry.ponder.allay_burner/liquid_media.text_2": "储罐容量为一桶液态媒质，固体燃料耗尽后才会被消耗",
+  "createmanaindustry.ponder.allay_burner/liquid_media.text_3": "固体燃料始终优先于液态媒质",
+  "createmanaindustry.ponder.allay_burner/capture.header": "捕获悦灵",
+  "createmanaindustry.ponder.allay_burner/capture.text_1": "用空悦灵燃烧室右键点击悦灵，将其捕获",
+  "createmanaindustry.ponder.allay_burner/capture.text_2": "被捕获的悦灵将为燃烧室提供热量，并在燃烧时起舞",
+  "createmanaindustry.ponder.allay_burner/capture.text_3": "与唱片机一样，可以插入并播放唱片",
+  "createmanaindustry.ponder.allay_burner/capture.text_4": "将燃烧室放置在工作盆下方，即可处理需要悦灵加热的配方",
+  "createmanaindustry.ponder.allay_burner/mist.header": "悦灵燃烧室的雾",
+  "createmanaindustry.ponder.allay_burner/mist.text_1": "燃烧时，悦灵燃烧室会排放液态灵魂雾场",
+  "createmanaindustry.ponder.allay_burner/mist.text_2": "雾可被冷凝管回收，也是雾化配方所需的条件"
 }

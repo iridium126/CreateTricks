@@ -90,5 +90,22 @@
   "hexcasting.entry.createmanaindustry.media_conversion": "Media & Liquid Conversion",
   "hexcasting.page.createmanaindustry.media_conversion.1": "The conversion between raw amethyst materials and $(l:createmanaindustry/liquid_media)$(media)Liquid Media/$ is handled by $(thing)Heated Compaction/$:$()$(br)$(li)1x $(item)Amethyst Dust/$ → 25 mB (worth ~10,000 media)$(br)$(li)1x $(item)Amethyst Shard/$ → 125 mB (worth ~50,000 media)$(br)$(li)1x $(item)Charged Amethyst/$ → 250 mB (worth ~100,000 media)$(br2)Output amounts dynamically scale with both the server's $(thing)mediaPerBucket/$ config and Hexcasting's own $(thing)media value/$ configs.",
   "hexcasting.page.createmanaindustry.media_conversion.2": "$(media)Liquid Media/$ and $(item)Liquid Mana/$ are interconvertible:$(br)$(li)$(thing)Heated Mixing/$: $(media)Liquid Media/$ → $(item)Liquid Mana/$ (1:1)$(br)$(li)$(thing)Mist Mixing/$ (Kinetic Atomizer): $(item)Liquid Mana/$ → $(media)Liquid Media/$ vapour$(br)$(li)$(thing)Condenser/$: recovers $(media)Liquid Media/$ from mist$(br2)This bidirectional conversion lets you balance between creating charged $(item)Knots/$ and filling $(thing)casting items/$ with media.",
-  "hexcasting.page.createmanaindustry.media_conversion.3": "$(bold)Configuration/$ - The following values control media conversion (all editable in the server config):$(br)$(li)$(thing)mediaPerBucket/$ — 400,000 (media per bucket of Liquid Media)$(br)$(li)$(thing)cypherMaxMedia/$ — 6,400,000$(br)$(li)$(thing)trinketMaxMedia/$ — 64,000,000$(br)$(li)$(thing)artifactMaxMedia/$ — 640,000,000$(br)$(li)$(thing)batteryMaxMedia/$ — 640,000,000$(br2)Changing these values also updates recipe outputs automatically."
+  "hexcasting.page.createmanaindustry.media_conversion.3": "$(bold)Configuration/$ - The following values control media conversion (all editable in the server config):$(br)$(li)$(thing)mediaPerBucket/$ — 400,000 (media per bucket of Liquid Media)$(br)$(li)$(thing)cypherMaxMedia/$ — 6,400,000$(br)$(li)$(thing)trinketMaxMedia/$ — 64,000,000$(br)$(li)$(thing)artifactMaxMedia/$ — 640,000,000$(br)$(li)$(thing)batteryMaxMedia/$ — 640,000,000$(br2)Changing these values also updates recipe outputs automatically.",
+
+  "createmanaindustry.ponder.allay_burner/solid_fuel.header": "Feeding Allay Burners",
+  "createmanaindustry.ponder.allay_burner/solid_fuel.text_1": "Amethyst materials can be used as fuel for the Allay Burner",
+  "createmanaindustry.ponder.allay_burner/solid_fuel.text_2": "Right-click the burner with Amethyst Shards, Amethyst Dust, or Charged Amethyst to add burn time",
+  "createmanaindustry.ponder.allay_burner/solid_fuel.text_3": "The burn time scales with the media value of the amethyst",
+  "createmanaindustry.ponder.allay_burner/liquid_media.header": "Fueling with Liquid Media",
+  "createmanaindustry.ponder.allay_burner/liquid_media.text_1": "Liquid Media can be poured or piped into the burner's internal tank",
+  "createmanaindustry.ponder.allay_burner/liquid_media.text_2": "The tank holds up to one bucket of Liquid Media, which is used once solid fuel runs out",
+  "createmanaindustry.ponder.allay_burner/liquid_media.text_3": "Solid fuel always takes priority over Liquid Media",
+  "createmanaindustry.ponder.allay_burner/capture.header": "Capturing Allays",
+  "createmanaindustry.ponder.allay_burner/capture.text_1": "Right-click an Allay with the empty burner to capture it",
+  "createmanaindustry.ponder.allay_burner/capture.text_2": "The captured Allay will provide Heat to the burner and dance while it burns",
+  "createmanaindustry.ponder.allay_burner/capture.text_3": "Music Discs can be inserted and played like a Jukebox",
+  "createmanaindustry.ponder.allay_burner/capture.text_4": "Place the burner below a Basin to process recipes requiring Allay Heat",
+  "createmanaindustry.ponder.allay_burner/mist.header": "Allay Burner Mist",
+  "createmanaindustry.ponder.allay_burner/mist.text_1": "While burning, the Allay Burner emits a field of Liquid Soul mist",
+  "createmanaindustry.ponder.allay_burner/mist.text_2": "The mist can be reclaimed with a Condenser and is required for mist-based recipes"
 }

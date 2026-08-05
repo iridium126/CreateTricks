@@ -19,6 +19,10 @@ spell-casting item production, and more — all through Create's mechanical syst
 - **Condenser** — condenses mist back into liquid when water flows through it,
   injecting the recovered fluid into a Create Item Drain below. Efficiency
   scales with water pressure and mist concentration.
+- **Allay Burner** — a blaze-burner-style heat source centered on a captured
+  allay. It burns amethyst materials and Liquid Media for burn time, mirrors a
+  Jukebox's record slot, and emits a Liquid Soul mist field while burning.
+  Adds the `allayheated` heat requirement for basin recipes.
 - **Mist field system** — a server-side spatial data store (per-dimension
   `ConcurrentHashMap`) for atomizer mist fields. Concentration is computed
   on-the-fly via Euclidean distance, with dominant-source resolution for
@@ -74,12 +78,19 @@ spell-casting item production, and more — all through Create's mechanical syst
 - **Custom Hexcasting action** — `Read Iota from Block`
   (pattern: `wqwqwqwqwqwaw`, 0 media). Reads an Iota from an
   Iota-holding item resting on a Create Depot or Placard.
+- **Custom Hexcasting action** — `Light Burner`
+  (pattern: `qwawq`). Consumes a vector (block position) and a number
+  (burn time in seconds) to light the Create Blaze Burner or the Allay
+  Burner at that position and add the given burn time. Media is charged
+  per second at the burner's own burn rate, so the spell is economically
+  equivalent to pouring in Liquid Media. Empty burners (no blaze inside)
+  and SEETHING/creative burners are left untouched.
 - **Slate pattern stonecutting** — dynamically registers stonecutter recipes
   for every non-great-spell Hexcasting action. Place a blank Slate in a
   Stonecutter to apply any pattern.
 - **Media battery fluid handler** — finalized batteries support fill/drain
   via Create Fluid Pipes, enabling use as media buffers in automation.
-- **Patchouli guide entries** — 6 entries added to Hexcasting's "Hexbook"
+- **Patchouli guide entries** — 7 entries added to Hexcasting's "Hexbook"
   covering all integration features, with full English and Chinese
   localization.
 
@@ -112,6 +123,7 @@ All values are in the common config (`createmanaindustry-common.toml`):
 | `manaPerStress` | 0.001 | Mana per stress unit per tick |
 | `manaPerBucket` | 2048 | Mana in one bucket of Liquid Mana |
 | `mediaPerBucket` | 400000 | Media in one bucket of Liquid Media |
+| `mediaConsumedPerTick` | 50 | Media consumed per tick while the Allay Burner is burning (drives fuel burn duration and the Light Burner spell's cost) |
 | `kineticStressTrickManaMultiplier` | 2.0 | Mana cost multiplier for temporary stress trick |
 | `mistMaxRadius` | 16 | Max atomizer mist radius in blocks |
 | `mistFluidPerTick` | 8 | Base fluid consumption per tick at 256 RPM |

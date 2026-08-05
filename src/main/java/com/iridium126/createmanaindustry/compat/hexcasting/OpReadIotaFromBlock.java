@@ -22,7 +22,7 @@ import net.minecraft.world.phys.Vec3;
  * {@link Iota} from an {@link IotaHolderItem} on a Create Depot or Placard
  * at that position, and pushes the read Iota back to the stack.
  * <p>
- * Throws {@link CMIMishapInvalidBlockOrItem} if the block at the position is
+ * Throws {@link MishapInvalidBlockOrItem} if the block at the position is
  * not a Depot/Placard, or the held item is not an IotaHolderItem, or the
  * IotaHolderItem contains no Iota.
  */
@@ -56,7 +56,7 @@ public class OpReadIotaFromBlock implements ConstMediaAction {
 
         BlockEntity be = env.getWorld().getBlockEntity(pos);
         if (be == null) {
-            throw new CMIMishapInvalidBlockOrItem(vec, CMIMishapInvalidBlockOrItem.Reason.INVALID_BLOCK);
+            throw new MishapInvalidBlockOrItem(vec, MishapInvalidBlockOrItem.Reason.INVALID_BLOCK);
         }
 
         ItemStack heldItem;
@@ -65,20 +65,20 @@ public class OpReadIotaFromBlock implements ConstMediaAction {
         } else if (be instanceof PlacardBlockEntity placard) {
             heldItem = placard.getHeldItem();
         } else {
-            throw new CMIMishapInvalidBlockOrItem(vec, CMIMishapInvalidBlockOrItem.Reason.INVALID_BLOCK);
+            throw new MishapInvalidBlockOrItem(vec, MishapInvalidBlockOrItem.Reason.INVALID_BLOCK);
         }
 
         if (heldItem.isEmpty()) {
-            throw new CMIMishapInvalidBlockOrItem(vec, CMIMishapInvalidBlockOrItem.Reason.EMPTY_ITEM);
+            throw new MishapInvalidBlockOrItem(vec, MishapInvalidBlockOrItem.Reason.EMPTY_ITEM);
         }
 
         if (!(heldItem.getItem() instanceof IotaHolderItem iotaHolder)) {
-            throw new CMIMishapInvalidBlockOrItem(vec, CMIMishapInvalidBlockOrItem.Reason.INVALID_ITEM);
+            throw new MishapInvalidBlockOrItem(vec, MishapInvalidBlockOrItem.Reason.INVALID_ITEM);
         }
 
         Iota readIota = iotaHolder.readIota(heldItem);
         if (readIota == null) {
-            throw new CMIMishapInvalidBlockOrItem(vec, CMIMishapInvalidBlockOrItem.Reason.INVALID_ITEM);
+            throw new MishapInvalidBlockOrItem(vec, MishapInvalidBlockOrItem.Reason.INVALID_ITEM);
         }
 
         return List.of(readIota);

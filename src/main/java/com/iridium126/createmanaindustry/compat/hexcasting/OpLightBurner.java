@@ -35,7 +35,7 @@ import net.minecraft.world.phys.Vec3;
  * spell's media cost has been confirmed — an immediate modification would let
  * media-less casters light burners for free.
  * <p>
- * Throws {@link CMIMishapInvalidBurner} if the block at the position is not a
+ * Throws {@link MishapInvalidBurner} if the block at the position is not a
  * lit Blaze Burner or an Allay Burner (empty burners without a block entity,
  * e.g. {@code create:lit_blaze_burner}, are not valid targets).
  */
@@ -82,7 +82,7 @@ public class OpLightBurner implements SpellAction {
         if (state.getBlock() instanceof BlazeBurnerBlock) {
             if (!(be instanceof BlazeBurnerBlockEntity burner)) {
                 // Empty burners (no blaze inside, no block entity) cannot be lit by magic.
-                throw new CMIMishapInvalidBurner(vec);
+                throw new MishapInvalidBurner(vec);
             }
             // Creative and SEETHING burners burn forever already: nothing to do.
             BlazeBurnerBlockEntityAccessor acc = (BlazeBurnerBlockEntityAccessor) burner;
@@ -96,7 +96,7 @@ public class OpLightBurner implements SpellAction {
 
         if (state.getBlock() instanceof AllayBurnerBlock) {
             if (!(be instanceof AllayBurnerBlockEntity burner)) {
-                throw new CMIMishapInvalidBurner(vec);
+                throw new MishapInvalidBurner(vec);
             }
             if (burner.isCreative()) {
                 return NOOP_RESULT;
@@ -105,7 +105,7 @@ public class OpLightBurner implements SpellAction {
                 List.of(ParticleSpray.cloud(Vec3.atCenterOf(pos), 1.0, 20)), 1L);
         }
 
-        throw new CMIMishapInvalidBurner(vec);
+        throw new MishapInvalidBurner(vec);
     }
 
     /**

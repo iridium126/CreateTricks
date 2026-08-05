@@ -15,7 +15,7 @@ import net.minecraft.world.phys.Vec3;
  * Thrown when a Depot or Placard at the target position does not hold an
  * {@link at.petrak.hexcasting.api.item.IotaHolderItem}.
  */
-public class CMIMishapInvalidBlockOrItem extends Mishap {
+public class MishapInvalidBlockOrItem extends Mishap {
 
     public enum Reason {
         /** The block at the position is not a Depot or Placard. */
@@ -29,7 +29,7 @@ public class CMIMishapInvalidBlockOrItem extends Mishap {
     private final Vec3 position;
     private final Reason reason;
 
-    public CMIMishapInvalidBlockOrItem(Vec3 position, Reason reason) {
+    public MishapInvalidBlockOrItem(Vec3 position, Reason reason) {
         this.position = position;
         this.reason = reason;
     }

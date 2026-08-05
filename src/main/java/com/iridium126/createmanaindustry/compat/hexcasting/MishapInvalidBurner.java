@@ -12,14 +12,14 @@ import net.minecraft.world.phys.Vec3;
 
 /**
  * Thrown when the block at the target position is not a lit Blaze Burner or an
- * Allay Burner. Unlike {@link CMIMishapInvalidBlockOrItem}, the stack is left
+ * Allay Burner. Unlike {@link MishapInvalidBlockOrItem}, the stack is left
  * untouched (no {@code GarbageIota} is appended).
  */
-public class CMIMishapInvalidBurner extends Mishap {
+public class MishapInvalidBurner extends Mishap {
 
     private final Vec3 position;
 
-    public CMIMishapInvalidBurner(Vec3 position) {
+    public MishapInvalidBurner(Vec3 position) {
         this.position = position;
     }
 

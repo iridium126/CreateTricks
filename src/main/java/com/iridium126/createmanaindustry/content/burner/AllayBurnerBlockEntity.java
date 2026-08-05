@@ -408,6 +408,23 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity
         return true;
     }
 
+    /**
+     * Adds burn time from the Light Burner hex action: burn time is added
+     * unconditionally (no cap, matching the burner's existing fuel design) and
+     * the burner is lit if it was idle.
+     */
+    public void addBurnTime(int ticks) {
+        activeFuel = FuelType.SOLID;
+        remainingBurnTime += ticks;
+        if (level.isClientSide) {
+            spawnParticleBurst(true);
+            return;
+        }
+        playSound();
+        updateBlockState();
+        setChanged();
+    }
+
     public boolean isCreativeFuel(ItemStack stack) {
         if (!CreateManaIndustry.HEX_ACTIVE)
             return false;

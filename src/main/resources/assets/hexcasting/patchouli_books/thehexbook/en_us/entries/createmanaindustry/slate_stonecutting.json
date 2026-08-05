@@ -2,7 +2,7 @@
   "name": "hexcasting.entry.createmanaindustry.slate_stonecutting",
   "category": "hexcasting:createmanaindustry",
   "icon": "hexcasting:slate",
-  "sortnum": 4,
+  "sortnum": 5,
   "advancement": "hexcasting:root",
   "pages": [
     "hexcasting.page.createmanaindustry.slate_stonecutting.1",

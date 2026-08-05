@@ -26,6 +26,12 @@ public class CMIHexActions {
                             HexPattern.fromAngles("wqwqwqwqwqwaw", HexDir.NORTH_WEST),
                             OpReadIotaFromBlock.INSTANCE));
 
+    public static final DeferredHolder<ActionRegistryEntry, ActionRegistryEntry> LIGHT_BURNER =
+            ACTIONS.register("light_burner", () ->
+                    new ActionRegistryEntry(
+                            HexPattern.fromAngles("qwawq", HexDir.NORTH_EAST),
+                            OpLightBurner.INSTANCE));
+
     public static void register(IEventBus modEventBus) {
         ACTIONS.register(modEventBus);
     }

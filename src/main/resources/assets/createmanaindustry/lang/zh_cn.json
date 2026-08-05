@@ -50,9 +50,11 @@
   "trickster.trick.createmanaindustry.temporary_kinetic_stress": "动力应力戏法",
   "createmanaindustry.bnb_chain.no_core": "该模块化法术组构台没有动力法术核心可链接",
   "hexcasting.action.createmanaindustry:read_iota_from_block": "从方块读取 Iota",
+  "hexcasting.action.createmanaindustry:light_burner": "点燃燃烧室",
   "createmanaindustry.hex.mishap.invalid_block": "%s 处的方块不是置物台或置物板",
   "createmanaindustry.hex.mishap.empty_item": "%s 处的置物台或置物板没有放置物品",
   "createmanaindustry.hex.mishap.invalid_item": "%s 处的物品不含 Iota",
+  "createmanaindustry.hex.mishap.invalid_burner": "%s 处的方块不是烈焰人燃烧室或悦灵燃烧室",
 
   "hexcasting.category.createmanaindustry": "机械动力：魔法工业",
   "hexcasting.category.createmanaindustry.desc": "在工业化的$(thing)机械动力/$与$(hex)咒法学/$之间架起桥梁，实现$(item)施法物品/$、$(item)媒质之瓶/$等的自动化生产。",
@@ -78,6 +80,10 @@
   "hexcasting.page.createmanaindustry.read_iota_from_block.1": "我研发了一种图案，可以无需拿起物品，直接从置于机械动力$(item)置物台/$或$(item)置物板/$上的物品中读取$(thing)Iota/$。这打通了物理物品操作与咒法学之间的桥梁。$(br2)它消耗一个$(thing)向量/$——方块坐标——并将存储的$(thing)Iota/$推入栈中。$(br2)此图案的施放消耗为$(thing)0 媒质/$——仅是一次简单的信息读取。",
   "hexcasting.page.createmanaindustry.read_iota_from_block.2": "若目标方块不是置物台或置物板、方块上没有物品、或物品不含 Iota，则法术将以$(thing)事故/$告终——错误信息中会报告目标位置以便调试。",
   "hexcasting.page.createmanaindustry.read_iota_from_block.3": "此图案也可通过$(thing)切石/$方式施加到$(l:items/slate)$(item)空白石板/$上——只需将空白石板放入$(thing)切石机/$，从列表中选择$(action)从方块读取 Iota/$即可。$(br2)详见$(l:createmanaindustry/slate_stonecutting)$(thing)石板图案切石/$条目。",
+
+  "hexcasting.entry.createmanaindustry.light_burner": "点燃燃烧室",
+  "hexcasting.page.createmanaindustry.light_burner.1": "我设计了一种图案，可以远距离点燃$(item)烈焰人燃烧室/$或$(item)悦灵燃烧室/$。它消耗一个$(thing)向量/$——方块坐标——与一个$(thing)数字/$——燃烧时间（秒）——并为其增加恰好等长的燃烧时间。$(br2)媒质按秒计费，费率与该燃烧器自身的媒质消耗速率一致，因此此法术在经济上与倒入$(media)液态媒质/$完全等价。",
+  "hexcasting.page.createmanaindustry.light_burner.2": "内部没有烈焰人的烈焰人燃烧室无法被此法术点燃，$(thing)超级燃烧/$的燃烧室也会被法术放过。若目标方块不是烈焰人燃烧室或悦灵燃烧室，法术将以$(thing)事故/$告终——错误信息中会报告目标位置以便调试。",
 
   "hexcasting.entry.createmanaindustry.slate_stonecutting": "石板图案切石",
   "hexcasting.page.createmanaindustry.slate_stonecutting.1": "$(thing)机械动力：魔法工业/$会在服务器启动时动态注册$(thing)切石/$配方，允许你将任何非卓越法术的咒法学图案直接印制到$(l:items/slate)$(item)空白石板/$上。$(br2)这些配方在服务器启动及每次$(thing)/reload/$后自动生成，精确匹配已安装$(action)图案/$的注册表——包括来自其他附属模组的图案。",

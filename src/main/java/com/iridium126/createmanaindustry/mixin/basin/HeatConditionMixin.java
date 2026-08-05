@@ -1,8 +1,6 @@
 package com.iridium126.createmanaindustry.mixin.basin;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
 import java.util.Arrays;
 
 import org.spongepowered.asm.mixin.Mixin;
@@ -19,6 +17,8 @@ import com.simibubi.create.content.processing.recipe.HeatCondition;
 import net.createmod.catnip.codecs.stream.CatnipStreamCodecBuilders;
 import net.minecraft.util.StringRepresentable;
 
+import sun.misc.Unsafe;
+
 /**
  * Injects a new {@code ALLAYHEATED} constant into Create's {@link HeatCondition}
  * enum reflectively (enums are closed in Java), so recipe JSONs can use
@@ -29,39 +29,49 @@ import net.minecraft.util.StringRepresentable;
  * check lives in {@link BasinRecipeMixin}, which has the basin context.
  * {@code visualizeAsBlazeBurner} maps it to {@code SEETHING} so JEI shows the
  * heater lit.
+ * <p>
+ * Java 21 forbids {@code Constructor.newInstance} on enum constructors and no
+ * longer ships {@code Field.modifiers}, so the constant is created with
+ * {@link Unsafe#allocateInstance} and all fields are written through Unsafe,
+ * which bypasses both the enum restriction and the {@code final} check.
  */
 @Mixin(value = HeatCondition.class, remap = false)
 public abstract class HeatConditionMixin {
 
+    private static final Unsafe UNSAFE = getUnsafe();
+
+    /**
+     * {@code objectFieldOffset(Field)} / {@code staticFieldOffset(Field)} are
+     * deprecated since JDK 18 with no replacement — the {@code (Class, String)}
+     * overloads do not exist in JDK 21.
+     */
+    @SuppressWarnings("deprecation")
     @Inject(method = "<clinit>", at = @At("RETURN"))
     private static void createmanaindustry$injectAllayHeated(CallbackInfo ci) {
         try {
             Class<HeatCondition> hc = HeatCondition.class;
-            Constructor<?> ctor = hc.getDeclaredConstructors()[0]; // HeatCondition(int color)
-            ctor.setAccessible(true);
-            HeatCondition constant = (HeatCondition) ctor.newInstance(0xC88AFF); // media pink
+            // Allocate without invoking the private enum constructor (reflection
+            // may no longer call it), then write the fields directly.
+            HeatCondition constant = (HeatCondition) UNSAFE.allocateInstance(hc);
+            UNSAFE.putObject(constant, UNSAFE.objectFieldOffset(Enum.class.getDeclaredField("name")), "ALLAYHEATED");
+            UNSAFE.putInt(constant, UNSAFE.objectFieldOffset(Enum.class.getDeclaredField("ordinal")), 3);
+            UNSAFE.putInt(constant, UNSAFE.objectFieldOffset(hc.getDeclaredField("color")), 0xC88AFF); // media pink
 
-            Field nameField = Enum.class.getDeclaredField("name");
-            nameField.setAccessible(true);
-            nameField.set(constant, "ALLAYHEATED");
-            Field ordinalField = Enum.class.getDeclaredField("ordinal");
-            ordinalField.setAccessible(true);
-            ordinalField.set(constant, 3);
-
-            Field valuesField = hc.getDeclaredField("$VALUES");
-            makeNonFinal(valuesField);
-            valuesField.setAccessible(true);
-            HeatCondition[] oldValues = (HeatCondition[]) valuesField.get(null);
-            HeatCondition[] newValues = Arrays.copyOf(oldValues, oldValues.length + 1);
-            newValues[oldValues.length] = constant;
-            valuesField.set(null, newValues);
+            // Append the constant to $VALUES (a static final field; Unsafe
+            // ignores the final flag).
+            long valuesOffset = UNSAFE.staticFieldOffset(hc.getDeclaredField("$VALUES"));
+            HeatCondition[] newValues = Arrays.copyOf((HeatCondition[]) UNSAFE.getObject(hc, valuesOffset), 4);
+            newValues[3] = constant;
+            UNSAFE.putObject(hc, valuesOffset, newValues);
 
             CMIHeatConditions.ALLAY_HEATED = constant;
 
             // Both codecs captured the pre-injection value array at class init.
             // Rebuild them so "allayheated" parses from recipe JSON and packets.
-            setStatic(hc, "CODEC", StringRepresentable.fromEnum(HeatCondition::values));
-            setStatic(hc, "STREAM_CODEC", CatnipStreamCodecBuilders.ofEnum(HeatCondition.class));
+            UNSAFE.putObject(hc, UNSAFE.staticFieldOffset(hc.getDeclaredField("CODEC")),
+                StringRepresentable.fromEnum(HeatCondition::values));
+            UNSAFE.putObject(hc, UNSAFE.staticFieldOffset(hc.getDeclaredField("STREAM_CODEC")),
+                CatnipStreamCodecBuilders.ofEnum(HeatCondition.class));
         } catch (Exception e) {
             CreateManaIndustry.LOGGER.warn("Failed to inject ALLAYHEATED into HeatCondition", e);
         }
@@ -82,16 +92,13 @@ public abstract class HeatConditionMixin {
             cir.setReturnValue(BlazeBurnerBlock.HeatLevel.SEETHING);
     }
 
-    private static void makeNonFinal(Field field) throws Exception {
-        Field modifiers = Field.class.getDeclaredField("modifiers");
-        modifiers.setAccessible(true);
-        modifiers.setInt(field, field.getModifiers() & ~Modifier.FINAL);
-    }
-
-    private static void setStatic(Class<?> clazz, String name, Object value) throws Exception {
-        Field field = clazz.getDeclaredField(name);
-        makeNonFinal(field);
-        field.setAccessible(true);
-        field.set(null, value);
+    private static Unsafe getUnsafe() {
+        try {
+            Field field = Unsafe.class.getDeclaredField("theUnsafe");
+            field.setAccessible(true);
+            return (Unsafe) field.get(null);
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException("Failed to obtain sun.misc.Unsafe", e);
+        }
     }
 }

@@ -50,6 +50,8 @@
   "createmanaindustry.hex.mishap.invalid_block": "The block at %s is not a Depot or Placard",
   "createmanaindustry.hex.mishap.empty_item": "The Depot or Placard at %s holds no item",
   "createmanaindustry.hex.mishap.invalid_item": "The item at %s does not hold an Iota",
+  "hexcasting.action.createmanaindustry:light_burner": "Light Burner",
+  "createmanaindustry.hex.mishap.invalid_burner": "The block at %s is not a lit Blaze Burner or an Allay Burner",
 
   "hexcasting.category.createmanaindustry": "Create: Mana Industry",
   "hexcasting.category.createmanaindustry.desc": "Bridging the gap between industrial $(thing)Create/$ machinery and $(hex)Hexcasting/$, automating the production of $(item)casting items/$, $(item)media batteries/$, and more.",
@@ -75,6 +77,10 @@
   "hexcasting.page.createmanaindustry.read_iota_from_block.1": "I have developed a pattern that reads $(thing)Iotas/$ from items resting on Create's $(item)Depot/$ or $(item)Placard/$ without needing to pick them up. This bridges the gap between physical item manipulation and abstract _Hexcasting.$(br2)It consumes a single $(thing)vector/$ — the block position — and pushes the stored $(thing)Iota/$ onto the stack.$(br2)This pattern costs $(thing)0 media/$ to cast — it is a simple information read.",
   "hexcasting.page.createmanaindustry.read_iota_from_block.2": "If the targeted block is not a Depot or Placard, the block holds no item, or the item does not hold an Iota, the spell fails with a $(thing)mishap/$ — the target position is reported in the error for easy debugging.",
   "hexcasting.page.createmanaindustry.read_iota_from_block.3": "This action can also be applied onto a $(l:items/slate)$(item)Blank Slate/$ through $(thing)Stonecutting/$ — simply place a blank Slate in a $(thing)Stonecutter/$ and select $(action)Read Iota From Block/$ from the list.$(br2)See the $(l:createmanaindustry/slate_stonecutting)$(thing)Slate Pattern Stonecutting/$ entry for details.",
+
+  "hexcasting.entry.createmanaindustry.light_burner": "Lighting Burners with Magic",
+  "hexcasting.page.createmanaindustry.light_burner.1": "I have devised a pattern that lights a $(item)Blaze Burner/$ or an $(item)Allay Burner/$ from afar. It consumes a $(thing)vector/$ — the block position — and a $(thing)number/$ — the burn time in seconds — then adds exactly that much burn time to the burner.$(br2)Media is charged per second, at the same rate the burner itself consumes media, so the spell is economically equivalent to pouring in $(l:createmanaindustry/liquid_media)$(media)Liquid Media/$.",
+  "hexcasting.page.createmanaindustry.light_burner.2": "A Blaze Burner holding no blaze cannot be lit by this spell, and a $(thing)SEETHING/$ or creative burner is left untouched. If the targeted block is not a lit Blaze Burner or an Allay Burner, the spell fails with a $(thing)mishap/$ — the target position is reported in the error for easy debugging.$(br2)Like all non-great-spell patterns, it can also be stamped onto a $(l:items/slate)$(item)Blank Slate/$ via $(thing)Stonecutting/$.",
 
   "hexcasting.entry.createmanaindustry.slate_stonecutting": "Slate Pattern Stonecutting",
   "hexcasting.page.createmanaindustry.slate_stonecutting.1": "$(thing)Create: Mana Industry/$ dynamically registers $(thing)Stonecutting/$ recipes that let you stamp any non-great-spell Hexcasting pattern directly onto a $(l:items/slate)$(item)Blank Slate/$.$(br2)These recipes are generated automatically at server startup and after every $(thing)/reload/$, reflecting the exact registry of installed $(action)patterns/$ — including those from other addon mods.",

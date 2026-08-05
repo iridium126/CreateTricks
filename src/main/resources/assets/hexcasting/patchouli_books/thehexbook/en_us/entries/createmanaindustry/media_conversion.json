@@ -2,7 +2,7 @@
   "name": "hexcasting.entry.createmanaindustry.media_conversion",
   "category": "hexcasting:createmanaindustry",
   "icon": "hexcasting:amethyst_dust",
-  "sortnum": 5,
+  "sortnum": 6,
   "advancement": "hexcasting:root",
   "pages": [
     "hexcasting.page.createmanaindustry.media_conversion.1",

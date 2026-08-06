@@ -19,6 +19,7 @@ import dev.enjarai.trickster.spell.trick.func.LoadArgumentTrick;
 import dev.enjarai.trickster.spell.type.Signature;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Registry;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.level.ServerLevel;
@@ -50,7 +51,11 @@ public final class KineticStressTrickRegister {
             trick.getSignatures().clear();
             trick.getSignatures().add(new KineticStressSignature());
 
-            Tricks.register("temporary_kinetic_stress", trick);
+            // Register with our own namespace so the trick id matches the
+            // `trickster.trick.createmanaindustry.*` lang keys (Tricks.register
+            // would force a `trickster:` prefix). The pattern LOOKUP is
+            // maintained inside the registry's add(), so this is equivalent.
+            Registry.register(Tricks.REGISTRY, CreateManaIndustry.modLoc("temporary_kinetic_stress"), trick);
             registered = true;
             CreateManaIndustry.LOGGER.info("Registered Trickster trick: temporary_kinetic_stress");
         } catch (Throwable t) {

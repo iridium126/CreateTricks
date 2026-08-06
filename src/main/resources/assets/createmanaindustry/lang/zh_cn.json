@@ -65,6 +65,8 @@
 
   "hexcasting.category.createmanaindustry": "机械动力：魔法工业",
   "hexcasting.category.createmanaindustry.desc": "在工业化的$(thing)机械动力/$与$(hex)咒法学/$之间架起桥梁，实现$(item)施法物品/$、$(item)媒质之瓶/$等的自动化生产。",
+  "hexcasting.category.createmanaindustry.trickster": "戏法师的艺术",
+  "hexcasting.category.createmanaindustry.trickster.desc": "在$(hex)咒法学/$与$(thing)戏法师/$之间架起桥梁——跨越两大魔法体系读取、存储与执行$(thing)法术/$。",
 
   "hexcasting.entry.createmanaindustry.liquid_media": "液态媒质",
   "hexcasting.page.createmanaindustry.liquid_media.1": "通过对$(l:items/amethyst)$(item)紫水晶/$施加机械力与热能，我发现了将其中蕴含的媒质直接提取为液态的方法。这种$(media)散发浅紫色光芒的液体/$相比原始紫水晶能量密度极高——一桶约含$(thing)400,000/$媒质单位，足以充满数个$(l:items/hexcasting)$(item)杂件/$。",
@@ -101,6 +103,23 @@
   "hexcasting.page.createmanaindustry.media_conversion.1": "紫水晶原料与$(media)液态媒质/$之间的转换通过$(thing)加热冲压/$实现：$(br)$(li)1x $(item)紫水晶粉/$→25 mB（约合10,000媒质）$(br)$(li)1x $(item)紫水晶碎片/$→125 mB（约合50,000媒质）$(br)$(li)1x $(item)充能紫水晶/$→250 mB（约合100,000媒质）$(br2)输出量会根据服务器的$(thing)mediaPerBucket/$配置与咒法学自身的$(thing)媒质数值/$配置动态缩放。",
   "hexcasting.page.createmanaindustry.media_conversion.2": "$(media)液态媒质/$与$(item)液态魔力/$可相互转换：$(br)$(li)$(thing)加热搅拌/$：$(media)液态媒质/$→$(item)液态魔力/$（1:1）$(br)$(li)$(thing)雾化搅拌/$（动力雾化器）：$(item)液态魔力/$→$(media)液态媒质/$蒸气$(br)$(li)$(thing)冷凝管/$：从雾中回收$(media)液态媒质/$$(br2)这种双向转换让你可以在制造充能$(item)晶结/$与为$(thing)施法物品/$填充媒质之间灵活平衡。",
   "hexcasting.page.createmanaindustry.media_conversion.3": "$(bold)配置/$ - 以下参数控制媒质转换（均可在服务器配置中修改）：$(br)$(li)$(thing)mediaPerBucket/$——400,000（每桶液态媒质所含媒质量）$(br)$(li)$(thing)cypherMaxMedia/$——6,400,000$(br)$(li)$(thing)trinketMaxMedia/$——64,000,000$(br)$(li)$(thing)artifactMaxMedia/$——640,000,000$(br)$(li)$(thing)batteryMaxMedia/$——640,000,000$(br2)修改这些值也会自动更新配方输出量。",
+
+  "hexcasting.entry.createmanaindustry.battery_draining": "媒质之瓶流体物流",
+  "hexcasting.page.createmanaindustry.battery_draining.1": "成品$(item)媒质之瓶/$不只是抽象媒质的容器——它能与机械动力的流体网络直接交换$(media)液态媒质/$。将瓶子放在$(item)分液池/$上方的$(thing)置物台/$上：分液池会将瓶内的媒质抽出为$(media)液态媒质/$，供$(thing)流体管道/$运输或存入储罐。",
+  "hexcasting.page.createmanaindustry.battery_draining.2": "$(thing)注液器/$则执行反向操作，将$(media)液态媒质/$泵回瓶中。一桶液态媒质含$(thing)400,000/$媒质单位，而满瓶可储存$(thing)640,000,000/$——约$(thing)1,600桶/$的储量。$(br2)在自动化系统中，媒质之瓶是理想的$(thing)媒质缓冲器/$：媒质稀缺时放出，富余时回填。",
+
+  "hexcasting.entry.createmanaindustry.trickster.read_trick_from_item": "读取戏法师法术",
+  "hexcasting.page.createmanaindustry.trickster.read_trick_from_item.1": "铭刻在$(thing)戏法师/$晶结中的法术可以直接被咒法师读取。此图案消耗$(thing)0 媒质/$——只是一次纯粹的信息读取。它读取$(thing)副手/$（若无则为主手）持有的$(item)法术物品/$，提取其中的$(thing)法术树/$，并以$(thing)戏法 Iota/$的形式推入栈中。",
+  "hexcasting.page.createmanaindustry.trickster.read_trick_from_item.2": "若手持物品不含法术——或手中空空如也——法术将以$(thing)事故/$告终，栈保持不动。$(br2)与$(l:createmanaindustry/trickster/execute_trick)$(action)执行戏法/$配合，此图案让咒法学得以将控制权交给戏法师法术。",
+
+  "hexcasting.entry.createmanaindustry.trickster.execute_trick": "执行戏法师法术",
+  "hexcasting.page.createmanaindustry.trickster.execute_trick.1": "$(l:createmanaindustry/trickster/read_trick_from_item)$(action)读取戏法师法术/$的搭档：此图案弹出一个$(thing)戏法 Iota/$——存储的戏法师法术——并在戏法师执行环境中运行它。可选的$(thing)列表/$参数提供法术的初始参数；若法术在同一 tick 内完成，其结果会被推回栈中。",
+  "hexcasting.page.createmanaindustry.trickster.execute_trick.2": "较长的法术会转为后台跨 tick 继续运行——其结果不会返回。失败的法术会记录错误并使栈保持不动。$(br2)媒质从施法环境的媒质存储中扣除：存储法术的$(item)法术组构台/$，或施法者自身的物品栏。",
+  "hexcasting.page.createmanaindustry.trickster.execute_trick.3": "在$(l:greatwork/spellcircles)$(thing)法阵/$中施放时，执行改从嵌入法阵$(l:items/slate)$(item)石板/$中的$(item)魔力晶结/$——$(thing)石板结/$——抽取戏法师魔力。手持晶结右键已书写的石板以嵌入，再次右键取出。$(br2)石板结为法阵提供专用的戏法师魔力池，让咒法学得以在法阵内驱动戏法师法术。",
+
+  "hexcasting.entry.createmanaindustry.trickster.trick_iota": "戏法 Iota",
+  "hexcasting.page.createmanaindustry.trickster.trick_iota.1": "$(thing)戏法 Iota/$是一种存储完整$(thing)戏法师/$法术——整棵$(thing)法术树/$——的咒法学 Iota。它与其他 Iota 一样：可存入$(l:items/scroll)$(item)卷轴/$与$(l:items/slate)$(item)石板/$，可被$(l:createmanaindustry/automating_casting_items)$(thing)机械手/$写入施法物品，可在栈中流转。",
+  "hexcasting.page.createmanaindustry.trickster.trick_iota.2": "其内容通过$(thing)Inline/$库渲染，法术图案树可在 Iota 显示器等处完整呈现。Iota 无损保存完整法术，因此它是咒法学—戏法师之桥的载体：$(l:createmanaindustry/trickster/read_trick_from_item)$(action)读取戏法师法术/$生成它，$(l:createmanaindustry/trickster/execute_trick)$(action)执行戏法/$消费它。",
 
   "createmanaindustry.ponder.allay_burner/solid_fuel.header": "为悦灵燃烧室添加燃料",
   "createmanaindustry.ponder.allay_burner/solid_fuel.text_1": "紫水晶类材料可以为悦灵燃烧室提供燃料",

@@ -31,6 +31,14 @@
     {
       "type": "single",
       "resource": "createmanaindustry:fluid/liquid_soul_still"
+    },
+    {
+      "type": "single",
+      "resource": "createmanaindustry:fluid/coolant_flow"
+    },
+    {
+      "type": "single",
+      "resource": "createmanaindustry:fluid/coolant_still"
     }
   ]
 }

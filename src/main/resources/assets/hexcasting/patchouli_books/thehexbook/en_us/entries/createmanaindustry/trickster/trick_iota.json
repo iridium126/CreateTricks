@@ -1,0 +1,11 @@
+{
+  "name": "hexcasting.entry.createmanaindustry.trickster.trick_iota",
+  "category": "hexcasting:createmanaindustry/trickster",
+  "icon": "createmanaindustry:kinetics_spell_core",
+  "sortnum": 2,
+  "advancement": "hexcasting:root",
+  "pages": [
+    "hexcasting.page.createmanaindustry.trickster.trick_iota.1",
+    "hexcasting.page.createmanaindustry.trickster.trick_iota.2"
+  ]
+}

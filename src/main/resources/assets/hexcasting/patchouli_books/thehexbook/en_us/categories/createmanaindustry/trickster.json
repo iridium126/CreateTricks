@@ -1,0 +1,9 @@
+{
+  "name": "hexcasting.category.createmanaindustry.trickster",
+  "icon": "trickster:amethyst_knot",
+  "description": "hexcasting.category.createmanaindustry.trickster.desc",
+  "parent": "hexcasting:createmanaindustry",
+  "sortnum": 8,
+
+  "flag": "mod:trickster"
+}

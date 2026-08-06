@@ -1,0 +1,19 @@
+{
+  "name": "hexcasting.entry.createmanaindustry.trickster.execute_trick",
+  "category": "hexcasting:createmanaindustry/trickster",
+  "icon": "hexcasting:slate",
+  "sortnum": 1,
+  "advancement": "hexcasting:root",
+  "pages": [
+    "hexcasting.page.createmanaindustry.trickster.execute_trick.1",
+    {
+      "type": "hexcasting:pattern",
+      "op_id": "createmanaindustry:execute_trick",
+      "anchor": "createmanaindustry:execute_trick",
+      "input": "trick, [list]",
+      "output": "any",
+      "text": "hexcasting.page.createmanaindustry.trickster.execute_trick.2"
+    },
+    "hexcasting.page.createmanaindustry.trickster.execute_trick.3"
+  ]
+}

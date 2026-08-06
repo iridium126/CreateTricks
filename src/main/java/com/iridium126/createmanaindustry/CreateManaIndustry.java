@@ -3,7 +3,12 @@ package com.iridium126.createmanaindustry;
 import org.slf4j.Logger;
 
 import com.iridium126.createmanaindustry.compat.hexcasting.CMIHexActions;
+import com.iridium126.createmanaindustry.compat.hexcasting.CMIHexIotaTypes;
+import com.iridium126.createmanaindustry.compat.hexcasting.CMIHexTrickActions;
 import com.iridium126.createmanaindustry.compat.hexcasting.CMISlatePatternRecipes;
+import com.iridium126.createmanaindustry.compat.hexcasting.InlineTrickData;
+import com.iridium126.createmanaindustry.compat.trickster.CMITricksterIotaRegister;
+import com.samsthenerd.inline.api.InlineAPI;
 import com.iridium126.createmanaindustry.compat.trickster.KineticStressTrickRegister;
 import com.iridium126.createmanaindustry.config.CMIStress;
 import com.iridium126.createmanaindustry.config.Config;
@@ -90,6 +95,15 @@ public class CreateManaIndustry {
         if (HEX_ACTIVE) {
             CMIHexActions.register(modEventBus);
             NeoForge.EVENT_BUS.addListener(CMISlatePatternRecipes::onServerStarted);
+        }
+        if (HEX_ACTIVE && TRICKSTER_ACTIVE) {
+            // TrickIota + inline spell-tree rendering + read_trick_from_item
+            // (hexcasting hard-depends on inline, so the InlineAPI call is safe here)
+            CMIHexIotaTypes.register(modEventBus);
+            InlineAPI.INSTANCE.addDataType(InlineTrickData.InlineTrickDataType.INSTANCE);
+            CMIHexTrickActions.register(modEventBus);
+            // Trickster fragment storing a Hexcasting iota + read_iota trick
+            CMITricksterIotaRegister.register();
         }
 
         ModConfigSpec.Builder stressBuilder = new ModConfigSpec.Builder();

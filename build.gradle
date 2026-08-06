@@ -55,6 +55,10 @@ repositories {
         name = "Fabric"
         url = "https://maven.fabricmc.net/"
     }
+    maven {
+        name = "WispForest"
+        url = "https://maven.wispforest.io/releases"
+    }
     exclusiveContent {
         forRepository {
             maven {
@@ -210,7 +214,7 @@ dependencies {
     implementation "hexcasting:hexcasting-neoforge-1.21.1-0.12.0-devel-pre-38@jar"
     localRuntime "paucal:paucal-0.7.1-pre-27+1.21.1-neoforge@jar"
     localRuntime "curse.maven:caelus-308989:5694215"
-    localRuntime "curse.maven:inline-971167:6556868"
+    implementation "curse.maven:inline-971167:6556868"
     localRuntime "curse.maven:patchouli-306770:7730942"
     localRuntime "curse.maven:cloth-config-348521:5729127"
     localRuntime "curse.maven:architectury-api-419699:5786327"
@@ -235,8 +239,13 @@ dependencies {
     // Add FFAPI dependency
     implementation "curse.maven:forgified-fabric-api-889079:7658611"
     // Compile-time deps for Trickster's transitive dependencies (needed for remapped jar)
-    compileOnly "net.fabricmc.fabric-api:fabric-api:0.102.0+1.21.1"
+    // The raw fabric-api artifact is intermediary-mapped; use the loom-remap
+    // export (Mojang-mapped, same as namedTrickster) so fabric types resolve
+    // with Mojang signatures.
+    compileOnly(project(path: ":loom-remap", configuration: "namedFabricApi"))
     compileOnly "io.vavr:vavr:0.10.4"
+    // Endec API for custom FragmentType endecs (runtime endec is bundled in owo-lib, required by trickster)
+    compileOnly "io.wispforest:endec:0.1.5.1"
     // Compile against the Loom-exported Mojang-mapped jar, but load the original Fabric jar at runtime.
     compileOnly(project(path: ":loom-remap", configuration: "namedTrickster"))
     localRuntime "curse.maven:trickster-1137971:8324614"

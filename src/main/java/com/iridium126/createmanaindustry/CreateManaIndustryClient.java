@@ -1,7 +1,9 @@
 package com.iridium126.createmanaindustry;
 
 import com.iridium126.createmanaindustry.client.render.ClientMistHandler;
+import com.iridium126.createmanaindustry.client.render.InlineTrickRenderer;
 import com.iridium126.createmanaindustry.ponder.CMIPonderPlugin;
+import com.samsthenerd.inline.api.client.InlineClientAPI;
 
 import net.createmod.ponder.foundation.PonderIndex;
 import net.neoforged.api.distmarker.Dist;
@@ -27,6 +29,9 @@ public class CreateManaIndustryClient {
         // inside ClientMistHandler.init().
         if (CreateManaIndustry.VEIL_ACTIVE)
             ClientMistHandler.init();
+
+        if (CreateManaIndustry.HEX_ACTIVE && CreateManaIndustry.TRICKSTER_ACTIVE)
+            InlineClientAPI.INSTANCE.addRenderer(InlineTrickRenderer.INSTANCE);
     }
 
     @SubscribeEvent

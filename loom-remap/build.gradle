@@ -38,6 +38,7 @@ dependencies {
 
 def exportedDir = layout.buildDirectory.dir("remapped-libs")
 def exportedJar = layout.buildDirectory.file("remapped-libs/trickster-1137971-8324614-named.jar")
+def mergedFabricApiJar = layout.buildDirectory.file("remapped-libs/fabric-api-0.102.0+1.21.1-named.jar")
 
 tasks.register("exportTricksterNamedJar", Copy) {
     dependsOn configurations.compileClasspath
@@ -56,22 +57,49 @@ tasks.register("exportTricksterNamedJar", Copy) {
     rename { "trickster-1137971-8324614-named.jar" }
 }
 
+// The fabric-api bundler jar does not include every module (e.g.
+// fabric-transfer-api-v1 is a separate jar), so merge all remapped
+// fabric-* jars into one artifact — same shape as namedTrickster.
+tasks.register("mergeFabricApiNamedJar", Zip) {
+    dependsOn configurations.compileClasspath
+    inputs.files(configurations.compileClasspath)
+
+    from({
+        def matches = configurations.compileClasspath.resolve().findAll {
+            it.name.endsWith(".jar") && !it.name.contains("-sources")
+                && it.name.startsWith("fabric-") && !it.name.startsWith("fabric-loader")
+        }
+        if (matches.isEmpty()) {
+            throw new GradleException("No remapped fabric-api jars found on compileClasspath")
+        }
+        matches.collect { zipTree(it) }
+    })
+
+    archiveFileName = "fabric-api-0.102.0+1.21.1-named.jar"
+    destinationDirectory = exportedDir
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
 configurations {
     namedTrickster
+    namedFabricApi
 }
 
 artifacts {
     add("namedTrickster", exportedJar.get().asFile) {
         builtBy tasks.named("exportTricksterNamedJar")
     }
+    add("namedFabricApi", mergedFabricApiJar.get().asFile) {
+        builtBy tasks.named("mergeFabricApiNamedJar")
+    }
 }
 
-// This subproject exists solely to export a remapped Trickster jar via
-// artifact transforms during configuration resolution. Disable every
+// This subproject exists solely to export remapped jars (Trickster, fabric-api)
+// via artifact transforms during configuration resolution. Disable every
 // lifecycle task so they never execute alongside root-project tasks.
 gradle.taskGraph.whenReady { graph ->
     tasks.configureEach { task ->
-        if (task.name != 'exportTricksterNamedJar') {
+        if (task.name != 'exportTricksterNamedJar' && task.name != 'mergeFabricApiNamedJar') {
             task.enabled = false
         }
     }

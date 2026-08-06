@@ -31,6 +31,8 @@ import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.material.Fluid;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.api.distmarker.OnlyIn;
 import net.neoforged.neoforge.fluids.FluidStack;
 import net.neoforged.neoforge.fluids.capability.IFluidHandler;
 
@@ -192,6 +194,7 @@ public class CondenserBlockEntity extends SmartBlockEntity {
         }
     }
 
+    @OnlyIn(Dist.CLIENT)
     private void spawnCondensationParticles(Direction.Axis axis, FluidStack fluidStack) {
         double cx = worldPosition.getX() + 0.5;
         double cy = worldPosition.getY() + 0.5;

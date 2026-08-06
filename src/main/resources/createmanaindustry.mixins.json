@@ -27,7 +27,6 @@
     "hextrick.ConstructBlockEntityMediaMixin",
     "bnb.CogwheelChainMixin",
     "bnb.CogwheelChainCandidateMixin",
-    "bnb.CogwheelChainPlacementInteractionMixin",
     "bnb.PlacingCogwheelChainMixin",
     "bnb.PlaceCogwheelChainPacketMixin",
     "bnb.KineticBlockEntityChainStressMixin",
@@ -43,7 +42,8 @@
     "trickster.ModularSpellConstructBlockEntityRendererMixin",
     "bnb.CogwheelChainBehaviourRendererMixin",
     "bnb.CogwheelChainBehaviourVisualMixin",
-    "bnb.RenderedChainPathNodeMixin"
+    "bnb.RenderedChainPathNodeMixin",
+    "bnb.CogwheelChainPlacementInteractionMixin"
   ],
   "injectors": {
     "defaultRequire": 1

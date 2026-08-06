@@ -52,6 +52,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.gameevent.GameEvent;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.ticks.ContainerSingleItem;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.api.distmarker.OnlyIn;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.fluids.FluidStack;
 import net.neoforged.neoforge.fluids.capability.IFluidHandler;
@@ -515,6 +517,7 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity
      * Client-side facing: idle burners smoothly chase the nearest player,
      * burning burners hold FACING (mirrors {@code BlazeBurnerBlockEntity.tickAnimation}).
      */
+    @OnlyIn(Dist.CLIENT)
     private void tickHeadAngle() {
         boolean active =
             getHeatLevelFromBlock() == AllayBurnerBlock.HeatLevel.ALLAYHEATED && isValidBlockAbove();

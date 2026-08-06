@@ -20,6 +20,7 @@ import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
 
 import com.hollingsworth.arsnouveau.api.source.AbstractSourceMachine;
 import com.iridium126.createmanaindustry.compat.ars.SourceJarFluidHandler;
+import com.iridium126.createmanaindustry.compat.trickster.ConstructMediaItemHandler;
 import com.iridium126.createmanaindustry.compat.trickster.TricksterKnotUtils;
 
 public final class CMICapabilities {
@@ -94,8 +95,14 @@ public final class CMICapabilities {
             event.registerItem(Capabilities.FluidHandler.ITEM, (stack, ctx) -> new TricksterKnotFluidHandler(stack), knotItems);
 
         registerTricksterKnotItemHandler(event, "charging_array", TricksterKnotItemHandler.Mode.ALL_SLOTS);
-        registerTricksterKnotItemHandler(event, "spell_construct", TricksterKnotItemHandler.Mode.FIRST_SLOT);
-        registerTricksterKnotItemHandler(event, "modular_spell_construct", TricksterKnotItemHandler.Mode.FIRST_SLOT);
+        if (CreateManaIndustry.HEX_ACTIVE) {
+            // Constructs also absorb hex media from inserted items (eval_iota charging).
+            registerConstructMediaItemHandler(event, "spell_construct", TricksterKnotItemHandler.Mode.FIRST_SLOT);
+            registerConstructMediaItemHandler(event, "modular_spell_construct", TricksterKnotItemHandler.Mode.FIRST_SLOT);
+        } else {
+            registerTricksterKnotItemHandler(event, "spell_construct", TricksterKnotItemHandler.Mode.FIRST_SLOT);
+            registerTricksterKnotItemHandler(event, "modular_spell_construct", TricksterKnotItemHandler.Mode.FIRST_SLOT);
+        }
     }
 
     private static void registerTricksterKnotItemHandler(RegisterCapabilitiesEvent event, String path,
@@ -112,5 +119,20 @@ public final class CMICapabilities {
         BlockEntityType<BlockEntity> blockEntityType = (BlockEntityType<BlockEntity>) type;
         event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, blockEntityType,
                 (blockEntity, side) -> TricksterKnotItemHandler.create(blockEntity, mode));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void registerConstructMediaItemHandler(RegisterCapabilitiesEvent event, String path,
+            TricksterKnotItemHandler.Mode mode) {
+        ResourceLocation id = ResourceLocation.fromNamespaceAndPath("trickster", path);
+        BlockEntityType<?> type = BuiltInRegistries.BLOCK_ENTITY_TYPE.get(id);
+        if (type != null) {
+            BlockEntityType<BlockEntity> blockEntityType = (BlockEntityType<BlockEntity>) type;
+            event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, blockEntityType,
+                    (blockEntity, side) -> {
+                        var knotHandler = TricksterKnotItemHandler.create(blockEntity, mode);
+                        return knotHandler != null ? new ConstructMediaItemHandler(blockEntity, knotHandler) : null;
+                    });
+        }
     }
 }

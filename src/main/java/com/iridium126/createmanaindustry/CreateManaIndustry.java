@@ -7,6 +7,8 @@ import com.iridium126.createmanaindustry.compat.hexcasting.CMIHexIotaTypes;
 import com.iridium126.createmanaindustry.compat.hexcasting.CMIHexTrickActions;
 import com.iridium126.createmanaindustry.compat.hexcasting.CMISlatePatternRecipes;
 import com.iridium126.createmanaindustry.compat.hexcasting.InlineTrickData;
+import com.iridium126.createmanaindustry.compat.hexcasting.circle.CircleSlateManaPool;
+import com.iridium126.createmanaindustry.compat.hexcasting.circle.SlateKnotInteraction;
 import com.iridium126.createmanaindustry.compat.trickster.CMITricksterIotaRegister;
 import com.samsthenerd.inline.api.InlineAPI;
 import com.iridium126.createmanaindustry.compat.trickster.KineticStressTrickRegister;
@@ -104,6 +106,9 @@ public class CreateManaIndustry {
             CMIHexTrickActions.register(modEventBus);
             // Trickster fragment storing a Hexcasting iota + read_iota trick
             CMITricksterIotaRegister.register();
+            // execute_trick circle support: slate knot slot interactions + mana pool type
+            SlateKnotInteraction.register();
+            CircleSlateManaPool.ensureTypeRegistered();
         }
 
         ModConfigSpec.Builder stressBuilder = new ModConfigSpec.Builder();

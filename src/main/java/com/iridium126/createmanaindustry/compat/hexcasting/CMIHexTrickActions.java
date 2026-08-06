@@ -30,6 +30,13 @@ public class CMIHexTrickActions {
                             HexPattern.fromAngles("qqqqqa", HexDir.NORTH_WEST),
                             OpReadTrickFromItem.INSTANCE));
 
+    // PLACEHOLDER pattern — verify in-game that it doesn't shadow / get shadowed
+    public static final DeferredHolder<ActionRegistryEntry, ActionRegistryEntry> EXECUTE_TRICK =
+            ACTIONS.register("execute_trick", () ->
+                    new ActionRegistryEntry(
+                            HexPattern.fromAngles("wdwewawqwqw", HexDir.SOUTH_WEST),
+                            OpExecuteTrick.INSTANCE));
+
     public static void register(IEventBus modEventBus) {
         ACTIONS.register(modEventBus);
     }

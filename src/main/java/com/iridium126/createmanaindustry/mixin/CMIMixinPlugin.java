@@ -15,6 +15,7 @@ import net.neoforged.fml.loading.FMLLoader;
  * Gating is purely package-based — the mixin class FQCN decides:
  * <ul>
  *   <li>{@code .bnb.}        → Bits 'n' Bobs AND Trickster required</li>
+ *   <li>{@code .hextrick.}   → Hexcasting AND Trickster required</li>
  *   <li>{@code .trickster.}  → Trickster required</li>
  *   <li>{@code .hexcasting.} → Hexcasting required</li>
  *   <li>anything else        → always applied</li>
@@ -50,6 +51,10 @@ public class CMIMixinPlugin implements IMixinConfigPlugin {
         // BnB cogwheel-chain mixins require Bits 'n' Bobs AND Trickster
         if (mixinClassName.contains(".bnb."))
             return isLoaded(BNB_MOD_ID) && isLoaded(TRICKSTER_MOD_ID);
+
+        // Mixins bridging Hexcasting and Trickster — require both
+        if (mixinClassName.contains(".hextrick."))
+            return isLoaded(HEX_MOD_ID) && isLoaded(TRICKSTER_MOD_ID);
 
         // Mixins targeting Trickster classes — disable when Trickster is absent
         if (mixinClassName.contains(".trickster."))

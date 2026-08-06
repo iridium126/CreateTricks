@@ -188,8 +188,8 @@ public class AllayBurnerPonderScenes {
         // billboarded mist volume as a scene element instead. Elements must be
         // registered via an instruction: PonderScene.begin() clears them and
         // replays all instructions on every scene restart.
-        PonderMistElement mist = new PonderMistElement(BURNER, Config.allayBurnerMistRadius, 0.28f);
-        scene.addInstruction(s -> s.addElement(mist));
+        //PonderMistElement mist = new PonderMistElement(BURNER, Config.allayBurnerMistRadius, 0.28f);
+        //scene.addInstruction(s -> s.addElement(mist));
         scene.idle(5);
 
         scene.overlay().showText(60)
@@ -200,7 +200,7 @@ public class AllayBurnerPonderScenes {
         scene.idle(70);
 
         lightBurner(scene);
-        scene.addInstruction(s -> mist.setActive(true));
+        //scene.addInstruction(s -> mist.setActive(true));
         scene.idle(60);
 
         scene.overlay().showText(80)
@@ -211,7 +211,7 @@ public class AllayBurnerPonderScenes {
             .placeNearTarget();
         scene.idle(90);
 
-        scene.addInstruction(s -> mist.setActive(false));
+        //scene.addInstruction(s -> mist.setActive(false));
         scene.idle(20);
     }
 

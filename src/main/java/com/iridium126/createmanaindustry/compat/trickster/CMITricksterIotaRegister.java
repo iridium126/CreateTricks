@@ -42,6 +42,7 @@ public final class CMITricksterIotaRegister {
                     FragmentType.REGISTRY, CreateManaIndustry.modLoc("iota"),
                     new FragmentType<>(IotaFragment.ENDEC, OptionalInt.of(0xb879ff)));
             Registry.register(Tricks.REGISTRY, CreateManaIndustry.modLoc("read_iota"), new ReadIotaTrick());
+            Registry.register(Tricks.REGISTRY, CreateManaIndustry.modLoc("eval_iota"), new EvalIotaTrick());
             registered = true;
             CreateManaIndustry.LOGGER.info("Registered Trickster iota fragment type and read_iota trick");
         } catch (Throwable t) {

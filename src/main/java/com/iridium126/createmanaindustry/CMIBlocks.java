@@ -7,6 +7,7 @@ import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlock;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlockItem;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerMovementBehaviour;
 import com.iridium126.createmanaindustry.content.fluids.condenser.CondenserBlock;
+import com.iridium126.createmanaindustry.content.fluids.condenser.WeatheringCondenserBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlock;
 import com.iridium126.createmanaindustry.content.kinetics.manacogwheel.EncasedManaCogwheelBlock;
@@ -28,6 +29,7 @@ import com.tterrag.registrate.util.nullness.NonNullBiConsumer;
 
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.WeatheringCopper;
 import net.minecraft.world.level.material.MapColor;
 import net.minecraft.data.recipes.RecipeCategory;
 import net.minecraft.data.recipes.ShapedRecipeBuilder;
@@ -110,6 +112,58 @@ public final class CMIBlocks {
                         .save(p, CreateManaIndustry.modLoc(c.getName()));
             })
             .register();
+
+    // Condenser weathering variants — mirror Minecraft's copper blocks: three
+    // oxidizing stages (WeatheringCopper + OXIDIZABLES data map) and four
+    // waxed variants (plain blocks linked via the WAXABLES data map). No
+    // recipes, like vanilla; models are empty shells parenting the base
+    // condenser model until textures are replaced.
+
+    public static final BlockEntry<WeatheringCondenserBlock> EXPOSED_CONDENSER =
+            weatheringCondenser("exposed_condenser", WeatheringCopper.WeatherState.EXPOSED);
+
+    public static final BlockEntry<WeatheringCondenserBlock> WEATHERED_CONDENSER =
+            weatheringCondenser("weathered_condenser", WeatheringCopper.WeatherState.WEATHERED);
+
+    public static final BlockEntry<WeatheringCondenserBlock> OXIDIZED_CONDENSER =
+            weatheringCondenser("oxidized_condenser", WeatheringCopper.WeatherState.OXIDIZED);
+
+    public static final BlockEntry<CondenserBlock> WAXED_CONDENSER =
+            waxedCondenser("waxed_condenser");
+
+    public static final BlockEntry<CondenserBlock> WAXED_EXPOSED_CONDENSER =
+            waxedCondenser("waxed_exposed_condenser");
+
+    public static final BlockEntry<CondenserBlock> WAXED_WEATHERED_CONDENSER =
+            waxedCondenser("waxed_weathered_condenser");
+
+    public static final BlockEntry<CondenserBlock> WAXED_OXIDIZED_CONDENSER =
+            waxedCondenser("waxed_oxidized_condenser");
+
+    private static BlockEntry<WeatheringCondenserBlock> weatheringCondenser(String name,
+            WeatheringCopper.WeatherState state) {
+        return REGISTRATE.block(name, p -> new WeatheringCondenserBlock(state, p))
+                .initialProperties(() -> Blocks.IRON_BLOCK)
+                .properties(p -> p.mapColor(MapColor.COLOR_ORANGE))
+                .blockstate(BlockStateGen.axisBlockProvider(true))
+                .transform(TagGen.pickaxeOnly())
+                .loot((p, lb) -> p.dropSelf(lb))
+                .item()
+                .transform(ModelGen.customItemModel())
+                .register();
+    }
+
+    private static BlockEntry<CondenserBlock> waxedCondenser(String name) {
+        return REGISTRATE.block(name, CondenserBlock::new)
+                .initialProperties(() -> Blocks.IRON_BLOCK)
+                .properties(p -> p.mapColor(MapColor.COLOR_ORANGE))
+                .blockstate(BlockStateGen.axisBlockProvider(true))
+                .transform(TagGen.pickaxeOnly())
+                .loot((p, lb) -> p.dropSelf(lb))
+                .item()
+                .transform(ModelGen.customItemModel())
+                .register();
+    }
 
     public static final BlockEntry<ManaCogwheelBlock> MANA_COGWHEEL = REGISTRATE
             .block("mana_cogwheel", ManaCogwheelBlock::new)

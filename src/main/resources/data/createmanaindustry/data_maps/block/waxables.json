@@ -1,0 +1,16 @@
+{
+  "values": {
+    "createmanaindustry:condenser": {
+      "waxed": "createmanaindustry:waxed_condenser"
+    },
+    "createmanaindustry:exposed_condenser": {
+      "waxed": "createmanaindustry:waxed_exposed_condenser"
+    },
+    "createmanaindustry:weathered_condenser": {
+      "waxed": "createmanaindustry:waxed_weathered_condenser"
+    },
+    "createmanaindustry:oxidized_condenser": {
+      "waxed": "createmanaindustry:waxed_oxidized_condenser"
+    }
+  }
+}

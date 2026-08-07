@@ -17,6 +17,7 @@
     "fluids.FillingBySpoutMixin",
     "fluids.GenericItemFillingMixin",
     "fluids.GenericItemEmptyingMixin",
+    "fluids.FluidNetworkMixin",
     "burner.BlazeBurnerBlockEntityAccessor",
     "hexcasting.FillingBySpoutHexMixin",
     "hexcasting.BeltDeployerCallbacksMixin",

@@ -1,0 +1,13 @@
+{
+  "values": {
+    "createmanaindustry:condenser": {
+      "next_oxidation_stage": "createmanaindustry:exposed_condenser"
+    },
+    "createmanaindustry:exposed_condenser": {
+      "next_oxidation_stage": "createmanaindustry:weathered_condenser"
+    },
+    "createmanaindustry:weathered_condenser": {
+      "next_oxidation_stage": "createmanaindustry:oxidized_condenser"
+    }
+  }
+}

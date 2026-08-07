@@ -34,7 +34,14 @@ public final class CMIBlockEntityTypes {
 
     public static final BlockEntityEntry<CondenserBlockEntity> CONDENSER = REGISTRATE
             .blockEntity("condenser", CondenserBlockEntity::new)
-            .validBlocks(CMIBlocks.CONDENSER)
+            .validBlocks(CMIBlocks.CONDENSER,
+                    CMIBlocks.EXPOSED_CONDENSER,
+                    CMIBlocks.WEATHERED_CONDENSER,
+                    CMIBlocks.OXIDIZED_CONDENSER,
+                    CMIBlocks.WAXED_CONDENSER,
+                    CMIBlocks.WAXED_EXPOSED_CONDENSER,
+                    CMIBlocks.WAXED_WEATHERED_CONDENSER,
+                    CMIBlocks.WAXED_OXIDIZED_CONDENSER)
             .register();
 
     public static final BlockEntityEntry<ManaCogwheelBlockEntity> MANA_COGWHEEL = REGISTRATE

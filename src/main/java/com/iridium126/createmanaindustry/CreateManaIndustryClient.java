@@ -6,6 +6,8 @@ import com.iridium126.createmanaindustry.ponder.CMIPonderPlugin;
 import com.samsthenerd.inline.api.client.InlineClientAPI;
 
 import net.createmod.ponder.foundation.PonderIndex;
+import net.minecraft.client.renderer.ItemBlockRenderTypes;
+import net.minecraft.client.renderer.RenderType;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;
@@ -38,6 +40,13 @@ public class CreateManaIndustryClient {
     private static void onClientSetup(FMLClientSetupEvent event) {
         event.enqueueWork(() -> {
             PonderIndex.addPlugin(new CMIPonderPlugin());
+
+            // Render Coolant through the translucent pass like Minecraft water.
+            // Registered here (not via FluidBuilder.renderType) because
+            // CMIFluids loads on dedicated servers, where a RenderType lambda
+            // would trip the RuntimeDistCleaner. Both variants are covered.
+            ItemBlockRenderTypes.setRenderLayer(CMIFluids.COOLANT.get(), RenderType.translucent());
+            ItemBlockRenderTypes.setRenderLayer(CMIFluids.COOLANT.getSource(), RenderType.translucent());
         });
     }
 }

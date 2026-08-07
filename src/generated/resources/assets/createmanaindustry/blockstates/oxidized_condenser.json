@@ -1,0 +1,17 @@
+{
+  "variants": {
+    "axis=x": {
+      "model": "createmanaindustry:block/oxidized_condenser/block",
+      "x": 90,
+      "y": 90
+    },
+    "axis=y": {
+      "model": "createmanaindustry:block/oxidized_condenser/block"
+    },
+    "axis=z": {
+      "model": "createmanaindustry:block/oxidized_condenser/block",
+      "x": 90,
+      "y": 180
+    }
+  }
+}

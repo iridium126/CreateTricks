@@ -16,7 +16,6 @@ import com.simibubi.create.content.processing.basin.BasinRecipe;
 import com.simibubi.create.content.processing.burner.BlazeBurnerBlock;
 import com.simibubi.create.content.processing.recipe.HeatCondition;
 
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.crafting.Recipe;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -46,10 +45,8 @@ public class BasinRecipeMixin {
         if (req == null)
             return;
 
-        ResourceLocation presentFluid = MistFieldStore.getFluidType(basin.getLevel(), basin.getBlockPos());
-        float conc = MistFieldStore.getConcentration(basin.getLevel(), basin.getBlockPos());
-
-        if (!req.fluidId().equals(presentFluid) || conc < req.minConcentration()) {
+        if (!MistFieldStore.hasMatchingMist(basin.getLevel(), basin.getBlockPos(),
+                req.fluidId(), req.minConcentration())) {
             cir.setReturnValue(false);
         }
     }

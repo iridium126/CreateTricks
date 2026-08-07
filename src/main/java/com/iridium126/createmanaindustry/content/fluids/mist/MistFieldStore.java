@@ -80,6 +80,28 @@ public final class MistFieldStore {
     }
 
     /**
+     * Returns whether any mist source of {@code fluidId} contributes at least
+     * {@code minConcentration} at {@code pos}.
+     * <p>
+     * Unlike {@link #getFluidType(Level, BlockPos)}, this checks all overlapping
+     * mist sources instead of only the dominant one.
+     */
+    public static boolean hasMatchingMist(Level level, BlockPos pos,
+            net.minecraft.resources.ResourceLocation fluidId, double minConcentration) {
+        if (level == null || pos == null || fluidId == null)
+            return false;
+
+        ResourceKey<Level> dim = level.dimension();
+
+        Map<BlockPos, AtomizerField> dimFields = ACTIVE.get(dim);
+        if (dimFields != null && hasMatchingAtomizerMist(dimFields, pos, fluidId, minConcentration))
+            return true;
+
+        Map<BlockPos, TimedMistEntry> dimTimed = TIMED.get(dim);
+        return dimTimed != null && hasMatchingTimedMist(dimTimed, pos, fluidId, minConcentration);
+    }
+
+    /**
      * Returns the fluid type (as {@link net.minecraft.resources.ResourceLocation})
      * of the mist source that contributes the highest concentration at the given
      * position, or {@code null} if no mist is present.
@@ -144,6 +166,34 @@ public final class MistFieldStore {
             return (float) (Config.mistBaseConcentration * (1.0 - dist / radius));
         }
         return 0f;
+    }
+
+    private static boolean hasMatchingAtomizerMist(Map<BlockPos, AtomizerField> fields, BlockPos pos,
+            net.minecraft.resources.ResourceLocation fluidId, double minConcentration) {
+        for (var entry : fields.entrySet()) {
+            var fluid = entry.getValue().fluid();
+            if (fluid == null || fluid.isEmpty())
+                continue;
+            if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(fluid.getFluid())))
+                continue;
+            if (calcConcentration(pos, entry.getKey(), entry.getValue().radius()) >= minConcentration)
+                return true;
+        }
+        return false;
+    }
+
+    private static boolean hasMatchingTimedMist(Map<BlockPos, TimedMistEntry> timedEntries, BlockPos pos,
+            net.minecraft.resources.ResourceLocation fluidId, double minConcentration) {
+        for (var entry : timedEntries.entrySet()) {
+            var fluid = entry.getValue().fluid();
+            if (fluid == null || fluid.isEmpty())
+                continue;
+            if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(fluid.getFluid())))
+                continue;
+            if (calcConcentration(pos, entry.getKey(), entry.getValue().radius()) >= minConcentration)
+                return true;
+        }
+        return false;
     }
 
     // ---- timed mist entries (recipe byproducts) ------------------------------

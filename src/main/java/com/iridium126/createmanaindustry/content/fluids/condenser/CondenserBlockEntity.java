@@ -24,7 +24,6 @@ import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
@@ -36,10 +35,26 @@ import net.neoforged.api.distmarker.OnlyIn;
 import net.neoforged.neoforge.fluids.FluidStack;
 import net.neoforged.neoforge.fluids.capability.IFluidHandler;
 
+/**
+ * Condenser: coolant passes through along its axis like a pipe, and when a mist
+ * field is present with a drain below, condenses that mist back into fluid.
+ * <p>
+ * The condenser exposes <b>no</b> fluid capability — exposing one would make
+ * Create's pipe network treat it as a tank terminal ({@code FlowSource.FluidHandler})
+ * and break through-flow. Instead, {@code FluidNetworkMixin} charges the 1:1
+ * coolant cost directly against the passing flow whenever a coolant-carrying
+ * network passes through this block, and {@link #consumeFromFlow} claims this
+ * block's per-tick demand.
+ */
 public class CondenserBlockEntity extends SmartBlockEntity {
 
     private boolean condensing = false;
     private FluidStack condensingFluid = FluidStack.EMPTY;
+
+    /** mB of coolant claimed from the passing flow this game tick (set by FluidNetworkMixin). */
+    private int consumedThisTick = 0;
+    /** Game time at which the claim happened — guards against double-claiming within a tick. */
+    private long claimTick = -1;
 
     public CondenserBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
@@ -51,6 +66,147 @@ public class CondenserBlockEntity extends SmartBlockEntity {
         registerAwardables(behaviours, FluidPropagator.getSharedTriggers());
     }
 
+    /**
+     * Called by {@code FluidNetworkMixin} when a coolant-carrying pipe network
+     * passes through this condenser. Claims this condenser's per-tick coolant
+     * demand — at most once per game tick, so a network's SIMULATE pass claims
+     * and its EXECUTE pass reuses {@link #getConsumed()}, and multiple networks
+     * cannot double-charge.
+     *
+     * @return mB actually consumed from the passing flow this tick
+     */
+    public int consumeFromFlow(int available) {
+        if (level == null || level.isClientSide)
+            return 0;
+        long now = level.getGameTime();
+        if (claimTick == now)
+            return 0;
+        claimTick = now;
+        int demand = computeDemand();
+        int consumed = Math.min(demand, available);
+        consumedThisTick = consumed;
+        return consumed;
+    }
+
+    /** The amount claimed this tick — reused by the mixin's EXECUTE pass. */
+    public int getConsumed() {
+        return consumedThisTick;
+    }
+
+    /**
+     * How much coolant this condenser wants to consume this tick, based on the
+     * mist field and the drain below. Returns 0 when there is no mist, no drain,
+     * the drain holds a different fluid, or the drain is full.
+     */
+    private int computeDemand() {
+        // Mist present at the condenser position?
+        ResourceLocation mistFluidId = MistFieldStore.getFluidType(level, worldPosition);
+        if (mistFluidId == null)
+            return 0;
+        float concentration = MistFieldStore.getConcentration(level, worldPosition);
+        if (concentration <= 0)
+            return 0;
+
+        // Drain below with a compatible fluid and free capacity?
+        BlockEntity below = level.getBlockEntity(worldPosition.below());
+        if (!(below instanceof ItemDrainBlockEntity drain))
+            return 0;
+        SmartFluidTankBehaviour tank = drain.getBehaviour(SmartFluidTankBehaviour.TYPE);
+        if (tank == null)
+            return 0;
+        IFluidHandler primaryHandler = tank.getPrimaryHandler();
+        FluidStack drainFluid = primaryHandler.getFluidInTank(0);
+        if (!drainFluid.isEmpty()) {
+            ResourceLocation drainFluidId = BuiltInRegistries.FLUID.getKey(drainFluid.getFluid());
+            if (!drainFluidId.equals(mistFluidId))
+                return 0;
+        }
+        int drainRemaining = primaryHandler.getTankCapacity(0) - drainFluid.getAmount();
+        if (drainRemaining <= 0)
+            return 0;
+
+        // Coolant flow pressure through the axis scales the efficiency.
+        float flowPressure = 0f;
+        FluidTransportBehaviour fluidBehaviour = getBehaviour(FluidTransportBehaviour.TYPE);
+        if (fluidBehaviour != null) {
+            Direction.Axis axis = getBlockState().getValue(BlockStateProperties.AXIS);
+            for (Direction side : axisSides(axis)) {
+                PipeConnection conn = fluidBehaviour.getConnection(side);
+                if (conn != null) {
+                    PipeConnection.Flow flow = fluidBehaviour.getFlow(side);
+                    if (flow != null && flow.complete)
+                        flowPressure = Math.max(flowPressure, conn.getPressure().get(flow.inbound));
+                }
+            }
+        }
+
+        int desired = Math.max(1, (int) (concentration * Config.condenseEfficiency * (1 + flowPressure / 64)));
+        return Math.min(desired, drainRemaining);
+    }
+
+    private static Direction[] axisSides(Direction.Axis axis) {
+        return new Direction[] {
+                Direction.fromAxisAndDirection(axis, Direction.AxisDirection.POSITIVE),
+                Direction.fromAxisAndDirection(axis, Direction.AxisDirection.NEGATIVE)
+        };
+    }
+
+    /**
+     * Converts a claimed coolant amount into condensed fluid: reduces the mist
+     * field's capacity and injects the collected fluid into the drain below.
+     */
+    private void condenseFromConsumed(int amount) {
+        ResourceLocation mistFluidId = MistFieldStore.getFluidType(level, worldPosition);
+        if (mistFluidId == null) {
+            setCondensing(false);
+            return;
+        }
+        Fluid fluid = BuiltInRegistries.FLUID.get(mistFluidId);
+        if (fluid == null) {
+            setCondensing(false);
+            return;
+        }
+
+        long collected = MistEmitter.consumeCapacity(level, worldPosition, mistFluidId, amount);
+        if (collected <= 0) {
+            setCondensing(false);
+            return;
+        }
+
+        BlockEntity below = level.getBlockEntity(worldPosition.below());
+        if (!(below instanceof ItemDrainBlockEntity drain)) {
+            setCondensing(false);
+            return;
+        }
+        SmartFluidTankBehaviour tank = drain.getBehaviour(SmartFluidTankBehaviour.TYPE);
+        if (tank == null) {
+            setCondensing(false);
+            return;
+        }
+
+        IFluidHandler primaryHandler = tank.getPrimaryHandler();
+        FluidStack drainFluid = primaryHandler.getFluidInTank(0);
+        if (!drainFluid.isEmpty()) {
+            ResourceLocation drainFluidId = BuiltInRegistries.FLUID.getKey(drainFluid.getFluid());
+            if (!drainFluidId.equals(mistFluidId)) {
+                setCondensing(false);
+                return;
+            }
+        }
+
+        int toInject = Math.min((int) collected, primaryHandler.getTankCapacity(0) - drainFluid.getAmount());
+        if (toInject <= 0) {
+            setCondensing(false);
+            return;
+        }
+
+        FluidStack stack = new FluidStack(fluid, toInject);
+        tank.allowInsertion();
+        primaryHandler.fill(stack, IFluidHandler.FluidAction.EXECUTE);
+        tank.forbidInsertion();
+        setCondensing(true, stack);
+    }
+
     @Override
     public void tick() {
         super.tick();
@@ -58,99 +214,14 @@ public class CondenserBlockEntity extends SmartBlockEntity {
             return;
 
         if (!level.isClientSide) {
-            // 1. Check for water flow through pipe connections and gather pressure
-            FluidTransportBehaviour fluidBehaviour = getBehaviour(FluidTransportBehaviour.TYPE);
-            if (fluidBehaviour == null) {
+            // FluidNetworkMixin consumed coolant from the passing flow on our
+            // behalf; convert it 1:1 into condensed fluid in the drain below.
+            if (consumedThisTick > 0) {
+                condenseFromConsumed(consumedThisTick);
+                consumedThisTick = 0;
+            } else {
                 setCondensing(false);
-                return;
             }
-
-            BlockState state = getBlockState();
-            Direction.Axis axis = state.getValue(BlockStateProperties.AXIS);
-            Direction dir1 = Direction.fromAxisAndDirection(axis, Direction.AxisDirection.POSITIVE);
-            Direction dir2 = Direction.fromAxisAndDirection(axis, Direction.AxisDirection.NEGATIVE);
-            float flowPressure = 0f;
-            boolean waterFlowing = false;
-            for (Direction side : new Direction[]{dir1, dir2}) {
-                PipeConnection.Flow flow = fluidBehaviour.getFlow(side);
-                if (flow != null && flow.complete && flow.fluid.is(FluidTags.WATER)) {
-                    waterFlowing = true;
-                    PipeConnection conn = fluidBehaviour.getConnection(side);
-                    if (conn != null)
-                        flowPressure = Math.max(flowPressure, conn.getPressure().get(flow.inbound));
-                }
-            }
-            if (!waterFlowing) {
-                setCondensing(false);
-                return;
-            }
-
-            // 2. Check for mist at condenser position
-            ResourceLocation mistFluidId = MistFieldStore.getFluidType(level, worldPosition);
-            if (mistFluidId == null) {
-                setCondensing(false);
-                return;
-            }
-            float concentration = MistFieldStore.getConcentration(level, worldPosition);
-            if (concentration <= 0) {
-                setCondensing(false);
-                return;
-            }
-
-            // 3. Check for Drain below
-            BlockEntity below = level.getBlockEntity(worldPosition.below());
-            if (!(below instanceof ItemDrainBlockEntity drain)) {
-                setCondensing(false);
-                return;
-            }
-
-            // 4. Inject mist fluid into Drain (capacity-aware)
-            SmartFluidTankBehaviour tank = drain.getBehaviour(SmartFluidTankBehaviour.TYPE);
-            if (tank == null) {
-                setCondensing(false);
-                return;
-            }
-
-            Fluid fluid = BuiltInRegistries.FLUID.get(mistFluidId);
-            if (fluid == null) {
-                setCondensing(false);
-                return;
-            }
-
-            // Check drain fluid type compatibility
-            IFluidHandler primaryHandler = tank.getPrimaryHandler();
-            FluidStack drainFluid = primaryHandler.getFluidInTank(0);
-            if (!drainFluid.isEmpty()) {
-                ResourceLocation drainFluidId = BuiltInRegistries.FLUID.getKey(drainFluid.getFluid());
-                if (!drainFluidId.equals(mistFluidId)) {
-                    setCondensing(false);
-                    return; // fluid type mismatch — don't collect, don't reduce capacity
-                }
-            }
-
-            // Compute desired collection, clamp to drain remaining capacity
-            int desired = Math.max(1, (int) (concentration * Config.condenseEfficiency * (1 + flowPressure / 64)));
-            int drainRemaining = primaryHandler.getTankCapacity(0) - drainFluid.getAmount();
-            int target = Math.min(desired, drainRemaining);
-            if (target <= 0) {
-                setCondensing(false);
-                return;
-            }
-
-            // Consume from mist capacity (cascade through same-fluid sources)
-            long collected = MistEmitter.consumeCapacity(level, worldPosition, mistFluidId, target);
-            if (collected <= 0) {
-                setCondensing(false);
-                return;
-            }
-
-            FluidStack stack = new FluidStack(fluid, (int) collected);
-
-            tank.allowInsertion();
-            primaryHandler.fill(stack, IFluidHandler.FluidAction.EXECUTE);
-            tank.forbidInsertion();
-
-            setCondensing(true, stack);
         } else {
             // Client side: spawn particles
             if (condensing) {

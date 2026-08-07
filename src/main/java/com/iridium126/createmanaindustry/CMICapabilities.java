@@ -34,6 +34,13 @@ public final class CMICapabilities {
                 CMIBlockEntityTypes.ALLAY_BURNER.get(),
                 (be, side) -> ((AllayBurnerBlockEntity) be).getFluidCapability());
 
+        // NOTE: The Condenser intentionally exposes NO fluid capability. It is a
+        // pass-through pipe along its axis (FluidTransportBehaviour); exposing a
+        // FluidHandler.BLOCK here would make Create's pipe network treat it as a
+        // tank terminal (FlowSource.FluidHandler) instead of a pipe (OtherPipe),
+        // breaking coolant flow-through. Condensation consumes coolant from the
+        // passing flow via FluidNetworkMixin instead.
+
         // Kinetic Atomizer fluid handler — only accepts input from the bottom face.
         event.registerBlockEntity(
                 Capabilities.FluidHandler.BLOCK,

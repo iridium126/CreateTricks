@@ -1,0 +1,8 @@
+{
+    "parent": "createmanaindustry:block/condenser/block",
+    "textures": {
+        "0": "createmanaindustry:block/condenser/weathered_condenser",
+        "2": "createmanaindustry:block/condenser/weathered_pipes",
+        "particle": "minecraft:block/weathered_copper"
+    }
+}

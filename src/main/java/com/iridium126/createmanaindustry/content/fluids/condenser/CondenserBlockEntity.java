@@ -3,7 +3,6 @@ package com.iridium126.createmanaindustry.content.fluids.condenser;
 import java.util.List;
 
 import com.iridium126.createmanaindustry.config.Config;
-import com.iridium126.createmanaindustry.content.fluids.mist.MistEmitter;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore;
 import com.simibubi.create.AllParticleTypes;
 import com.simibubi.create.content.fluids.FluidPropagator;
@@ -140,8 +139,16 @@ public class CondenserBlockEntity extends SmartBlockEntity {
             }
         }
 
+        // Cap by the mist field's actual capacity — a field with no capacity
+        // (freshly activated or exhausted) must not claim coolant, otherwise
+        // coolant is deducted from the passing flow but nothing condenses.
+        long availableCapacity = MistFieldStore.availableCapacity(level, worldPosition, mistFluidId);
+        if (availableCapacity <= 0)
+            return 0;
+
         int desired = Math.max(1, (int) (concentration * Config.condenseEfficiency * (1 + flowPressure / 64)));
-        return Math.min(desired, drainRemaining);
+        int byCapacity = (int) Math.min(desired, availableCapacity);
+        return Math.min(byCapacity, drainRemaining);
     }
 
     private static Direction[] axisSides(Direction.Axis axis) {
@@ -167,7 +174,7 @@ public class CondenserBlockEntity extends SmartBlockEntity {
             return;
         }
 
-        long collected = MistEmitter.consumeCapacity(level, worldPosition, mistFluidId, amount);
+        long collected = MistFieldStore.consumeCapacity(level, worldPosition, mistFluidId, amount);
         if (collected <= 0) {
             setCondensing(false);
             return;

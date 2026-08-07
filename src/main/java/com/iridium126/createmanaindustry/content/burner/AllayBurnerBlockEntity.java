@@ -7,7 +7,8 @@ import org.jetbrains.annotations.Nullable;
 
 import com.iridium126.createmanaindustry.CMIFluids;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.content.fluids.mist.MistEmitter;
+import com.iridium126.createmanaindustry.content.fluids.mist.MistSync;
+import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore;
 import com.iridium126.createmanaindustry.compat.hexcasting.HexCompat;
 import com.iridium126.createmanaindustry.config.Config;
 import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
@@ -144,18 +145,19 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity
         if (burning) {
             int radius = Config.allayBurnerMistRadius;
             if (!wasActive) {
-                MistEmitter.activate(level, worldPosition, new FluidStack(CMIFluids.LIQUID_SOUL.get(), 1), radius);
+                MistFieldStore.setActive(level, worldPosition, true, radius,
+                        new FluidStack(CMIFluids.LIQUID_SOUL.get(), 1));
                 currentRadius = radius;
                 wasActive = true;
                 sendData();
             } else if (currentRadius != radius) {
-                MistEmitter.updateRadius(level, worldPosition, radius);
+                MistFieldStore.updateRadius(level, worldPosition, radius);
                 currentRadius = radius;
                 sendData();
             }
-            MistEmitter.addCapacity(level, worldPosition, Config.allayBurnerMistPerTick);
+            MistFieldStore.addCapacity(level, worldPosition, Config.allayBurnerMistPerTick);
         } else if (wasActive) {
-            MistEmitter.deactivate(level, worldPosition);
+            MistFieldStore.setActive(level, worldPosition, false, 0);
             wasActive = false;
             currentRadius = 0;
             sendData();
@@ -245,7 +247,7 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity
         if (clientPacket) {
             wasActive = compound.getBoolean("MistActive");
             currentRadius = compound.getInt("MistRadius");
-            MistEmitter.notifyClientSync(worldPosition,
+            MistSync.notifyClientSync(worldPosition,
                 wasActive ? new FluidStack(CMIFluids.LIQUID_SOUL.get(), 1) : FluidStack.EMPTY, currentRadius);
         }
         super.read(compound, registries, clientPacket);
@@ -335,8 +337,14 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity
         // (SmartBlockEntity.setRemoved is final and calls invalidate). The song
         // player is intentionally NOT stopped here: on contraption capture the
         // client sound must keep playing so the movement behaviour can adopt it.
-        if (level != null && !level.isClientSide)
-            MistEmitter.deactivate(level, worldPosition);
+        if (level != null && !level.isClientSide) {
+            MistFieldStore.setActive(level, worldPosition, false, 0);
+        } else if (level != null) {
+            // Fade the local source on break / chunk unload — the server-side
+            // deactivation only reaches the client via BE sync or the shared
+            // in-JVM callback (single player only).
+            MistSync.notifyClientSync(worldPosition, FluidStack.EMPTY, 0);
+        }
     }
 
     public AllayBurnerBlock.HeatLevel getHeatLevelFromBlock() {

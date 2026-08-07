@@ -39,7 +39,7 @@ import org.lwjgl.opengl.GL30;
  * {@link CreateManaIndustry#IRISVEIL_ACTIVE} — the classes are only resolved
  * when the mod is actually loaded.
  */
-public final class IrisMistHook {
+public final class MistIrisHook {
 
     private static final String HOOK_ID = "createmanaindustry:mist";
     /** Draw into colortex0, like the simulated end-sea compat hook. */
@@ -47,7 +47,7 @@ public final class IrisMistHook {
 
     private static boolean registered;
 
-    private IrisMistHook() {
+    private MistIrisHook() {
     }
 
     /**
@@ -60,19 +60,19 @@ public final class IrisMistHook {
         registered = true;
         VeilCompatRegistry.registerWorldRenderHook(
                 HOOK_ID, DRAW_BUFFERS,
-                IrisMistHook::shouldRender,
-                IrisMistHook::render);
+                MistIrisHook::shouldRender,
+                MistIrisHook::render);
     }
 
     /**
      * Whether the iris gbuffer path is currently taking over from the vanilla
-     * Veil post pipeline. Consulted by {@link ClientMistHandler#syncMistPipeline()}
+     * Veil post pipeline. Consulted by {@link MistClientHandler#syncMistPipeline()}
      * to maintain the "post pipeline XOR iris hook" invariant.
      */
     public static boolean isActivePath() {
         if (!CreateManaIndustry.IRISVEIL_ACTIVE
                 || !IrisVeilCompat.isShaderPackInUse()
-                || !ClientMistHandler.isMistActive())
+                || !MistClientHandler.isMistActive())
             return false;
         ShaderProgram shader = getProgram();
         return shader != null && shader.isValid();
@@ -84,8 +84,8 @@ public final class IrisMistHook {
      * shader pack is active) and reconciles the vanilla post pipeline.
      */
     private static boolean shouldRender() {
-        ClientMistHandler.tickMist();
-        ClientMistHandler.syncMistPipeline();
+        MistClientHandler.tickMist();
+        MistClientHandler.syncMistPipeline();
         return isActivePath();
     }
 
@@ -136,7 +136,7 @@ public final class IrisMistHook {
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, depthId);
             if (depthUniform >= 0)
                 GL30.glUniform1i(depthUniform, 1);
-            ClientMistHandler.applyMistUniforms(shader);
+            MistClientHandler.applyMistUniforms(shader);
             shader.setDefaultUniforms(VertexFormat.Mode.TRIANGLE_STRIP);
             VeilRenderSystem.drawScreenQuad();
 

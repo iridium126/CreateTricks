@@ -1,0 +1,46 @@
+{
+  "type": "createmanaindustry:mist_mixing",
+  "heat_requirement": "allayheated",
+  "mist_requirement": {
+    "fluid": "createmanaindustry:liquid_media",
+    "min_concentration": 0.1
+  },
+  "ingredients": [
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:glass" },
+    { "item": "minecraft:iron_nugget" }
+  ],
+  "results": [
+    { "id": "minecraft:amethyst_block", "count": 8 }
+  ]
+}

@@ -3,7 +3,8 @@ package com.iridium126.createmanaindustry.content.kinetics.kineticatomizer;
 import java.util.List;
 
 import com.iridium126.createmanaindustry.config.Config;
-import com.iridium126.createmanaindustry.content.fluids.mist.MistEmitter;
+import com.iridium126.createmanaindustry.content.fluids.mist.MistSync;
+import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 
 import net.minecraft.core.BlockPos;
@@ -88,7 +89,7 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
             wasActive = tag.getBoolean("MistActive");
             int radius = tag.getInt("MistRadius");
             currentRadius = radius;
-            MistEmitter.notifyClientSync(worldPosition,
+            MistSync.notifyClientSync(worldPosition,
                     wasActive ? tank.getFluid() : FluidStack.EMPTY, radius);
         }
     }
@@ -131,9 +132,13 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
             int newRadius = computeRadius(absSpeed);
 
             if (!wasActive) {
-                MistEmitter.activate(level, worldPosition, tank.getFluid(), newRadius);
+                // Copy the tank's FluidStack — the stored mist fluid must be a
+                // stable snapshot. Aliasing the tank's internal stack would make
+                // the field's fluid identity go stale when the tank empties and
+                // refills (its amount/instance would track the tank live).
+                MistFieldStore.setActive(level, worldPosition, true, newRadius, tank.getFluid().copy());
             } else if (newRadius != currentRadius) {
-                MistEmitter.updateRadius(level, worldPosition, newRadius);
+                MistFieldStore.updateRadius(level, worldPosition, newRadius);
             }
             currentRadius = newRadius;
 
@@ -141,9 +146,9 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
             int toConsume = Math.max(1, (int) (Config.mistFluidPerTick * speedFactor));
             FluidStack drained = tank.drain(toConsume, IFluidHandler.FluidAction.EXECUTE);
             if (!drained.isEmpty())
-                MistEmitter.addCapacity(level, worldPosition, drained.getAmount());
+                MistFieldStore.addCapacity(level, worldPosition, drained.getAmount());
         } else if (wasActive) {
-            MistEmitter.deactivate(level, worldPosition);
+            MistFieldStore.setActive(level, worldPosition, false, 0);
             currentRadius = 0;
         }
         wasActive = isActive;
@@ -157,7 +162,14 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
     @Override
     public void invalidate() {
         super.invalidate();
-        if (level != null && !level.isClientSide)
-            MistEmitter.deactivate(level, worldPosition);
+        if (level != null && !level.isClientSide) {
+            MistFieldStore.setActive(level, worldPosition, false, 0);
+        } else if (level != null) {
+            // Fade the local source on break / chunk unload. The server-side
+            // deactivation only reaches the client via BE sync (which never
+            // fires for a removed BE) or the shared in-JVM callback (single
+            // player only) — dedicated-server clients need an explicit fade.
+            MistSync.notifyClientSync(worldPosition, FluidStack.EMPTY, 0);
+        }
     }
 }

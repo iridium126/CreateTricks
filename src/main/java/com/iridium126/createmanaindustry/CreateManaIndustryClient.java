@@ -1,6 +1,6 @@
 package com.iridium126.createmanaindustry;
 
-import com.iridium126.createmanaindustry.client.render.ClientMistHandler;
+import com.iridium126.createmanaindustry.client.render.MistClientHandler;
 import com.iridium126.createmanaindustry.client.render.InlineTrickRenderer;
 import com.iridium126.createmanaindustry.ponder.CMIPonderPlugin;
 import com.samsthenerd.inline.api.client.InlineClientAPI;
@@ -16,6 +16,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
+import net.neoforged.neoforge.event.level.LevelEvent;
 
 // This class will not load on dedicated servers. Accessing client side code from here is safe.
 @Mod(value = CreateManaIndustry.MODID, dist = Dist.CLIENT)
@@ -26,11 +27,11 @@ public class CreateManaIndustryClient {
 
         // Register the Veil post-processing uniform injection listener.
         // The mist pipeline is added/removed on demand when atomizers
-        // activate/deactivate — see ClientMistHandler.setActive().
+        // activate/deactivate — see MistClientHandler.setActive().
         // The Veil mist pipeline and the iris gbuffer hook are both initialised
-        // inside ClientMistHandler.init().
+        // inside MistClientHandler.init().
         if (CreateManaIndustry.VEIL_ACTIVE)
-            ClientMistHandler.init();
+            MistClientHandler.init();
 
         if (CreateManaIndustry.HEX_ACTIVE && CreateManaIndustry.TRICKSTER_ACTIVE)
             InlineClientAPI.INSTANCE.addRenderer(InlineTrickRenderer.INSTANCE);
@@ -48,5 +49,19 @@ public class CreateManaIndustryClient {
             ItemBlockRenderTypes.setRenderLayer(CMIFluids.COOLANT.get(), RenderType.translucent());
             ItemBlockRenderTypes.setRenderLayer(CMIFluids.COOLANT.getSource(), RenderType.translucent());
         });
+    }
+
+    /** Clears client mist sources when the client's level/dimension changes. */
+    @SubscribeEvent
+    private static void onLevelUnload(LevelEvent.Unload event) {
+        // In single-player the integrated server posts Unload for its ServerLevels
+        // on the same bus — only react to the CLIENT's own level so a server
+        // dimension unload (e.g. the nether timing out) doesn't clear the
+        // overworld's mist. MistClientHandler sources are keyed by BlockPos only
+        // (no dimension), so without a clear on dimension switch they'd linger at
+        // the same absolute coordinates in the new dimension.
+        if (event.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel
+                && CreateManaIndustry.VEIL_ACTIVE)
+            MistClientHandler.clearAll();
     }
 }

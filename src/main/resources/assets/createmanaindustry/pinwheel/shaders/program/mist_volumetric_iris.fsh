@@ -2,7 +2,7 @@
 //
 // Identical to the vanilla shader (depth-based ray endpoint + march cutoff at
 // the scene surface, so solid geometry fully occludes the fog behind it), but
-// compiled as a separate program: IrisMistHook manipulates its sampler
+// compiled as a separate program: MistIrisHook manipulates its sampler
 // uniforms manually, and doing that on the shared vanilla program polluted the
 // vanilla post pipeline after a shaderpack switch (red screen). Keeping a
 // dedicated program isolates all hook-side state.

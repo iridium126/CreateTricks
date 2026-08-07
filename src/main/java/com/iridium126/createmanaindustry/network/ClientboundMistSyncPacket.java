@@ -1,7 +1,7 @@
 package com.iridium126.createmanaindustry.network;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.client.render.ClientMistHandler;
+import com.iridium126.createmanaindustry.client.render.MistClientHandler;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -50,7 +50,12 @@ public record ClientboundMistSyncPacket(BlockPos pos, FluidStack fluid, int radi
 
     /** Called on the client. */
     public static void handle(ClientboundMistSyncPacket packet, IPayloadContext ctx) {
-        ctx.enqueueWork(() -> ClientMistHandler.setActive(packet.pos, packet.fluid, packet.radius));
+        ctx.enqueueWork(() -> {
+            // Veil is optional — without it MistClientHandler can't be loaded.
+            // The guard short-circuits before the class reference is resolved.
+            if (CreateManaIndustry.VEIL_ACTIVE)
+                MistClientHandler.setActive(packet.pos, packet.fluid, packet.radius);
+        });
     }
 
     /** Send to all players tracking the chunk containing {@code pos}. */

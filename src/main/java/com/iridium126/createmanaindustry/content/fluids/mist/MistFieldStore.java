@@ -3,33 +3,46 @@ package com.iridium126.createmanaindustry.content.fluids.mist;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.iridium126.createmanaindustry.CMIAttachments;
 import com.iridium126.createmanaindustry.config.Config;
 
 import net.minecraft.core.BlockPos;
-import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.neoforged.neoforge.fluids.FluidStack;
 
 /**
- * Central data store for active Kinetic Atomizer mist fields. Follows the
- * {@code TemporaryStress} pattern: a static utility class backed by a
- * per-dimension {@link ConcurrentHashMap}.
+ * Central data store for active mist fields, attached to each {@link Level} via
+ * {@link CMIAttachments#MIST_FIELD} instead of static per-dimension maps.
+ * <p>
+ * The data lives and dies with the level: the server holds it on its
+ * {@code ServerLevel}, and the client holds its own (always-empty) copy on its
+ * {@code ClientLevel}. This removes dimension-unload leaks and the server/client
+ * shared-static coupling that single-player relied on.
  * <p>
  * Each active atomizer is stored with its position and field parameters.
- * Concentration is computed on the fly at query time using Manhattan distance
- * — no cached concentration grids are maintained, so block changes are
+ * Concentration is computed on the fly at query time using Euclidean distance —
+ * no cached concentration grids are maintained, so block changes are
  * automatically reflected.
  */
 public final class MistFieldStore {
 
-    /** Per-dimension map of atomizer positions to their field parameters. */
-    private static final Map<ResourceKey<Level>, Map<BlockPos, AtomizerField>> ACTIVE = new ConcurrentHashMap<>();
-
-    /** Per-dimension map of timed mist entries (recipe byproducts) with expiry. */
-    private static final Map<ResourceKey<Level>, Map<BlockPos, TimedMistEntry>> TIMED = new ConcurrentHashMap<>();
+    /**
+     * Per-level mist field data. Attached to each {@link Level} so it is created
+     * lazily on first access and collected together with the level.
+     */
+    public static final class MistFieldData {
+        /** Persistent (atomizer / burner) sources keyed by position. */
+        final Map<BlockPos, AtomizerField> active = new ConcurrentHashMap<>();
+        /** Timed (recipe byproduct) sources keyed by position. */
+        final Map<BlockPos, TimedMistEntry> timed = new ConcurrentHashMap<>();
+    }
 
     private MistFieldStore() {}
+
+    private static MistFieldData data(Level level) {
+        return level.getData(CMIAttachments.MIST_FIELD);
+    }
 
     /**
      * Called by {@code KineticAtomizerBlockEntity} on state transitions (inactive
@@ -49,28 +62,17 @@ public final class MistFieldStore {
         if (level == null || level.isClientSide)
             return;
 
-        ResourceKey<Level> dim = level.dimension();
-        if (active) {
-            ACTIVE.computeIfAbsent(dim, k -> new ConcurrentHashMap<>())
-                    .put(pos.immutable(), new AtomizerField(radius, fluid));
-        } else {
-            Map<BlockPos, AtomizerField> dimFields = ACTIVE.get(dim);
-            if (dimFields != null) {
-                dimFields.remove(pos);
-                if (dimFields.isEmpty())
-                    ACTIVE.remove(dim, dimFields);
-            }
-        }
+        if (active)
+            data(level).active.put(pos.immutable(), new AtomizerField(radius, fluid));
+        else
+            data(level).active.remove(pos);
     }
 
     /**
      * Queries the mist concentration at a given position.
-     * <ul>
-     * <li>Only air blocks can contain mist — checked at query time so block
-     * changes are automatically reflected.</li>
-     * <li>If multiple atomizer fields overlap, the <b>maximum</b> concentration
-     * is returned.</li>
-     * </ul>
+     * <p>
+     * If multiple atomizer fields overlap, the <b>maximum</b> concentration is
+     * returned.
      *
      * @return concentration in {@code [0, mistBaseConcentration]}, or {@code 0}
      *         if the position is not in any mist field
@@ -91,14 +93,11 @@ public final class MistFieldStore {
         if (level == null || pos == null || fluidId == null)
             return false;
 
-        ResourceKey<Level> dim = level.dimension();
-
-        Map<BlockPos, AtomizerField> dimFields = ACTIVE.get(dim);
-        if (dimFields != null && hasMatchingAtomizerMist(dimFields, pos, fluidId, minConcentration))
+        MistFieldData data = data(level);
+        if (!data.active.isEmpty() && hasMatchingAtomizerMist(data.active, pos, fluidId, minConcentration))
             return true;
 
-        Map<BlockPos, TimedMistEntry> dimTimed = TIMED.get(dim);
-        return dimTimed != null && hasMatchingTimedMist(dimTimed, pos, fluidId, minConcentration);
+        return !data.timed.isEmpty() && hasMatchingTimedMist(data.timed, pos, fluidId, minConcentration);
     }
 
     /**
@@ -116,35 +115,29 @@ public final class MistFieldStore {
         if (level == null || pos == null)
             return DominantResult.NONE;
 
-        ResourceKey<Level> dim = level.dimension();
         float maxConc = 0f;
         net.minecraft.resources.ResourceLocation bestFluid = null;
+        MistFieldData data = data(level);
 
-        Map<BlockPos, AtomizerField> dimFields = ACTIVE.get(dim);
-        if (dimFields != null && !dimFields.isEmpty()) {
-            for (var entry : dimFields.entrySet()) {
-                float conc = calcConcentration(pos, entry.getKey(), entry.getValue().radius());
-                if (conc > maxConc) {
-                    maxConc = conc;
-                    var fluid = entry.getValue().fluid();
-                    bestFluid = fluid != null && !fluid.isEmpty()
-                            ? net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(fluid.getFluid())
-                            : null;
-                }
+        for (var entry : data.active.entrySet()) {
+            float conc = calcConcentration(pos, entry.getKey(), entry.getValue().radius());
+            if (conc > maxConc) {
+                maxConc = conc;
+                var fluid = entry.getValue().fluid();
+                bestFluid = fluid != null && !fluid.isEmpty()
+                        ? net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(fluid.getFluid())
+                        : null;
             }
         }
 
-        Map<BlockPos, TimedMistEntry> dimTimed = TIMED.get(dim);
-        if (dimTimed != null && !dimTimed.isEmpty()) {
-            for (var entry : dimTimed.entrySet()) {
-                float conc = calcConcentration(pos, entry.getKey(), entry.getValue().radius());
-                if (conc > maxConc) {
-                    maxConc = conc;
-                    var fluid = entry.getValue().fluid();
-                    bestFluid = fluid != null && !fluid.isEmpty()
-                            ? net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(fluid.getFluid())
-                            : null;
-                }
+        for (var entry : data.timed.entrySet()) {
+            float conc = calcConcentration(pos, entry.getKey(), entry.getValue().radius());
+            if (conc > maxConc) {
+                maxConc = conc;
+                var fluid = entry.getValue().fluid();
+                bestFluid = fluid != null && !fluid.isEmpty()
+                        ? net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(fluid.getFluid())
+                        : null;
             }
         }
 
@@ -157,6 +150,8 @@ public final class MistFieldStore {
     }
 
     private static float calcConcentration(BlockPos queryPos, BlockPos sourcePos, int radius) {
+        if (radius <= 0)
+            return 0f; // radius 0 would make dist/radius a 0/0 NaN at the source block
         double dx = queryPos.getX() - sourcePos.getX();
         double dy = queryPos.getY() - sourcePos.getY();
         double dz = queryPos.getZ() - sourcePos.getZ();
@@ -210,9 +205,7 @@ public final class MistFieldStore {
         if (level == null || level.isClientSide || pos == null)
             return;
 
-        ResourceKey<Level> dim = level.dimension();
-        TIMED.computeIfAbsent(dim, k -> new ConcurrentHashMap<>())
-                .put(pos.immutable(), new TimedMistEntry(fluid, radius, expiryTick));
+        data(level).timed.put(pos.immutable(), new TimedMistEntry(fluid, radius, expiryTick));
     }
 
     /** Removes a timed mist entry early (e.g. when a recipe source is removed). */
@@ -220,13 +213,7 @@ public final class MistFieldStore {
         if (level == null || level.isClientSide)
             return;
 
-        ResourceKey<Level> dim = level.dimension();
-        Map<BlockPos, TimedMistEntry> dimTimed = TIMED.get(dim);
-        if (dimTimed != null) {
-            dimTimed.remove(pos);
-            if (dimTimed.isEmpty())
-                TIMED.remove(dim, dimTimed);
-        }
+        data(level).timed.remove(pos);
     }
 
     // ---- capacity tracking -------------------------------------------------
@@ -240,10 +227,10 @@ public final class MistFieldStore {
         if (level == null || level.isClientSide || amount <= 0)
             return;
 
-        ResourceKey<Level> dim = level.dimension();
-        Map<BlockPos, AtomizerField> dimFields = ACTIVE.get(dim);
-        if (dimFields != null)
-            dimFields.computeIfPresent(pos, (p, f) -> { f.fluidCapacity += amount; return f; });
+        data(level).active.computeIfPresent(pos, (p, f) -> {
+            f.fluidCapacity += amount;
+            return f;
+        });
     }
 
     /**
@@ -255,10 +242,10 @@ public final class MistFieldStore {
         if (level == null || level.isClientSide)
             return;
 
-        ResourceKey<Level> dim = level.dimension();
-        Map<BlockPos, AtomizerField> dimFields = ACTIVE.get(dim);
-        if (dimFields != null)
-            dimFields.computeIfPresent(pos, (p, f) -> { f.radius = newRadius; return f; });
+        data(level).active.computeIfPresent(pos, (p, f) -> {
+            f.radius = newRadius;
+            return f;
+        });
     }
 
     /**
@@ -273,12 +260,13 @@ public final class MistFieldStore {
         if (level == null || level.isClientSide)
             return;
 
-        ResourceKey<Level> dim = level.dimension();
-        Map<BlockPos, TimedMistEntry> dimTimed =
-                TIMED.computeIfAbsent(dim, k -> new ConcurrentHashMap<>());
-        dimTimed.compute(pos.immutable(), (p, existing) -> {
-            if (existing != null) {
+        data(level).timed.compute(pos.immutable(), (p, existing) -> {
+            // Same fluid → extend: refresh expiry, adopt the new radius, add capacity.
+            // Different fluid (basin switched to another mist recipe at this pos) →
+            // replace entirely so the server store and the client packet agree.
+            if (existing != null && existing.fluid != null && existing.fluid.is(fluid.getFluid())) {
                 existing.expiryTick = expiryTick;
+                existing.radius = radius;
                 existing.fluidCapacity += capacityAmount;
                 return existing;
             }
@@ -301,38 +289,32 @@ public final class MistFieldStore {
         if (level == null || level.isClientSide || fluidId == null || desired <= 0)
             return 0L;
 
-        ResourceKey<Level> dim = level.dimension();
+        MistFieldData data = data(level);
 
         // Collect all same-fluid sources with capacity > 0 and concentration at queryPos
         record SourcedEntry(BlockPos srcPos, boolean isTimed, long capacity, float conc) {}
         java.util.List<SourcedEntry> sources = new java.util.ArrayList<>();
 
-        Map<BlockPos, AtomizerField> dimFields = ACTIVE.get(dim);
-        if (dimFields != null) {
-            for (var e : dimFields.entrySet()) {
-                AtomizerField f = e.getValue();
-                if (f.fluidCapacity <= 0 || f.fluid == null || f.fluid.isEmpty())
-                    continue;
-                if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(f.fluid.getFluid())))
-                    continue;
-                float conc = calcConcentration(queryPos, e.getKey(), f.radius());
-                if (conc > 0)
-                    sources.add(new SourcedEntry(e.getKey(), false, f.fluidCapacity, conc));
-            }
+        for (var e : data.active.entrySet()) {
+            AtomizerField f = e.getValue();
+            if (f.fluidCapacity <= 0 || f.fluid == null || f.fluid.isEmpty())
+                continue;
+            if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(f.fluid.getFluid())))
+                continue;
+            float conc = calcConcentration(queryPos, e.getKey(), f.radius());
+            if (conc > 0)
+                sources.add(new SourcedEntry(e.getKey(), false, f.fluidCapacity, conc));
         }
 
-        Map<BlockPos, TimedMistEntry> dimTimed = TIMED.get(dim);
-        if (dimTimed != null) {
-            for (var e : dimTimed.entrySet()) {
-                TimedMistEntry t = e.getValue();
-                if (t.fluidCapacity <= 0)
-                    continue;
-                if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(t.fluid.getFluid())))
-                    continue;
-                float conc = calcConcentration(queryPos, e.getKey(), t.radius());
-                if (conc > 0)
-                    sources.add(new SourcedEntry(e.getKey(), true, t.fluidCapacity, conc));
-            }
+        for (var e : data.timed.entrySet()) {
+            TimedMistEntry t = e.getValue();
+            if (t.fluidCapacity <= 0)
+                continue;
+            if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(t.fluid.getFluid())))
+                continue;
+            float conc = calcConcentration(queryPos, e.getKey(), t.radius());
+            if (conc > 0)
+                sources.add(new SourcedEntry(e.getKey(), true, t.fluidCapacity, conc));
         }
 
         if (sources.isEmpty())
@@ -349,18 +331,59 @@ public final class MistFieldStore {
                 break;
             long take = Math.min(remaining, se.capacity);
             if (se.isTimed) {
-                Map<BlockPos, TimedMistEntry> map = TIMED.get(dim);
-                if (map != null)
-                    map.computeIfPresent(se.srcPos, (p, e) -> { e.fluidCapacity -= take; return e; });
+                data.timed.computeIfPresent(se.srcPos, (p, e) -> {
+                    e.fluidCapacity -= take;
+                    return e;
+                });
             } else {
-                Map<BlockPos, AtomizerField> map = ACTIVE.get(dim);
-                if (map != null)
-                    map.computeIfPresent(se.srcPos, (p, f) -> { f.fluidCapacity -= take; return f; });
+                data.active.computeIfPresent(se.srcPos, (p, f) -> {
+                    f.fluidCapacity -= take;
+                    return f;
+                });
             }
             totalConsumed += take;
             remaining -= take;
         }
         return totalConsumed;
+    }
+
+    /**
+     * Non-destructive query: total fluid capacity of all mist sources matching
+     * {@code fluidId} that contribute concentration at {@code pos}. Mirrors the
+     * source collection of {@link #consumeCapacity} without consuming.
+     * <p>
+     * Used by consumers to cap their demand so they never claim more than the
+     * field can actually supply.
+     */
+    public static long availableCapacity(Level level, BlockPos pos,
+            net.minecraft.resources.ResourceLocation fluidId) {
+        if (level == null || pos == null || fluidId == null)
+            return 0L;
+
+        long total = 0L;
+        MistFieldData data = data(level);
+
+        for (var e : data.active.entrySet()) {
+            AtomizerField f = e.getValue();
+            if (f.fluidCapacity <= 0 || f.fluid == null || f.fluid.isEmpty())
+                continue;
+            if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(f.fluid.getFluid())))
+                continue;
+            if (calcConcentration(pos, e.getKey(), f.radius()) > 0)
+                total += f.fluidCapacity;
+        }
+
+        for (var e : data.timed.entrySet()) {
+            TimedMistEntry t = e.getValue();
+            if (t.fluidCapacity <= 0)
+                continue;
+            if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(t.fluid.getFluid())))
+                continue;
+            if (calcConcentration(pos, e.getKey(), t.radius()) > 0)
+                total += t.fluidCapacity;
+        }
+
+        return total;
     }
 
     /**
@@ -380,29 +403,22 @@ public final class MistFieldStore {
      * </ul>
      */
     public static void tick(ServerLevel level, java.util.function.Consumer<BlockPos> onExpired) {
-        ResourceKey<Level> dim = level.dimension();
+        MistFieldData data = data(level);
 
         // Clean up persistent entries for unloaded chunks
-        Map<BlockPos, AtomizerField> dimFields = ACTIVE.get(dim);
-        if (dimFields != null && !dimFields.isEmpty()) {
-            dimFields.entrySet().removeIf(entry -> !level.isLoaded(entry.getKey()));
-            if (dimFields.isEmpty())
-                ACTIVE.remove(dim, dimFields);
-        }
+        if (!data.active.isEmpty())
+            data.active.entrySet().removeIf(entry -> !level.isLoaded(entry.getKey()));
 
         // Expire timed entries — notify callback for each removed position
-        Map<BlockPos, TimedMistEntry> dimTimed = TIMED.get(dim);
-        if (dimTimed != null && !dimTimed.isEmpty()) {
+        if (!data.timed.isEmpty()) {
             long currentTick = level.getGameTime();
-            dimTimed.entrySet().removeIf(entry -> {
+            data.timed.entrySet().removeIf(entry -> {
                 if (entry.getValue().expiryTick <= currentTick) {
                     onExpired.accept(entry.getKey());
                     return true;
                 }
                 return false;
             });
-            if (dimTimed.isEmpty())
-                TIMED.remove(dim, dimTimed);
         }
     }
 
@@ -410,8 +426,9 @@ public final class MistFieldStore {
      * Mutable per-atomizer field parameters.
      * <p>
      * radius and fluidCapacity are mutable — radius changes with atomizer speed,
-     * and fluidCapacity accumulates drained fluid.  The {@code ConcurrentHashMap}
-     * is updated in-place via {@code computeIfPresent} for thread safety.
+     * and fluidCapacity accumulates drained fluid. Mutations go through the
+     * per-level map's compute family; per-level access is single-threaded (server
+     * thread only).
      */
     private static final class AtomizerField {
         int radius;
@@ -424,22 +441,20 @@ public final class MistFieldStore {
             this.fluidCapacity = 0L;
         }
 
-        //AtomizerField(int radius) { this(radius, null); }
-
         int radius() { return radius; }
         @org.jetbrains.annotations.Nullable FluidStack fluid() { return fluid; }
-        //long fluidCapacity() { return fluidCapacity; }
     }
 
     /**
      * Mutable timed mist entry with expiry and fluid capacity.
      * <p>
-     * expiryTick and fluidCapacity are mutable — expiry is reset on each
-     * recipe completion, and capacity accumulates across recipe cycles.
+     * expiryTick, radius and fluidCapacity are mutable — expiry is reset on each
+     * recipe completion, radius follows the recipe, and capacity accumulates
+     * across recipe cycles.
      */
     private static final class TimedMistEntry {
         final FluidStack fluid;
-        final int radius;
+        int radius;
         long expiryTick;
         long fluidCapacity;
 
@@ -456,7 +471,5 @@ public final class MistFieldStore {
 
         FluidStack fluid() { return fluid; }
         int radius() { return radius; }
-        //long expiryTick() { return expiryTick; }
-        //long fluidCapacity() { return fluidCapacity; }
     }
 }

@@ -9,7 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.CMIFluids;
 import com.iridium126.createmanaindustry.config.Config;
-import com.iridium126.createmanaindustry.content.fluids.mist.MistEmitter;
+import com.iridium126.createmanaindustry.content.fluids.mist.MistSync;
 import com.mojang.blaze3d.platform.NativeImage;
 
 import foundry.veil.api.client.render.VeilRenderSystem;
@@ -39,7 +39,7 @@ import net.neoforged.neoforge.fluids.FluidStack;
  * Call {@link #init()} once during client setup to register the Veil
  * post-processing listener.
  */
-public final class ClientMistHandler {
+public final class MistClientHandler {
 
     private static final ResourceLocation PIPELINE_ID = CreateManaIndustry.modLoc("mist");
     private static final int MAX_ATOMIZERS = 32;
@@ -90,7 +90,7 @@ public final class ClientMistHandler {
     /** Cache of extracted fluid texture colors, keyed by still texture ResourceLocation. */
     private static final Map<ResourceLocation, float[]> fluidColorCache = new HashMap<>();
 
-    private ClientMistHandler() {}
+    private MistClientHandler() {}
 
     /**
      * Registers the Veil post-processing listener. Safe to call multiple times.
@@ -103,11 +103,11 @@ public final class ClientMistHandler {
 
         // Bridge: register for client sync notifications from atomizer BEs
         // and other mist sources (e.g. timed recipe byproducts).
-        MistEmitter.registerSyncCallback(data ->
-                ClientMistHandler.setActive(data.pos(), data.fluid(), data.radius()));
+        MistSync.registerSyncCallback(data ->
+                MistClientHandler.setActive(data.pos(), data.fluid(), data.radius()));
 
         // Listen for Veil post-processing to inject uniforms
-        VeilEventPlatform.INSTANCE.preVeilPostProcessing(ClientMistHandler::onPrePostProcessing);
+        VeilEventPlatform.INSTANCE.preVeilPostProcessing(MistClientHandler::onPrePostProcessing);
 
         // Iris shaderpack path: render mist into the iris gbuffer via the
         // iris-veil-compat world render hook, and reconcile the vanilla post
@@ -115,7 +115,7 @@ public final class ClientMistHandler {
         // AFTER_LEVEL fires every frame even when Iris has taken over the
         // world rendering, covering the gap where the hook is silent.
         if (CreateManaIndustry.IRISVEIL_ACTIVE) {
-            IrisMistHook.init();
+            MistIrisHook.init();
             VeilEventPlatform.INSTANCE.onVeilRenderLevelStage((stage, levelRenderer, bufferSource,
                     matrixStack, frustumMatrix, projectionMatrix, renderTick, deltaTracker, camera, frustum) -> {
                 if (stage == VeilRenderLevelStageEvent.Stage.AFTER_LEVEL)
@@ -152,6 +152,26 @@ public final class ClientMistHandler {
 
         // Pipeline activation is reconciled in syncMistPipeline() (invariant:
         // post pipeline active iff mist present AND the iris path is not on).
+        // Dispatch to the render thread: in single-player the integrated server
+        // thread can reach this via MistSync's shared callback list, and Veil
+        // must only be touched from the render thread.
+        if (Minecraft.getInstance().isSameThread())
+            syncMistPipeline();
+        else
+            Minecraft.getInstance().execute(MistClientHandler::syncMistPipeline);
+    }
+
+    /**
+     * Clears all client mist sources. Called when the client's level/dimension
+     * changes so sources from a previous dimension don't linger at the same
+     * absolute coordinates (the map is keyed by BlockPos only).
+     */
+    public static void clearAll() {
+        activeSources.clear();
+        dirty = true;
+        atomizerCount = 0;
+        paletteCount = 0;
+        pipelineActive = false;
         syncMistPipeline();
     }
 
@@ -233,7 +253,7 @@ public final class ClientMistHandler {
      * hook's shouldRender — all idempotent.
      */
     static void syncMistPipeline() {
-        boolean want = isMistActive() && !IrisMistHook.isActivePath();
+        boolean want = isMistActive() && !MistIrisHook.isActivePath();
         if (want == pipelineActive)
             return;
         pipelineActive = want;
@@ -511,7 +531,7 @@ public final class ClientMistHandler {
         if (texLoc == null)
             return new float[]{1.0f, 1.0f, 1.0f};
 
-        return fluidColorCache.computeIfAbsent(texLoc, ClientMistHandler::extractColorFromTexture);
+        return fluidColorCache.computeIfAbsent(texLoc, MistClientHandler::extractColorFromTexture);
     }
 
     /**

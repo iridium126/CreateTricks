@@ -12,7 +12,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import com.iridium126.createmanaindustry.CMIRecipeTypes;
-import com.iridium126.createmanaindustry.content.fluids.mist.MistEmitter;
+import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore;
 import com.iridium126.createmanaindustry.content.recipes.MistRecipe;
 import com.iridium126.createmanaindustry.content.recipes.MistOutput;
 import com.iridium126.createmanaindustry.network.ClientboundMistSyncPacket;
@@ -76,7 +76,7 @@ public class BasinOperatingBlockEntityMixin {
         FluidStack fluid = new FluidStack(BuiltInRegistries.FLUID.get(mist.fluidId()), 1);
 
         // Timed emission: each recipe completion resets the timer and adds capacity
-        MistEmitter.emitOrExtendTimed(self.getLevel(), basinPos, fluid,
+        MistFieldStore.emitOrExtendTimed(self.getLevel(), basinPos, fluid,
                 mist.radius(), mist.duration(), mist.amount());
         ClientboundMistSyncPacket.sendToTracking(self.getLevel(), basinPos, fluid, mist.radius());
         createmanaindustry$activeMistPos = basinPos;
@@ -96,7 +96,7 @@ public class BasinOperatingBlockEntityMixin {
     private void createmanaindustry$removeTimedOnBasinRemoved(CallbackInfo ci) {
         BasinOperatingBlockEntity self = (BasinOperatingBlockEntity) (Object) this;
         if (createmanaindustry$activeMistPos != null) {
-            MistEmitter.removeTimed(self.getLevel(), createmanaindustry$activeMistPos);
+            MistFieldStore.removeTimed(self.getLevel(), createmanaindustry$activeMistPos);
             ClientboundMistSyncPacket.sendToTracking(
                     self.getLevel(), createmanaindustry$activeMistPos, FluidStack.EMPTY, 0);
             createmanaindustry$activeMistPos = null;

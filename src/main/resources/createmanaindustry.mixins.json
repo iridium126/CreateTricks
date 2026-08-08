@@ -48,7 +48,9 @@
     "bnb.RenderedChainPathNodeMixin",
     "bnb.CogwheelChainPlacementInteractionMixin",
     "basin.TrapdoorCTBehaviourMixin",
-    "basin.TrainTrapdoorBlockSkipRenderingMixin"
+    "basin.TrainTrapdoorBlockSkipRenderingMixin",
+    "jei.BasinCategoryMixin",
+    "jei.CreateHeatedBasinCategoryMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -10,11 +10,8 @@ import com.iridium126.createmanaindustry.compat.jei.VaporDepositionStationElemen
 import com.iridium126.createmanaindustry.content.recipes.MistOutput;
 import com.iridium126.createmanaindustry.content.recipes.MistRecipe;
 import com.iridium126.createmanaindustry.content.recipes.MistRequirement;
-import com.simibubi.create.compat.jei.category.BasinCategory;
 import com.simibubi.create.compat.jei.category.CreateRecipeCategory;
-import com.simibubi.create.compat.jei.category.animations.AnimatedBlazeBurner;
 import com.simibubi.create.content.processing.basin.BasinRecipe;
-import com.simibubi.create.content.processing.recipe.HeatCondition;
 
 import mezz.jei.api.gui.ingredient.IRecipeSlotsView;
 import net.minecraft.client.gui.GuiGraphics;
@@ -29,13 +26,12 @@ import net.minecraft.world.level.material.Fluid;
  * deposition lid resting on the basin.
  */
 @ParametersAreNonnullByDefault
-public class VaporDepositionCategory extends BasinCategory {
+public class VaporDepositionCategory extends CMIHeatedBasinCategory {
 
     private final VaporDepositionStationElement station = new VaporDepositionStationElement();
-    private final AnimatedBlazeBurner heater = new AnimatedBlazeBurner();
 
     public VaporDepositionCategory(CreateRecipeCategory.Info<BasinRecipe> info) {
-        super(info, true);
+        super(info);
     }
 
     @Override
@@ -43,10 +39,7 @@ public class VaporDepositionCategory extends BasinCategory {
                      double mouseX, double mouseY) {
         super.draw(recipe, recipeSlotsView, graphics, mouseX, mouseY);
 
-        HeatCondition requiredHeat = recipe.getRequiredHeat();
-        if (requiredHeat != HeatCondition.NONE)
-            heater.withHeat(requiredHeat.visualizeAsBlazeBurner())
-                .draw(graphics, getBackground().getWidth() / 2 + 3, 55);
+        drawHeater(recipe, graphics);
         station.draw(graphics, getBackground().getWidth() / 2 - 5, 47);
     }
 

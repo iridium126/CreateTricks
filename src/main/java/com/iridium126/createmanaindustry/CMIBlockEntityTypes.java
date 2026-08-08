@@ -5,6 +5,7 @@ import static com.iridium126.createmanaindustry.CreateManaIndustry.REGISTRATE;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlockEntity;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerRenderer;
 import com.iridium126.createmanaindustry.content.fluids.condenser.CondenserBlockEntity;
+import com.iridium126.createmanaindustry.content.kinetics.depositionlid.DepositionLidBlockEntity;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlockEntity;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerRenderer;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlockEntity;
@@ -42,6 +43,11 @@ public final class CMIBlockEntityTypes {
                     CMIBlocks.WAXED_EXPOSED_CONDENSER,
                     CMIBlocks.WAXED_WEATHERED_CONDENSER,
                     CMIBlocks.WAXED_OXIDIZED_CONDENSER)
+            .register();
+
+    public static final BlockEntityEntry<DepositionLidBlockEntity> DEPOSITION_LID = REGISTRATE
+            .blockEntity("deposition_lid", DepositionLidBlockEntity::new)
+            .validBlocks(CMIBlocks.DEPOSITION_LID)
             .register();
 
     public static final BlockEntityEntry<ManaCogwheelBlockEntity> MANA_COGWHEEL = REGISTRATE

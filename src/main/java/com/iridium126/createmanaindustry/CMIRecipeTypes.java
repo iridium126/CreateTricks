@@ -6,6 +6,7 @@ import com.iridium126.createmanaindustry.content.recipes.HeatedCompactingRecipe;
 import com.iridium126.createmanaindustry.content.recipes.MistCompactingRecipe;
 import com.iridium126.createmanaindustry.content.recipes.MistMixingRecipe;
 import com.iridium126.createmanaindustry.content.recipes.MistRecipeParams;
+import com.iridium126.createmanaindustry.content.recipes.VaporDepositionRecipe;
 import com.mojang.serialization.MapCodec;
 import com.simibubi.create.content.processing.recipe.ProcessingRecipe;
 import com.simibubi.create.content.processing.recipe.ProcessingRecipeParams;
@@ -121,6 +122,36 @@ public final class CMIRecipeTypes {
         }
     };
 
+    // ---- VAPOR_DEPOSITION --------------------------------------------------
+
+    public static final ResourceLocation VAPOR_DEPOSITION_ID =
+            CreateManaIndustry.modLoc("vapor_deposition");
+
+    private static final Supplier<RecipeSerializer<?>> VAPOR_DEPOSITION_SERIALIZER =
+            SERIALIZER_REGISTER.register("vapor_deposition",
+                    () -> new VaporDepositionSerializer());
+
+    private static final Supplier<RecipeType<?>> VAPOR_DEPOSITION_TYPE =
+            TYPE_REGISTER.register("vapor_deposition",
+                    () -> RecipeType.simple(VAPOR_DEPOSITION_ID));
+
+    public static final IRecipeTypeInfo VAPOR_DEPOSITION = new IRecipeTypeInfo() {
+        @Override
+        public ResourceLocation getId() { return VAPOR_DEPOSITION_ID; }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public <T extends RecipeSerializer<?>> T getSerializer() {
+            return (T) VAPOR_DEPOSITION_SERIALIZER.get();
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public <I extends RecipeInput, R extends Recipe<I>> RecipeType<R> getType() {
+            return (RecipeType<R>) VAPOR_DEPOSITION_TYPE.get();
+        }
+    };
+
     // ---- registration -------------------------------------------------------
 
     private CMIRecipeTypes() {}
@@ -178,6 +209,31 @@ public final class CMIRecipeTypes {
 
         @Override
         public StreamCodec<RegistryFriendlyByteBuf, MistMixingRecipe> streamCodec() {
+            return streamCodec;
+        }
+    }
+
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private static final class VaporDepositionSerializer implements RecipeSerializer<VaporDepositionRecipe> {
+        private final MapCodec<VaporDepositionRecipe> codec;
+        private final StreamCodec<RegistryFriendlyByteBuf, VaporDepositionRecipe> streamCodec;
+
+        VaporDepositionSerializer() {
+            var rawCodec = ProcessingRecipe.codec(
+                    (ProcessingRecipe.Factory) (ProcessingRecipeParams p) -> new VaporDepositionRecipe(p),
+                    (MapCodec) MistRecipeParams.MIST_CODEC);
+            this.codec = rawCodec;
+            var rawStream = ProcessingRecipe.streamCodec(
+                    (ProcessingRecipe.Factory) (ProcessingRecipeParams p) -> new VaporDepositionRecipe(p),
+                    (StreamCodec) MistRecipeParams.MIST_STREAM_CODEC);
+            this.streamCodec = rawStream;
+        }
+
+        @Override
+        public MapCodec<VaporDepositionRecipe> codec() { return codec; }
+
+        @Override
+        public StreamCodec<RegistryFriendlyByteBuf, VaporDepositionRecipe> streamCodec() {
             return streamCodec;
         }
     }

@@ -5,8 +5,10 @@
   "createmanaindustry.recipe.heated_compacting": "Heated Compacting",
   "createmanaindustry.recipe.mist_compacting": "Mist Compacting",
   "createmanaindustry.recipe.mist_mixing": "Mist Mixing",
+  "createmanaindustry.recipe.vapor_deposition": "Vapor Deposition",
   "createmanaindustry.jei.mist_requirement": "Requires mist of %1$s (≥ %2$s)",
   "createmanaindustry.jei.mist_output": "Emits mist of %1$s (radius: %2$s, amount: %3$s mB, duration: %4$s ticks)",
+  "createmanaindustry.jei.vapor_deposition.sealed": "Place a closed Framed Glass Trapdoor on the Basin to seal it",
 
   "block.createmanaindustry.mana_cogwheel": "Mana Cogwheel",
   "block.createmanaindustry.andesite_encased_mana_cogwheel": "Andesite Encased Mana Cogwheel",
@@ -22,6 +24,7 @@
   "block.createmanaindustry.waxed_weathered_condenser": "Waxed Weathered Condenser",
   "block.createmanaindustry.waxed_oxidized_condenser": "Waxed Oxidized Condenser",
   "block.createmanaindustry.allay_burner": "Allay Burner",
+  "block.createmanaindustry.deposition_lid": "Deposition Lid",
   "item.createmanaindustry.allay_burner": "Allay Burner",
   "item.createmanaindustry.empty_allay_burner": "Empty Allay Burner",
   "create.recipe.heat_requirement.allayheated": "Allay-Heated",

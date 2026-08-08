@@ -12,6 +12,8 @@
     "basin.BasinBlockEntityMixin",
     "basin.BasinOperatingBlockEntityMixin",
     "basin.BasinRecipeMixin",
+    "basin.BlockTrapdoorLidMixin",
+    "basin.TrapDoorBlockLidMixin",
     "basin.HeatConditionMixin",
     "fluids.ProcessingRecipeMixin",
     "fluids.FillingBySpoutMixin",
@@ -44,7 +46,9 @@
     "bnb.CogwheelChainBehaviourRendererMixin",
     "bnb.CogwheelChainBehaviourVisualMixin",
     "bnb.RenderedChainPathNodeMixin",
-    "bnb.CogwheelChainPlacementInteractionMixin"
+    "bnb.CogwheelChainPlacementInteractionMixin",
+    "basin.TrapdoorCTBehaviourMixin",
+    "basin.TrainTrapdoorBlockSkipRenderingMixin"
   ],
   "injectors": {
     "defaultRequire": 1

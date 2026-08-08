@@ -13,6 +13,7 @@ import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.compat.jei.category.HeatedCompactingCategory;
 import com.iridium126.createmanaindustry.compat.jei.category.MistCompactingCategory;
 import com.iridium126.createmanaindustry.compat.jei.category.MistMixingCategory;
+import com.iridium126.createmanaindustry.compat.jei.category.VaporDepositionCategory;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.compat.jei.DoubleItemIcon;
 import com.simibubi.create.compat.jei.EmptyBackground;
@@ -49,6 +50,9 @@ public class CMIJEIPlugin implements IModPlugin {
 
     public static final RecipeType<RecipeHolder<BasinRecipe>> MIST_MIXING_TYPE =
             RecipeType.createRecipeHolderType(CreateManaIndustry.modLoc("mist_mixing"));
+
+    public static final RecipeType<RecipeHolder<BasinRecipe>> VAPOR_DEPOSITION_TYPE =
+            RecipeType.createRecipeHolderType(CreateManaIndustry.modLoc("vapor_deposition"));
 
     private final List<CreateRecipeCategory<BasinRecipe>> allCategories = new ArrayList<>();
 
@@ -127,6 +131,28 @@ public class CMIJEIPlugin implements IModPlugin {
             allCategories.add(new MistMixingCategory(info));
         }
 
+        // Vapor Deposition
+        {
+            IDrawable icon = new DoubleItemIcon(
+                    () -> new ItemStack(AllBlocks.BASIN.get()),
+                    () -> new ItemStack(AllBlocks.FRAMED_GLASS_TRAPDOOR.get()));
+            IDrawable background = new EmptyBackground(177, 103);
+            List<RecipeHolder<BasinRecipe>> recipes = new ArrayList<>();
+            List<java.util.function.Supplier<? extends ItemStack>> catalysts = new ArrayList<>();
+            catalysts.add(() -> new ItemStack(AllBlocks.FRAMED_GLASS_TRAPDOOR.get()));
+            catalysts.add(() -> new ItemStack(AllBlocks.BASIN.get()));
+            catalysts.add(() -> new ItemStack(CMIBlocks.KINETIC_ATOMIZER.get()));
+
+            var info = new CreateRecipeCategory.Info<>(
+                    VAPOR_DEPOSITION_TYPE,
+                    Component.translatable("createmanaindustry.recipe.vapor_deposition"),
+                    background,
+                    icon,
+                    () -> recipes,
+                    catalysts);
+            allCategories.add(new VaporDepositionCategory(info));
+        }
+
         registration.addRecipeCategories(allCategories.toArray(IRecipeCategory[]::new));
     }
 
@@ -153,20 +179,27 @@ public class CMIJEIPlugin implements IModPlugin {
                 .getAllRecipesFor((net.minecraft.world.item.crafting.RecipeType) CMIRecipeTypes.MIST_MIXING.getType());
         if (!mistMixing.isEmpty())
             registration.addRecipes(MIST_MIXING_TYPE, mistMixing);
+
+        List<RecipeHolder<BasinRecipe>> vaporDeposition = (List) recipeManager
+                .getAllRecipesFor((net.minecraft.world.item.crafting.RecipeType) CMIRecipeTypes.VAPOR_DEPOSITION.getType());
+        if (!vaporDeposition.isEmpty())
+            registration.addRecipes(VAPOR_DEPOSITION_TYPE, vaporDeposition);
     }
 
     @Override
     public void registerRecipeCatalysts(IRecipeCatalystRegistration registration) {
-        registration.addRecipeCatalyst(new ItemStack(AllBlocks.MECHANICAL_PRESS.get()),
-                HEATED_COMPACTING_TYPE, MIST_COMPACTING_TYPE);
-        registration.addRecipeCatalyst(new ItemStack(AllBlocks.BASIN.get()),
-                HEATED_COMPACTING_TYPE, MIST_COMPACTING_TYPE, MIST_MIXING_TYPE);
         registration.addRecipeCatalyst(new ItemStack(AllBlocks.MECHANICAL_MIXER.get()),
                 MIST_MIXING_TYPE);
+        registration.addRecipeCatalyst(new ItemStack(AllBlocks.MECHANICAL_PRESS.get()),
+                HEATED_COMPACTING_TYPE, MIST_COMPACTING_TYPE);
+        registration.addRecipeCatalyst(new ItemStack(AllBlocks.FRAMED_GLASS_TRAPDOOR.get()),
+                VAPOR_DEPOSITION_TYPE);
+        registration.addRecipeCatalyst(new ItemStack(AllBlocks.BASIN.get()),
+                HEATED_COMPACTING_TYPE, MIST_COMPACTING_TYPE, MIST_MIXING_TYPE, VAPOR_DEPOSITION_TYPE);
         registration.addRecipeCatalyst(new ItemStack(AllBlocks.BLAZE_BURNER.get()),
                 HEATED_COMPACTING_TYPE);
         registration.addRecipeCatalyst(new ItemStack(CMIBlocks.KINETIC_ATOMIZER.get()),
-                MIST_COMPACTING_TYPE, MIST_MIXING_TYPE);
+                MIST_COMPACTING_TYPE, MIST_MIXING_TYPE, VAPOR_DEPOSITION_TYPE);
     }
 
 }

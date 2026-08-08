@@ -1,0 +1,14 @@
+{
+  "type": "createmanaindustry:vapor_deposition",
+  "mist_requirement": {
+    "fluid": "createmanaindustry:liquid_media",
+    "min_concentration": 0.1
+  },
+  "processing_time": 100,
+  "ingredients": [
+    { "item": "minecraft:glass" }
+  ],
+  "results": [
+    { "id": "hexcasting:lens", "count": 1 }
+  ]
+}

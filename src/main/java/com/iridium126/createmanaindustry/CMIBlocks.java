@@ -8,6 +8,8 @@ import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlockItem;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerMovementBehaviour;
 import com.iridium126.createmanaindustry.content.fluids.condenser.CondenserBlock;
 import com.iridium126.createmanaindustry.content.fluids.condenser.WeatheringCondenserBlock;
+import com.iridium126.createmanaindustry.content.kinetics.depositionlid.DepositionLidBlock;
+import com.iridium126.createmanaindustry.content.kinetics.depositionlid.DepositionLidCTBehaviour;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlock;
 import com.iridium126.createmanaindustry.content.kinetics.manacogwheel.EncasedManaCogwheelBlock;
@@ -20,6 +22,7 @@ import com.simibubi.create.content.kinetics.simpleRelays.BracketedKineticBlockMo
 import com.simibubi.create.foundation.data.BlockStateGen;
 import com.simibubi.create.foundation.data.CreateRegistrate;
 import com.simibubi.create.foundation.data.ModelGen;
+import com.simibubi.create.foundation.data.SharedProperties;
 import com.simibubi.create.foundation.data.TagGen;
 import com.iridium126.createmanaindustry.config.CMIStress;
 import com.tterrag.registrate.providers.RegistrateRecipeProvider;
@@ -27,6 +30,8 @@ import com.tterrag.registrate.util.entry.BlockEntry;
 import com.tterrag.registrate.util.entry.ItemEntry;
 import com.tterrag.registrate.util.nullness.NonNullBiConsumer;
 
+import net.minecraft.client.renderer.RenderType;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.WeatheringCopper;
@@ -140,6 +145,19 @@ public final class CMIBlocks {
     public static final BlockEntry<CondenserBlock> WAXED_OXIDIZED_CONDENSER =
             waxedCondenser("waxed_oxidized_condenser");
 
+    /**
+     * Deposition lid — visually and behaviourally identical to
+     * {@code create:framed_glass_trapdoor}, but carrying a
+     * {@code DepositionLidBlockEntity} so a sealed basin can run
+     * {@code vapor_deposition} recipes.
+     * <p>
+     * It has no item (a {@code TrainTrapdoorBlockMixin} swap creates it in the
+     * world) and drops the framed glass trapdoor when mined, so the conversion
+     * is invisible to the player. The blockstate JSON is hand-written in
+     * {@code src/main/resources} and points at Create's own trapdoor models.
+     */
+    public static final BlockEntry<DepositionLidBlock> DEPOSITION_LID = depositionLid();
+
     private static BlockEntry<WeatheringCondenserBlock> weatheringCondenser(String name,
             WeatheringCopper.WeatherState state) {
         return REGISTRATE.block(name, p -> new WeatheringCondenserBlock(state, p))
@@ -162,6 +180,28 @@ public final class CMIBlocks {
                 .loot((p, lb) -> p.dropSelf(lb))
                 .item()
                 .transform(ModelGen.customItemModel())
+                .register();
+    }
+
+    /**
+     * Registers the deposition lid without an item. The blockstate is not
+     * generated (hand-written in {@code src/main/resources}, mirroring the
+     * framed glass trapdoor and referencing Create's models); the loot table is
+     * generated to drop a framed glass trapdoor item directly, so the conversion
+     * is invisible to the player.
+     */
+    @SuppressWarnings("removal") // addLayer is deprecated but still the render-layer hook
+    private static BlockEntry<DepositionLidBlock> depositionLid() {
+        return REGISTRATE.block("deposition_lid", DepositionLidBlock::new)
+                .initialProperties(SharedProperties::softMetal)
+                .properties(p -> p.mapColor(MapColor.NONE)
+                        .noOcclusion())
+                .addLayer(() -> RenderType::cutoutMipped)
+                .onRegister(CreateRegistrate.connectedTextures(() -> new DepositionLidCTBehaviour()))
+                .blockstate((c, p) -> {})
+                .loot((p, lb) -> p.dropOther(lb, AllBlocks.FRAMED_GLASS_TRAPDOOR.get()))
+                .transform(TagGen.pickaxeOnly())
+                .tag(BlockTags.TRAPDOORS)
                 .register();
     }
 

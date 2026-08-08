@@ -5,8 +5,10 @@
   "createmanaindustry.recipe.heated_compacting": "加热冲压",
   "createmanaindustry.recipe.mist_compacting": "雾气冲压",
   "createmanaindustry.recipe.mist_mixing": "雾气搅拌",
+  "createmanaindustry.recipe.vapor_deposition": "气相沉积",
   "createmanaindustry.jei.mist_requirement": "需要雾气：%1$s（浓度 ≥ %2$s）",
   "createmanaindustry.jei.mist_output": "产出雾气：%1$s（半径：%2$s，量：%3$s mB，持续：%4$s tick）",
+  "createmanaindustry.jei.vapor_deposition.sealed": "在工作盆上方放置关闭的边框玻璃活板门",
 
   "block.createmanaindustry.mana_cogwheel": "魔力齿轮",
   "block.createmanaindustry.andesite_encased_mana_cogwheel": "安山机壳魔力齿轮",
@@ -20,6 +22,7 @@
   "block.createmanaindustry.waxed_weathered_condenser": "锈蚀的涂蜡冷凝管",
   "block.createmanaindustry.waxed_oxidized_condenser": "氧化的涂蜡冷凝管",
   "block.createmanaindustry.allay_burner": "悦灵燃烧室",
+  "block.createmanaindustry.deposition_lid": "气相沉积盖",
   "item.createmanaindustry.allay_burner": "悦灵燃烧室",
   "item.createmanaindustry.empty_allay_burner": "空悦灵燃烧室",
   "create.recipe.heat_requirement.allayheated": "悦灵加热",

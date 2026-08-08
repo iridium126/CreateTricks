@@ -25,6 +25,15 @@ public class ManaCogwheelBlockEntity extends GeneratingKineticBlockEntity {
         if (level == null)
             return 0f;
 
+        // Mist fields are never synced to the client (the client's MistFieldStore
+        // is always empty), so the generated speed cannot be derived there. The
+        // actual speed is already synced from the server through the kinetic
+        // network packet, so report it directly — otherwise
+        // GeneratingKineticBlockEntity.addToGoggleTooltip scales the capacity by
+        // getGeneratedSpeed()/getTheoreticalSpeed() and collapses it to 0.
+        if (level.isClientSide)
+            return speed;
+
         ResourceLocation fluidType = MistFieldStore.getFluidType(level, worldPosition);
         if (fluidType == null)
             return 0f;

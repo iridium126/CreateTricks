@@ -7,8 +7,10 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import com.iridium126.createmanaindustry.content.recipes.HexItemDataTransfer;
+import com.simibubi.create.content.kinetics.belt.behaviour.BeltProcessingBehaviour.ProcessingResult;
 import com.simibubi.create.content.kinetics.belt.behaviour.TransportedItemStackHandlerBehaviour;
 import com.simibubi.create.content.kinetics.belt.transport.TransportedItemStack;
 import com.simibubi.create.content.kinetics.deployer.BeltDeployerCallbacks;
@@ -24,30 +26,44 @@ import net.minecraft.world.level.Level;
  * Handles Iota transfer from the deployer's held item to the incomplete hex
  * item during belt-based deployer processing.
  * <p>
- * Uses a ThreadLocal to capture the deployer's held item at method entry,
- * then consumes it during the recipe application redirect to append the
- * Iota from the held item to the recipe output.
+ * The deployer's punch animation is driven by {@link DeployerBlockEntity#start()},
+ * called from {@code onItemReceived} / {@code whenItemHeld} before the recipe is
+ * applied. Cancelling only {@code activate} (the recipe application at the end of
+ * the cycle) would leave an invalid-scroll item sitting on the belt while the
+ * deployer punches it forever, so the scroll {@code op_id} is validated at the
+ * {@code start()} call sites too — an invalid scroll never starts the animation.
  */
 @Mixin(value = BeltDeployerCallbacks.class, remap = false)
 public class BeltDeployerCallbacksMixin {
 
     private static final ThreadLocal<ItemStack> HELD_ITEM = new ThreadLocal<>();
 
-    @Inject(method = "activate", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "onItemReceived", at = @At(value = "INVOKE",
+            target = "Lcom/simibubi/create/content/kinetics/deployer/DeployerBlockEntity;start()V"),
+            cancellable = true)
+    private static void createmanaindustry$rejectInvalidScrollBeforeStart(TransportedItemStack transported,
+            TransportedItemStackHandlerBehaviour handler, DeployerBlockEntity blockEntity,
+            CallbackInfoReturnable<ProcessingResult> cir) {
+        if (!isValidHeldScroll(blockEntity))
+            cir.setReturnValue(ProcessingResult.PASS);
+    }
+
+    @Inject(method = "whenItemHeld", at = @At(value = "INVOKE",
+            target = "Lcom/simibubi/create/content/kinetics/deployer/DeployerBlockEntity;start()V"),
+            cancellable = true)
+    private static void createmanaindustry$rejectInvalidScrollWhenHeld(TransportedItemStack transported,
+            TransportedItemStackHandlerBehaviour handler, DeployerBlockEntity blockEntity,
+            CallbackInfoReturnable<ProcessingResult> cir) {
+        if (!isValidHeldScroll(blockEntity))
+            cir.setReturnValue(ProcessingResult.PASS);
+    }
+
+    @Inject(method = "activate", at = @At("HEAD"))
     private static void createmanaindustry$captureHeldItem(TransportedItemStack transported,
             TransportedItemStackHandlerBehaviour handler,
             DeployerBlockEntity blockEntity, Recipe<?> recipe, CallbackInfo ci) {
         DeployerFakePlayer player = blockEntity.getPlayer();
         ItemStack heldItem = player != null ? player.getMainHandItem().copy() : ItemStack.EMPTY;
-
-        // Validate scroll op_id for the battery-scroll deploying recipe.
-        // The recipe JSON cannot filter by data components reliably through
-        // Create's Ingredient codec, so we enforce the check here.
-        if (!HexItemDataTransfer.validateScrollOpId(heldItem)) {
-            ci.cancel();
-            return;
-        }
-
         HELD_ITEM.set(heldItem);
     }
 
@@ -74,5 +90,11 @@ public class BeltDeployerCallbacksMixin {
         }
 
         return results;
+    }
+
+    private static boolean isValidHeldScroll(DeployerBlockEntity blockEntity) {
+        DeployerFakePlayer player = blockEntity.getPlayer();
+        ItemStack held = player != null ? player.getMainHandItem() : ItemStack.EMPTY;
+        return HexItemDataTransfer.validateScrollOpId(held);
     }
 }

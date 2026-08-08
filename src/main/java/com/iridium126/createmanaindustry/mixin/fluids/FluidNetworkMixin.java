@@ -52,6 +52,10 @@ public abstract class FluidNetworkMixin {
     private int createmanaindustry$passCount = 0;
     /** Condensers this network claimed from during its SIMULATE pass. */
     private final List<CondenserBlockEntity> createmanaindustry$claimedThisNetwork = new ArrayList<>();
+    /** Cached condensers on this network's path, rebuilt only when {@code visited} changes. */
+    private List<CondenserBlockEntity> createmanaindustry$condenserCache = new ArrayList<>();
+    /** Size of {@code visited} when {@code condenserCache} was last rebuilt. */
+    private int createmanaindustry$cachedVisitedSize = -1;
 
     @Inject(method = "tick", at = @At("HEAD"))
     private void createmanaindustry$resetPassState(CallbackInfo ci) {
@@ -104,13 +108,28 @@ public abstract class FluidNetworkMixin {
         return transfer;
     }
 
+    /**
+     * Returns the condensers on this network's path. {@code visited} only grows
+     * for the lifetime of a network — rebuilds create a fresh {@code FluidNetwork}
+     * (see {@code PipeConnection}) — so the result is cached and rescanned only
+     * when its size changes, turning an O(visited) block-entity scan into an
+     * O(1) cache hit for the steady state. Removed condensers are harmless:
+     * {@code CondenserBlockEntity.consumeFromFlow} guards on {@code level == null}.
+     */
     private List<CondenserBlockEntity> findCondensers() {
+        if (createmanaindustry$cachedVisitedSize != visited.size())
+            createmanaindustry$rescanCondensers();
+        return createmanaindustry$condenserCache;
+    }
+
+    private void createmanaindustry$rescanCondensers() {
         List<CondenserBlockEntity> result = new ArrayList<>();
         for (BlockPos pos : visited) {
             BlockEntity be = world.getBlockEntity(pos);
             if (be instanceof CondenserBlockEntity condenser)
                 result.add(condenser);
         }
-        return result;
+        createmanaindustry$condenserCache = result;
+        createmanaindustry$cachedVisitedSize = visited.size();
     }
 }

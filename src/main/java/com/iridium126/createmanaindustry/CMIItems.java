@@ -63,18 +63,22 @@ public final class CMIItems {
         if (CreateManaIndustry.HEX_ACTIVE) {
             INCOMPLETE_CYPHER = REGISTRATE.item("incomplete_cypher",
                     p -> new IncompleteHexItem(p, () -> Config.cypherMaxMedia, hexLoc("cypher")))
+                    .properties(p -> p.stacksTo(1))
                     .model(NonNullBiConsumer.noop())
                     .register();
             INCOMPLETE_TRINKET = REGISTRATE.item("incomplete_trinket",
                     p -> new IncompleteHexItem(p, () -> Config.trinketMaxMedia, hexLoc("trinket")))
+                    .properties(p -> p.stacksTo(1))
                     .model(NonNullBiConsumer.noop())
                     .register();
             INCOMPLETE_ARTIFACT = REGISTRATE.item("incomplete_artifact",
                     p -> new IncompleteHexItem(p, () -> Config.artifactMaxMedia, hexLoc("artifact")))
+                    .properties(p -> p.stacksTo(1))
                     .model(NonNullBiConsumer.noop())
                     .register();
             INCOMPLETE_MEDIA_BATTERY = REGISTRATE.item("incomplete_media_battery",
                     p -> new IncompleteMediaBatteryItem(p, () -> Config.batteryMaxMedia, hexLoc("battery")))
+                    .properties(p -> p.stacksTo(1))
                     .model(NonNullBiConsumer.noop())
                     .register();
         }
@@ -82,6 +86,7 @@ public final class CMIItems {
 
     private static ItemEntry<IncompleteKnotItem> incompleteKnot(String name) {
         return REGISTRATE.item(name, IncompleteKnotItem::new)
+                .properties(p -> p.stacksTo(1))
                 .model(NonNullBiConsumer.noop())
                 .register();
     }

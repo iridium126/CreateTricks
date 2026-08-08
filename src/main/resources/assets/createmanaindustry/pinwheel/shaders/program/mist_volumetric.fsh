@@ -22,7 +22,7 @@ out vec4 fragColor;
 #define NOISE_SCALE 0.25
 #define PI 3.14159265359
 #define ISOTROPIC_PHASE (0.25 / PI)
-#define FBM_OCTAVES 3
+#define FBM_OCTAVES 2
 
 // ---------------------------------------------------------------------------
 // Hash functions (IQ / Dave Hoskins style, from Photon)
@@ -32,10 +32,6 @@ float hash1(vec3 p) {
     p = fract(p * 0.1031);
     p += dot(p, p.zyx + 31.32);
     return fract((p.x + p.y) * p.z);
-}
-
-float hash_sin(vec3 p) {
-    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
 }
 
 // ---------------------------------------------------------------------------
@@ -70,8 +66,20 @@ float fbm(vec3 p) {
 
 float henyey_greenstein_phase(float nu, float g) {
     float gg = g * g;
-    return (ISOTROPIC_PHASE - ISOTROPIC_PHASE * gg)
-        / pow(1.0 + gg - 2.0 * g * nu, 1.5);
+    float denom = 1.0 + gg - 2.0 * g * nu;
+    return (ISOTROPIC_PHASE - ISOTROPIC_PHASE * gg) / (denom * sqrt(denom));
+}
+
+// ---------------------------------------------------------------------------
+// Sun elevation model (mirrors Photon global.glsl / light_color.glsl)
+// ---------------------------------------------------------------------------
+
+float linear_step(float edge0, float edge1, float x) {
+    return clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+}
+
+float sqr(float x) {
+    return x * x;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,8 +151,10 @@ void main() {
 
     vec3 rayStart = VeilCamera.CameraPosition;
     vec3 rayDir = worldEnd - rayStart;
-    float rayLength = length(rayDir);
-    rayDir /= rayLength;
+    float rayLengthSq = dot(rayDir, rayDir);
+    float invRayLength = inversesqrt(rayLengthSq);
+    float rayLength = rayLengthSq * invRayLength;
+    rayDir *= invRayLength;
     rayLength = min(rayLength, 64.0);
 
     // --- Adaptive step count (Photon style) ---
@@ -203,6 +213,15 @@ void main() {
 
     float LoV = dot(rayDir, SunDirection);
 
+    // Per-pixel sun scattering — constant along the ray (only SunDirection and
+    // the view ray matter), so hoisted out of the march.
+    float miePhase = 0.7 * henyey_greenstein_phase(LoV, 0.5)
+                   + 0.3 * henyey_greenstein_phase(LoV, -0.2);
+    float sunElevation = SunDirection.y;
+    float sunDayFactor = clamp(sunElevation * 50.0, 0.0, 1.0);
+    float eveningGlow = 0.75 * linear_step(0.05, 1.0, exp(-300.0 * sqr(sunElevation + 0.02)));
+    float scatter = 0.5 + sunDayFactor * (1.0 + eveningGlow) * 0.5 * miePhase;
+
     vec4 accumulatedMist = vec4(0.0);
     float transmittance = 1.0;
 
@@ -218,13 +237,6 @@ void main() {
             // Modulate with procedural noise for natural mist wisps
             float noise = fbm(pos * NOISE_SCALE);
             float density = baseConc * (0.5 + 0.5 * noise) * MistDensity;
-
-            // Photon-style Henyey-Greenstein phase with forward/backward mix
-            float miePhase = 0.7 * henyey_greenstein_phase(LoV, 0.5)
-                           + 0.3 * henyey_greenstein_phase(LoV, -0.2);
-
-            // Combined sun + ambient scattering
-            float scatter = 0.5 + 0.5 * miePhase;
 
             // Per-source color from the fluid palette (dominant source)
             int idx = int(ci.y);

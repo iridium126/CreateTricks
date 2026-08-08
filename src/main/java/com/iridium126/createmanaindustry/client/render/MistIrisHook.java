@@ -1,17 +1,22 @@
 package com.iridium126.createmanaindustry.client.render;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
+import com.iridium126.createmanaindustry.config.Config;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import foundry.veil.api.client.render.VeilRenderSystem;
 import foundry.veil.api.client.render.shader.program.ShaderProgram;
+import net.irisshaders.iris.shadows.ShadowRenderer;
 import net.minecraft.client.Minecraft;
 import top.leonx.irisveil.IrisVeilCompat;
 import top.leonx.irisveil.compat.veil.VeilCompatRegistry;
 
+import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL30;
+
+import java.nio.IntBuffer;
 
 /**
  * Renders the mist volumetric shader inside the Iris gbuffer while a shader
@@ -24,16 +29,19 @@ import org.lwjgl.opengl.GL30;
  * {@code LevelRenderer.renderLevel} (via iris-veil-compat's world render
  * hook), so the fog is sampled by the shaderpack's composite pass.
  * <p>
- * Reuses the vanilla {@code mist_volumetric} shader unchanged — the main
- * render target's depth texture holds the full solid world depth at the hook
- * point (iris never clears it), so the depth-based ray endpoint and the march
- * cutoff at the scene surface behave exactly like the vanilla post pipeline,
- * giving full occlusion of the fog behind solid geometry.
+ * Draws the dedicated {@code mist_volumetric_iris} program (kept separate from
+ * the vanilla post shader so this hook's manual sampler binds cannot pollute
+ * the vanilla pipeline) — the main render target's depth texture holds the
+ * full solid world depth at the hook point (iris never clears it), so the
+ * depth-based ray endpoint and the march cutoff at the scene surface behave
+ * exactly like the vanilla post pipeline, giving full occlusion of the fog
+ * behind solid geometry.
  * <p>
- * The samplers are bound manually (unit 0 = colortex0, unit 1 = main depth):
- * Veil's sampler-unit bookkeeping misassigns them under Iris (depth sampling
- * returned 0, and mixing Veil binds with manual ones corrupted the colour
- * sampler). Depth sampling parameters are set explicitly as well.
+ * The samplers are bound manually (unit 0 = colortex0, unit 1 = main depth,
+ * unit 2 = the iris shadow map for the Tyndall effect): Veil's sampler-unit
+ * bookkeeping misassigns them under Iris (depth sampling returned 0, and
+ * mixing Veil binds with manual ones corrupted the colour sampler). Depth
+ * sampling parameters are set explicitly as well.
  * <p>
  * All references to iris-veil-compat classes are guarded by
  * {@link CreateManaIndustry#IRISVEIL_ACTIVE} — the classes are only resolved
@@ -136,7 +144,65 @@ public final class MistIrisHook {
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, depthId);
             if (depthUniform >= 0)
                 GL30.glUniform1i(depthUniform, 1);
+
+            // --- Tyndall: bind the iris shadow map (shadowtex0) to unit 2 ---
+            // The shader texelFetches raw depth and compares it itself, so the
+            // texture's filter/compare state is left untouched (no leak into the
+            // pack's own sampling). The texture id is captured by the
+            // ShadowRendererAccessor mixin when iris builds its shadow renderer;
+            // when the pack has no shadows (or the renderer isn't up yet) it is
+            // -1 and ShadowMapBound goes to 0, making the shader treat every
+            // sample as lit.
+            int shadowDepthId = IrisShadowTextures.getShadowDepthTextureId();
+            int shadowMapBound = shadowDepthId >= 0 ? 1 : 0;
+            float shadowMapResolution = 0.0f;
+            int shadowUniform = shader.getUniformLocation("ShadowMap0");
+            int shadowBoundUniform = shader.getUniformLocation("ShadowMapBound");
+            int shadowResUniform = shader.getUniformLocation("ShadowMapResolution");
+            if (shadowMapBound == 1) {
+                RenderSystem.activeTexture(GL13.GL_TEXTURE2);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, shadowDepthId);
+                // Actual texture width — iris may render shadows at a quality-scaled
+                // resolution, so texelFetch coordinates must match the real size.
+                IntBuffer size = BufferUtils.createIntBuffer(1);
+                GL11.glGetTexLevelParameteriv(GL11.GL_TEXTURE_2D, 0, GL11.GL_TEXTURE_WIDTH, size);
+                shadowMapResolution = size.get(0);
+            }
+            if (shadowUniform >= 0)
+                GL30.glUniform1i(shadowUniform, 2);
+            if (shadowBoundUniform >= 0)
+                GL30.glUniform1i(shadowBoundUniform, shadowMapBound);
+            if (shadowResUniform >= 0)
+                GL30.glUniform1f(shadowResUniform, shadowMapResolution);
+
             MistClientHandler.applyMistUniforms(shader);
+
+            // Tyndall shadow matrices — the current frame's shadow pass state
+            // (public statics, refreshed every frame by iris's renderShadows()).
+            var shadowModelView = shader.getUniform("ShadowModelView");
+            if (shadowModelView != null && ShadowRenderer.MODELVIEW != null)
+                shadowModelView.setMatrix(ShadowRenderer.MODELVIEW);
+            var shadowProjection = shader.getUniform("ShadowProjection");
+            if (shadowProjection != null && ShadowRenderer.PROJECTION != null)
+                shadowProjection.setMatrix(ShadowRenderer.PROJECTION);
+
+            // Tyndall shadow distortion — resolve the active pack's convention
+            // (cached) and apply the same remap the pack baked into its shadow
+            // map.
+            PackShadowParams distortion = ShadowDistortionRegistry.resolveForCurrentPack();
+            var modeUniform = shader.getUniform("ShadowDistortionMode");
+            if (modeUniform != null)
+                modeUniform.setInt(distortion.glslMode());
+            var distUniform = shader.getUniform("ShadowDistortion");
+            if (distUniform != null)
+                distUniform.setFloat(distortion.bias());
+            var depthScaleUniform = shader.getUniform("ShadowDepthScale");
+            if (depthScaleUniform != null)
+                depthScaleUniform.setFloat(distortion.depthScale());
+            var debugShadowUniform = shader.getUniform("DebugShadowVisualization");
+            if (debugShadowUniform != null)
+                debugShadowUniform.setInt(Config.mistDebugShadow ? 1 : 0);
+
             shader.setDefaultUniforms(VertexFormat.Mode.TRIANGLE_STRIP);
             VeilRenderSystem.drawScreenQuad();
 
@@ -160,6 +226,4 @@ public final class MistIrisHook {
         return VeilRenderSystem.renderer().getShaderManager()
                 .getShader(CreateManaIndustry.modLoc("mist_volumetric_iris"));
     }
-
-
 }

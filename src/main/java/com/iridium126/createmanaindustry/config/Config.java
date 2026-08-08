@@ -63,6 +63,10 @@ public final class Config {
             .comment("Global multiplier for the glow of volumetric mist produced by glowing fluids (per-fluid glow derives from the fluid's light level).")
             .defineInRange("mistGlowStrength", 0.5, 0.0, 100.0);
 
+    private static final ModConfigSpec.BooleanValue MIST_DEBUG_SHADOW = BUILDER
+            .comment("DEBUG: visualize the Tyndall shadow-map sampling as mist color (green = lit, red = occluded). Temporary diagnostic.")
+            .define("mistDebugShadow", false);
+
     private static final ModConfigSpec.LongValue CYPHER_MAX_MEDIA = BUILDER
             .comment("Maximum media capacity for incomplete cyphers (in Hexcasting dust units, 1 dust = 10,000).")
             .defineInRange("cypherMaxMedia", 6400000L, 10000L, Long.MAX_VALUE);
@@ -94,6 +98,7 @@ public final class Config {
     public static int allayBurnerMistRadius = 4;
     public static int allayBurnerMistPerTick = 1;
     public static double mistGlowStrength = 0.5;
+    public static boolean mistDebugShadow = false;
     public static long cypherMaxMedia = 6400000L;
     public static long trinketMaxMedia = 64000000L;
     public static long artifactMaxMedia = 640000000L;
@@ -117,6 +122,7 @@ public final class Config {
             allayBurnerMistRadius = ALLAY_BURNER_MIST_RADIUS.get();
             allayBurnerMistPerTick = ALLAY_BURNER_MIST_PER_TICK.get();
             mistGlowStrength = MIST_GLOW_STRENGTH.get();
+            mistDebugShadow = MIST_DEBUG_SHADOW.get();
             cypherMaxMedia = CYPHER_MAX_MEDIA.get();
             trinketMaxMedia = TRINKET_MAX_MEDIA.get();
             artifactMaxMedia = ARTIFACT_MAX_MEDIA.get();

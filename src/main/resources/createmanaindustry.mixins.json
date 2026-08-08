@@ -50,7 +50,8 @@
     "basin.TrapdoorCTBehaviourMixin",
     "basin.TrainTrapdoorBlockSkipRenderingMixin",
     "jei.BasinCategoryMixin",
-    "jei.CreateHeatedBasinCategoryMixin"
+    "jei.CreateHeatedBasinCategoryMixin",
+    "iris.ShadowRendererAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

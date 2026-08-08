@@ -11,6 +11,7 @@ import com.iridium126.createmanaindustry.CMIFluids;
 import com.iridium126.createmanaindustry.config.Config;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistSync;
 import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.math.Axis;
 
 import foundry.veil.api.client.render.VeilRenderSystem;
 import foundry.veil.api.client.render.post.PostPipeline;
@@ -27,6 +28,9 @@ import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.extensions.common.IClientFluidTypeExtensions;
 import net.neoforged.neoforge.fluids.FluidStack;
+
+import org.joml.Matrix4f;
+import org.joml.Vector3f;
 
 /**
  * Client-side handler that collects active Kinetic Atomizer positions and
@@ -300,14 +304,32 @@ public final class MistClientHandler {
 
         var sunUniform = shader.getUniform("SunDirection");
         if (sunUniform != null) {
-            Minecraft mc = Minecraft.getInstance();
-            if (mc.level != null) {
-                float sunAngle = mc.level.getSunAngle(mc.getTimer().getGameTimeDeltaTicks());
-                sunUniform.setVector((float) -Math.cos(sunAngle), (float) (Math.sin(sunAngle) * 0.3), 0.0f, 0.0f);
+            if (Minecraft.getInstance().level != null) {
+                Vector3f sunDir = getSunDirectionWorld();
+                sunUniform.setVector(sunDir.x, sunDir.y, sunDir.z, 0.0f);
             } else {
                 sunUniform.setVector(-0.7f, 0.5f, 0.3f, 0.0f);
             }
         }
+    }
+
+    /**
+     * World-space unit vector toward the sun, mirroring the vanilla
+     * {@code renderSky} / iris {@code CelestialUniforms} celestial rotation so the
+     * mist beams point at the same sun as Photon's volumetric fog:
+     * {@code sunDir = YP(-90°) · ZP(sunPathRotation) · XP(getTimeOfDay·360°) · (0,1,0)}.
+     * {@code getTimeOfDay()} is the smoothed day cycle where 0 = noon (sun overhead);
+     * {@code sunPathRotation} comes from the active shaderpack (Photon ships -35),
+     * falling back to -35 when iris is absent.
+     */
+    static Vector3f getSunDirectionWorld() {
+        Minecraft mc = Minecraft.getInstance();
+        float skyAngle = mc.level.getTimeOfDay(mc.getTimer().getGameTimeDeltaTicks());
+        Matrix4f celestial = new Matrix4f();
+        celestial.rotate(Axis.YP.rotationDegrees(-90.0F));
+        celestial.rotate(Axis.ZP.rotationDegrees(IrisShadowTextures.getSunPathRotation()));
+        celestial.rotate(Axis.XP.rotationDegrees(skyAngle * 360.0F));
+        return celestial.transformDirection(0.0F, 1.0F, 0.0F, new Vector3f()).normalize();
     }
 
     private static void packAtomizerData() {

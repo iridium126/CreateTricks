@@ -22,6 +22,28 @@ uniform float MistDensity;
 uniform float MistStepScale;
 uniform vec3 SunDirection;
 
+// Tyndall effect — sun occlusion from the iris shadow map. Bound by
+// MistIrisHook to shadowtex0 (the pack's directional-sun depth map).
+uniform sampler2D ShadowMap0;
+uniform int ShadowMapBound;          // 1 when ShadowMap0 is valid and bound
+uniform mat4 ShadowModelView;
+uniform mat4 ShadowProjection;
+uniform float ShadowMapResolution;   // actual shadow texture width (texels)
+
+// Pack shadow-map distortion (mirrors the shaderpack's own shadow.vsh). The pack
+// renders its shadow map with these baked into gl_Position, so the mist sampling
+// must apply the same remap. Photon ships 0.85 / 0.2; packs without distortion
+// use 1.0 / 1.0. Populated from the active pack by MistIrisHook.
+uniform float ShadowDistortion;
+uniform float ShadowDepthScale;
+// 0 = no distortion (identity), 1 = quartic (Photon SHADOW_DISTORTION),
+// 2 = euclidean (Complementary shadowMapBias).
+uniform int ShadowDistortionMode;
+
+// DEBUG: when 1, mist is colored by the shadow sample (green = lit, red =
+// occluded) so the Tyndall occlusion can be verified visually.
+uniform int DebugShadowVisualization;
+
 in vec2 texCoord;
 out vec4 fragColor;
 
@@ -31,7 +53,7 @@ out vec4 fragColor;
 #define NOISE_SCALE 0.25
 #define PI 3.14159265359
 #define ISOTROPIC_PHASE (0.25 / PI)
-#define FBM_OCTAVES 3
+#define FBM_OCTAVES 2
 
 // ---------------------------------------------------------------------------
 // Hash functions (IQ / Dave Hoskins style, from Photon)
@@ -41,10 +63,6 @@ float hash1(vec3 p) {
     p = fract(p * 0.1031);
     p += dot(p, p.zyx + 31.32);
     return fract((p.x + p.y) * p.z);
-}
-
-float hash_sin(vec3 p) {
-    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
 }
 
 // ---------------------------------------------------------------------------
@@ -79,8 +97,74 @@ float fbm(vec3 p) {
 
 float henyey_greenstein_phase(float nu, float g) {
     float gg = g * g;
-    return (ISOTROPIC_PHASE - ISOTROPIC_PHASE * gg)
-        / pow(1.0 + gg - 2.0 * g * nu, 1.5);
+    float denom = 1.0 + gg - 2.0 * g * nu;
+    return (ISOTROPIC_PHASE - ISOTROPIC_PHASE * gg) / (denom * sqrt(denom));
+}
+
+// ---------------------------------------------------------------------------
+// Sun elevation model + Tyndall occlusion (mirrors Photon global.glsl /
+// light_color.glsl / raymarched.glsl)
+// ---------------------------------------------------------------------------
+
+float linear_step(float edge0, float edge1, float x) {
+    return clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+}
+
+float sqr(float x) {
+    return x * x;
+}
+
+/** Photon quartic_length — sqrt(sqrt(x^4 + y^4)). */
+float quartic_length(vec2 v) {
+    return sqrt(sqrt(v.x * v.x * v.x * v.x + v.y * v.y * v.y * v.y));
+}
+
+/**
+ * Remaps undistorted shadow clip coords into the shaderpack's distorted shadow
+ * space, mirroring the pack's own distortion (Photon uses quartic_length with
+ * SHADOW_DISTORTION, Complementary uses euclidean length with shadowMapBias).
+ * The pack renders its shadow map with this remap baked into gl_Position, so
+ * skipping it samples the wrong texels (everything reads as lit). Mode 0 is the
+ * identity (pack without distortion).
+ * <p>
+ * Extension point: to adapt a new pack's radial-length function, add a
+ * {@code ShadowDistortionMode == N} branch here (matching the glslMode returned
+ * by the pack's {@code ShadowDistortionConvention} on the Java side).
+ */
+vec3 distort_shadow_space(vec3 shadowClipPos) {
+    if (ShadowDistortionMode == 0)
+        return shadowClipPos;
+    float l = ShadowDistortionMode == 2
+            ? length(shadowClipPos.xy)
+            : quartic_length(shadowClipPos.xy);
+    float distortionFactor = l * ShadowDistortion + (1.0 - ShadowDistortion);
+    return vec3(shadowClipPos.xy / distortionFactor, shadowClipPos.z * ShadowDepthScale);
+}
+
+/**
+ * Returns 1.0 where the sun reaches the world-space position and 0.0 where it
+ * is occluded, by testing the iris shadow map. Mirrors Photon's
+ * raymarch_air_fog shadow block: transform to shadow clip space (ortho
+ * projection — no perspective divide), apply the pack's shadow distortion, then
+ * compare the clip z against the packed depth. Out-of-bounds shadow texels are
+ * treated as lit (Photon's clamp01(shadow_screen_pos) == shadow_screen_pos
+ * branch), so geometry outside the shadow frustum never darkens the mist.
+ */
+float sampleSunOcclusion(vec3 worldPos) {
+    if (ShadowMapBound == 0 || ShadowMapResolution < 1.0)
+        return 1.0;
+
+    vec3 shadowViewPos = mat3(ShadowModelView) * (worldPos - VeilCamera.CameraPosition)
+                       + ShadowModelView[3].xyz;
+    vec3 shadowClipPos = vec3(ShadowProjection[0].x, ShadowProjection[1].y, ShadowProjection[2].z)
+                       * shadowViewPos + ShadowProjection[3].xyz;
+    vec3 shadowScreen = distort_shadow_space(shadowClipPos) * 0.5 + 0.5;
+    vec2 inBounds = step(vec2(0.0), shadowScreen.xy) * step(shadowScreen.xy, vec2(1.0));
+    if (inBounds.x * inBounds.y < 0.5)
+        return 1.0;
+    float depth = texelFetch(ShadowMap0, ivec2(clamp(shadowScreen.xy * ShadowMapResolution,
+            0.0, ShadowMapResolution - 1.0)), 0).x;
+    return step(shadowScreen.z, depth);
 }
 
 // ---------------------------------------------------------------------------
@@ -152,8 +236,10 @@ void main() {
 
     vec3 rayStart = VeilCamera.CameraPosition;
     vec3 rayDir = worldEnd - rayStart;
-    float rayLength = length(rayDir);
-    rayDir /= rayLength;
+    float rayLengthSq = dot(rayDir, rayDir);
+    float invRayLength = inversesqrt(rayLengthSq);
+    float rayLength = rayLengthSq * invRayLength;
+    rayDir *= invRayLength;
     rayLength = min(rayLength, 64.0);
 
     // --- Adaptive step count (Photon style) ---
@@ -212,6 +298,16 @@ void main() {
 
     float LoV = dot(rayDir, SunDirection);
 
+    // Per-pixel sun scattering — constant along the ray (only SunDirection and
+    // the view ray matter), so hoisted out of the march. Only the self-emission
+    // and its shadow cancellation vary per step.
+    float miePhase = 0.7 * henyey_greenstein_phase(LoV, 0.5)
+                   + 0.3 * henyey_greenstein_phase(LoV, -0.2);
+    float sunElevation = SunDirection.y;
+    float sunDayFactor = clamp(sunElevation * 50.0, 0.0, 1.0);
+    float eveningGlow = 0.75 * linear_step(0.05, 1.0, exp(-300.0 * sqr(sunElevation + 0.02)));
+    float scatter = 0.5 + sunDayFactor * (1.0 + eveningGlow) * 0.5 * miePhase;
+
     vec4 accumulatedMist = vec4(0.0);
     float transmittance = 1.0;
 
@@ -228,21 +324,39 @@ void main() {
             float noise = fbm(pos * NOISE_SCALE);
             float density = baseConc * (0.5 + 0.5 * noise) * MistDensity;
 
-            // Photon-style Henyey-Greenstein phase with forward/backward mix
-            float miePhase = 0.7 * henyey_greenstein_phase(LoV, 0.5)
-                           + 0.3 * henyey_greenstein_phase(LoV, -0.2);
-
-            // Combined sun + ambient scattering
-            float scatter = 0.5 + 0.5 * miePhase;
-
-            // Per-source color from the fluid palette (dominant source)
+            // Per-source color + self-emission (dominant source)
             int idx = int(ci.y);
             int palIdx = clamp(int(AtomizerData[idx * 6 + 4] + 0.5), 0, max(PaletteCount - 1, 0));
             vec3 atomizerCol = MistPalette[palIdx].rgb;
-            // Glowing fluids make the mist luminous: self-emission, brighter
-            // toward the center (conc-weighted), composited with the scattered fog.
-            vec3 mistLit = atomizerCol * scatter
-                    + atomizerCol * MistPalette[palIdx].a * (0.5 + 0.5 * baseConc);
+            float emission = MistPalette[palIdx].a * (0.5 + 0.5 * baseConc);
+
+            // Tyndall: shadow-occlude the mist. God rays (shadow-modulated sun
+            // scattering) are intentionally absent — the shaderpack's own
+            // volumetric fog provides those for non-luminous mist. Here the shadow
+            // fully cancels the luminous self-emission in shadow. Skipped for
+            // non-glowing fluids (no shadow effect) unless the debug visualisation
+            // is active.
+            float shadowFactor = 1.0;
+            if (DebugShadowVisualization == 1 || emission > 0.001) {
+                float shadow = sampleSunOcclusion(pos);
+
+                // DEBUG: visualize the shadow sampling as mist color — green = lit,
+                // red = occluded — to verify the Tyndall occlusion visually.
+                if (DebugShadowVisualization == 1) {
+                    vec3 debugCol = shadow > 0.5 ? vec3(0.2, 1.0, 0.2) : vec3(1.0, 0.1, 0.1);
+                    float stepDensity = density * stepSize;
+                    vec4 debugSample = vec4(debugCol, density * MistOpacity);
+                    debugSample.rgb *= debugSample.a;
+                    accumulatedMist += debugSample * transmittance;
+                    transmittance *= exp(-stepDensity * 0.5 * AtomizerData[idx * 6 + 5]);
+                    t += stepSize;
+                    continue;
+                }
+                shadowFactor = shadow;
+            }
+
+            // Ambient floor + uniform sun scattering + shadow-cancelled emission.
+            vec3 mistLit = atomizerCol * scatter + atomizerCol * emission * shadowFactor;
 
             // Front-to-back alpha compositing. Absorption uses the dominant
             // source's own scale (full while the camera sits inside it, very

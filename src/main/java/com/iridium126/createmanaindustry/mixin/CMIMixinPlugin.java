@@ -18,6 +18,7 @@ import net.neoforged.fml.loading.FMLLoader;
  *   <li>{@code .hextrick.}   → Hexcasting AND Trickster required</li>
  *   <li>{@code .trickster.}  → Trickster required</li>
  *   <li>{@code .hexcasting.} → Hexcasting required</li>
+ *   <li>{@code .iris.}       → iris required</li>
  *   <li>anything else        → always applied</li>
  * </ul>
  * Subpackages are part of the FQCN, so every mixin under
@@ -37,6 +38,7 @@ public class CMIMixinPlugin implements IMixinConfigPlugin {
     private static final String BNB_MOD_ID = "bits_n_bobs";
     private static final String TRICKSTER_MOD_ID = "trickster";
     private static final String HEX_MOD_ID = "hexcasting";
+    private static final String IRIS_MOD_ID = "iris";
 
     @Override
     public void onLoad(String mixinPackage) {}
@@ -63,6 +65,10 @@ public class CMIMixinPlugin implements IMixinConfigPlugin {
         // Mixins handling Hexcasting items/recipes — disable when Hexcasting is absent
         if (mixinClassName.contains(".hexcasting."))
             return isLoaded(HEX_MOD_ID);
+
+        // Mixins targeting iris internals — disable when iris is absent
+        if (mixinClassName.contains(".iris."))
+            return isLoaded(IRIS_MOD_ID);
 
         return true;
     }

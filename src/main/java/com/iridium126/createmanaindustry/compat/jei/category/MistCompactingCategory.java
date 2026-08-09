@@ -45,17 +45,25 @@ public class MistCompactingCategory extends CMIHeatedBasinCategory {
         if (recipe instanceof MistRecipe mistRecipe) {
             MistRequirement requirement = mistRecipe.getMistRequirement();
             if (requirement != null) {
-                tooltips.add(Component.translatable(
-                    "createmanaindustry.jei.mist_requirement",
-                    getFluidDisplayName(requirement.fluidId()),
-                    String.format("%.0f%%", requirement.minConcentration() * 100)));
+                if (requirement.amount() > 0) {
+                    tooltips.add(Component.translatable(
+                        "createmanaindustry.jei.mist_requirement_amount",
+                        getFluidDisplayName(requirement.fluidId()),
+                        String.format("%.0f%%", requirement.minConcentration() * 100),
+                        requirement.amount()));
+                } else {
+                    tooltips.add(Component.translatable(
+                        "createmanaindustry.jei.mist_requirement",
+                        getFluidDisplayName(requirement.fluidId()),
+                        String.format("%.0f%%", requirement.minConcentration() * 100)));
+                }
             }
-            MistOutput output = mistRecipe.getMistOutput();
+            MistOutput output = mistRecipe.getMistResult();
             if (output != null) {
                 tooltips.add(Component.translatable(
                     "createmanaindustry.jei.mist_output",
                     getFluidDisplayName(output.fluidId()),
-                    output.radius(), output.amount(), output.duration()));
+                    output.amount(), output.radius(), output.duration()));
             }
         }
         return tooltips;

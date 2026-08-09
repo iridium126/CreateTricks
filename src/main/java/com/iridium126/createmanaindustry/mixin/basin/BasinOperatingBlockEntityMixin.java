@@ -2,6 +2,7 @@ package com.iridium126.createmanaindustry.mixin.basin;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -13,9 +14,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import com.iridium126.createmanaindustry.CMIRecipeTypes;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore;
-import com.iridium126.createmanaindustry.content.recipes.MistRecipe;
 import com.iridium126.createmanaindustry.content.recipes.MistOutput;
+import com.iridium126.createmanaindustry.content.recipes.MistRecipe;
+import com.iridium126.createmanaindustry.content.recipes.MistRequirement;
 import com.iridium126.createmanaindustry.network.ClientboundMistSyncPacket;
+import com.simibubi.create.content.processing.basin.BasinBlockEntity;
 import com.simibubi.create.content.processing.basin.BasinOperatingBlockEntity;
 
 import net.minecraft.core.BlockPos;
@@ -24,11 +27,16 @@ import net.minecraft.world.item.crafting.Recipe;
 import net.neoforged.neoforge.fluids.FluidStack;
 
 /**
- * Basin operating machines (press, mixer, deployer...):
+ * Basin operating machines (press, mixer, deployer, deposition lid):
  * <ul>
  *   <li>Sorts matching recipes so heated_compacting always wins.</li>
- *   <li>Activates/deactivates persistent mist at the basin position when a
- *       {@link MistRecipe} is being processed.</li>
+ *   <li>Consumes a recipe's {@code mist_requirement.amount} at completion and
+ *       emits the {@code mist_result} byproduct into the mist field.</li>
+ *   <li>Maintains the mist capacity reservation: self-polls while a waiting
+ *       reservation exists (so a press/lid starts once capacity suffices), and
+ *       refreshes the reservation while processing a mist-consuming recipe so
+ *       the condenser yields.</li>
+ *   <li>Releases the reservation and timed mist when the basin is removed.</li>
  * </ul>
  */
 @Mixin(value = BasinOperatingBlockEntity.class, remap = false)
@@ -40,8 +48,17 @@ public class BasinOperatingBlockEntityMixin {
     @Shadow
     protected boolean isRunning() { throw new AssertionError(); }
 
+    @Shadow
+    protected boolean matchBasinRecipe(Recipe<?> recipe) { throw new AssertionError(); }
+
+    @Shadow
+    protected Optional<BasinBlockEntity> getBasin() { throw new AssertionError(); }
+
     @Unique
     private BlockPos createmanaindustry$activeMistPos;
+
+    @Unique
+    private BlockPos createmanaindustry$reservedBasinPos;
 
     @Inject(method = "getMatchingRecipes", at = @At("RETURN"))
     private void createmanaindustry$prioritizeHeatedCompacting(CallbackInfoReturnable<List<Recipe<?>>> cir) {
@@ -57,7 +74,11 @@ public class BasinOperatingBlockEntityMixin {
                                 r -> r.getIngredients().size()).reversed()));
     }
 
-    /** After recipe completes, emit/extend timed mist if the recipe has mist output. */
+    /**
+     * After recipe completion: consume the requirement's mist amount, release the
+     * reservation that protected it, and emit/extend timed mist if the recipe has
+     * a {@code mist_result} byproduct.
+     */
     @Inject(method = "applyBasinRecipe", at = @At("RETURN"))
     private void createmanaindustry$activateMistOnRecipe(CallbackInfo ci) {
         BasinOperatingBlockEntity self = (BasinOperatingBlockEntity) (Object) this;
@@ -67,12 +88,24 @@ public class BasinOperatingBlockEntityMixin {
         if (!(currentRecipe instanceof MistRecipe mistRecipe))
             return;
 
-        MistOutput mist = mistRecipe.getMistOutput();
+        BlockPos basinPos = this.getBasin().map(BasinBlockEntity::getBlockPos).orElse(null);
+        if (basinPos == null)
+            return;
+
+        // Consume the mist requirement at completion, then release the reservation.
+        // Raw drain (respectReservations=false): the reservation already held the
+        // amount through processing, so the physical field has it available.
+        MistRequirement req = mistRecipe.getMistRequirement();
+        if (req != null && req.amount() > 0) {
+            MistFieldStore.consumeCapacity(self.getLevel(), basinPos, req.fluidId(), req.amount(), false);
+            MistFieldStore.releaseReservation(self.getLevel(), basinPos);
+            createmanaindustry$reservedBasinPos = null;
+        }
+
+        MistOutput mist = mistRecipe.getMistResult();
         if (mist == null)
             return;
 
-        // Basin is 2 blocks below the operating machine
-        BlockPos basinPos = self.getBlockPos().below(2);
         FluidStack fluid = new FluidStack(BuiltInRegistries.FLUID.get(mist.fluidId()), 1);
 
         // Timed emission: each recipe completion resets the timer and adds capacity
@@ -83,7 +116,44 @@ public class BasinOperatingBlockEntityMixin {
     }
 
     /**
-     * When basin is removed, remove the timed mist entry.
+     * Per-tick mist reservation maintenance:
+     * <ul>
+     *   <li>While a waiting reservation exists at the basin, keep the machine
+     *       self-polling so it starts as soon as capacity suffices (the press and
+     *       deposition lid do not self-schedule otherwise).</li>
+     *   <li>While processing a mist recipe that consumes mist, refresh the
+     *       reservation so the condenser yields and the field keeps its amount
+     *       through to completion (the matching gate does not run during
+     *       processing).</li>
+     * </ul>
+     */
+    @Inject(method = "tick", at = @At("RETURN"))
+    private void createmanaindustry$reconcileMistReservation(CallbackInfo ci) {
+        BasinOperatingBlockEntity self = (BasinOperatingBlockEntity) (Object) this;
+        if (self.getLevel() == null || self.getLevel().isClientSide)
+            return;
+
+        BlockPos basinPos = this.getBasin().map(BasinBlockEntity::getBlockPos).orElse(null);
+        if (basinPos == null)
+            return;
+
+        if (MistFieldStore.hasWaitingReservation(self.getLevel(), basinPos)) {
+            self.basinChecker.scheduleUpdate();
+        }
+
+        MistRequirement req = currentRecipe instanceof MistRecipe mr ? mr.getMistRequirement() : null;
+        if (req != null && req.amount() > 0
+                && isRunning()
+                && self.isSpeedRequirementFulfilled() && self.getSpeed() != 0
+                && this.matchBasinRecipe(currentRecipe)) {
+            MistFieldStore.reserve(self.getLevel(), basinPos, req.fluidId(), req.amount());
+            createmanaindustry$reservedBasinPos = basinPos;
+        }
+    }
+
+    /**
+     * When basin is removed, release the reservation and remove the timed mist
+     * entry.
      * <p>
      * Injected after {@code onBasinRemoved()} is called inside
      * {@link BasinOperatingBlockEntity#tick()}, since the method itself is
@@ -95,6 +165,10 @@ public class BasinOperatingBlockEntityMixin {
                     shift = At.Shift.AFTER))
     private void createmanaindustry$removeTimedOnBasinRemoved(CallbackInfo ci) {
         BasinOperatingBlockEntity self = (BasinOperatingBlockEntity) (Object) this;
+        if (createmanaindustry$reservedBasinPos != null) {
+            MistFieldStore.releaseReservation(self.getLevel(), createmanaindustry$reservedBasinPos);
+            createmanaindustry$reservedBasinPos = null;
+        }
         if (createmanaindustry$activeMistPos != null) {
             MistFieldStore.removeTimed(self.getLevel(), createmanaindustry$activeMistPos);
             ClientboundMistSyncPacket.sendToTracking(
@@ -117,7 +191,7 @@ public class BasinOperatingBlockEntityMixin {
 
         // Keep tracking while the machine is actively running a mist recipe
         if (isRunning() && currentRecipe instanceof MistRecipe mistRecipe
-                && mistRecipe.getMistOutput() != null)
+                && mistRecipe.getMistResult() != null)
             return;
 
         // Machine stopped or recipe changed — let the timed entry expire naturally

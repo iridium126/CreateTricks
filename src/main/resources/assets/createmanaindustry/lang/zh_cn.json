@@ -7,7 +7,8 @@
   "createmanaindustry.recipe.mist_mixing": "雾气搅拌",
   "createmanaindustry.recipe.vapor_deposition": "气相沉积",
   "createmanaindustry.jei.mist_requirement": "需要雾气：%1$s（浓度 ≥ %2$s）",
-  "createmanaindustry.jei.mist_output": "产出雾气：%1$s（半径：%2$s，量：%3$s mB，持续：%4$s tick）",
+  "createmanaindustry.jei.mist_requirement_amount": "需要雾气：%1$s（浓度 ≥ %2$s），每次消耗 %3$s mB",
+  "createmanaindustry.jei.mist_output": "产出雾气：%1$s %2$s mB（半径：%3$s，持续：%4$s tick）",
   "createmanaindustry.jei.vapor_deposition.sealed": "在工作盆上方放置关闭的边框玻璃活板门",
 
   "block.createmanaindustry.mana_cogwheel": "魔力齿轮",

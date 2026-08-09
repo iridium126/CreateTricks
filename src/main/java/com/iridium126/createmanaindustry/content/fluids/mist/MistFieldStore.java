@@ -1,5 +1,9 @@
 package com.iridium126.createmanaindustry.content.fluids.mist;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -7,6 +11,7 @@ import com.iridium126.createmanaindustry.CMIAttachments;
 import com.iridium126.createmanaindustry.config.Config;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.neoforged.neoforge.fluids.FluidStack;
@@ -28,6 +33,16 @@ import net.neoforged.neoforge.fluids.FluidStack;
 public final class MistFieldStore {
 
     /**
+     * How many ticks a recipe reservation lives without being refreshed. The
+     * matching gate refreshes it on every poll while a mist recipe is waiting for
+     * capacity, and the basin operator refreshes it while processing — so a
+     * genuinely waiting/processing recipe never expires. When the recipe stops
+     * being pursued (items removed, machine stopped/destroyed), the reservation
+     * expires after this many ticks and the condenser resumes draining.
+     */
+    public static final long RESERVATION_TTL = 60;
+
+    /**
      * Per-level mist field data. Attached to each {@link Level} so it is created
      * lazily on first access and collected together with the level.
      */
@@ -36,6 +51,10 @@ public final class MistFieldStore {
         final Map<BlockPos, AtomizerField> active = new ConcurrentHashMap<>();
         /** Timed (recipe byproduct) sources keyed by position. */
         final Map<BlockPos, TimedMistEntry> timed = new ConcurrentHashMap<>();
+        /** Recipe capacity reservations keyed by basin position. */
+        final Map<BlockPos, MistReservation> reservations = new ConcurrentHashMap<>();
+        /** Per-source total reserved capacity, derived from {@link #reservations}. */
+        final Map<BlockPos, Long> reservedBySource = new ConcurrentHashMap<>();
     }
 
     private MistFieldStore() {}
@@ -282,10 +301,17 @@ public final class MistFieldStore {
      * position — the dominant (strongest) source is drained first, then
      * progressively weaker sources of the same fluid type.
      *
+     * @param respectReservations when {@code true}, each source is capped at its
+     *                            unreserved capacity
+     *                            ({@code max(0, capacity - reserved)}), so reserved
+     *                            capacity claimed by waiting recipes is never
+     *                            drained. The condenser passes {@code true}; a
+     *                            recipe consuming its own reserved mist at
+     *                            completion passes {@code false}.
      * @return total mB actually consumed across all matching sources
      */
     public static long consumeCapacity(Level level, BlockPos queryPos,
-            net.minecraft.resources.ResourceLocation fluidId, long desired) {
+            ResourceLocation fluidId, long desired, boolean respectReservations) {
         if (level == null || level.isClientSide || fluidId == null || desired <= 0)
             return 0L;
 
@@ -293,7 +319,7 @@ public final class MistFieldStore {
 
         // Collect all same-fluid sources with capacity > 0 and concentration at queryPos
         record SourcedEntry(BlockPos srcPos, boolean isTimed, long capacity, float conc) {}
-        java.util.List<SourcedEntry> sources = new java.util.ArrayList<>();
+        List<SourcedEntry> sources = new ArrayList<>();
 
         for (var e : data.active.entrySet()) {
             AtomizerField f = e.getValue();
@@ -321,7 +347,7 @@ public final class MistFieldStore {
             return 0L;
 
         // Sort by concentration descending — strongest source first
-        sources.sort(java.util.Comparator.comparingDouble(SourcedEntry::conc).reversed());
+        sources.sort(Comparator.comparingDouble(SourcedEntry::conc).reversed());
 
         // Consume from each until target met
         long remaining = desired;
@@ -330,14 +356,19 @@ public final class MistFieldStore {
             if (remaining <= 0)
                 break;
             long take = Math.min(remaining, se.capacity);
+            if (respectReservations) {
+                long reserved = data.reservedBySource.getOrDefault(se.srcPos, 0L);
+                take = Math.min(take, Math.max(0L, se.capacity - reserved));
+            }
+            final long amountTaken = take;
             if (se.isTimed) {
                 data.timed.computeIfPresent(se.srcPos, (p, e) -> {
-                    e.fluidCapacity -= take;
+                    e.fluidCapacity -= amountTaken;
                     return e;
                 });
             } else {
                 data.active.computeIfPresent(se.srcPos, (p, f) -> {
-                    f.fluidCapacity -= take;
+                    f.fluidCapacity -= amountTaken;
                     return f;
                 });
             }
@@ -354,9 +385,16 @@ public final class MistFieldStore {
      * <p>
      * Used by consumers to cap their demand so they never claim more than the
      * field can actually supply.
+     *
+     * @param excludeReserved when {@code true}, each source is counted as
+     *                        {@code max(0, capacity - reserved)}, i.e. capacity
+     *                        claimed by waiting/processing recipes is hidden from
+     *                        the caller. The condenser passes {@code true} to
+     *                        yield to recipes; the recipe's full-or-nothing gate
+     *                        passes {@code false} to read the physical field.
      */
     public static long availableCapacity(Level level, BlockPos pos,
-            net.minecraft.resources.ResourceLocation fluidId) {
+            ResourceLocation fluidId, boolean excludeReserved) {
         if (level == null || pos == null || fluidId == null)
             return 0L;
 
@@ -370,7 +408,7 @@ public final class MistFieldStore {
             if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(f.fluid.getFluid())))
                 continue;
             if (calcConcentration(pos, e.getKey(), f.radius()) > 0)
-                total += f.fluidCapacity;
+                total += reservedAdjusted(f.fluidCapacity, excludeReserved ? reservedOn(data, e.getKey()) : 0L);
         }
 
         for (var e : data.timed.entrySet()) {
@@ -380,10 +418,145 @@ public final class MistFieldStore {
             if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(t.fluid.getFluid())))
                 continue;
             if (calcConcentration(pos, e.getKey(), t.radius()) > 0)
-                total += t.fluidCapacity;
+                total += reservedAdjusted(t.fluidCapacity, excludeReserved ? reservedOn(data, e.getKey()) : 0L);
         }
 
         return total;
+    }
+
+    private static long reservedOn(MistFieldData data, BlockPos sourcePos) {
+        return data.reservedBySource.getOrDefault(sourcePos, 0L);
+    }
+
+    private static long reservedAdjusted(long capacity, long reserved) {
+        return Math.max(0L, capacity - reserved);
+    }
+
+    // ---- recipe reservations (full-or-nothing capacity claims) ------------------
+
+    /**
+     * Registers or refreshes a recipe's capacity reservation at {@code basinPos}.
+     * <p>
+     * The reservation is a <b>virtual claim</b> of {@code amount} mB spread over
+     * the same-fluid sources contributing concentration at the basin, strongest
+     * first (matching {@link #consumeCapacity} drain order). It may exceed a
+     * source's current physical capacity — that is intentional: with
+     * {@code availableCapacity(excludeReserved=true)} the condenser then reports
+     * the field as claimed and yields, so it can accumulate to {@code amount}.
+     * <p>
+     * Called by the matching gate on every poll while a recipe waits for capacity
+     * and by the basin operator while it processes such a recipe; each call
+     * refreshes {@link #RESERVATION_TTL}.
+     *
+     * @return {@code true} if at least one source was reserved
+     */
+    public static boolean reserve(Level level, BlockPos basinPos, ResourceLocation fluidId, int amount) {
+        if (level == null || level.isClientSide || basinPos == null || fluidId == null || amount <= 0)
+            return false;
+
+        MistFieldData data = data(level);
+        BlockPos key = basinPos.immutable();
+
+        // Drop any prior split for this basin before recomputing.
+        MistReservation old = data.reservations.remove(key);
+        if (old != null)
+            applySplitToReservedBySource(data, old.split, -1);
+
+        Map<BlockPos, Long> split = computeGreedySplit(data, basinPos, fluidId, amount);
+        if (split.isEmpty())
+            return false;
+
+        data.reservations.put(key, new MistReservation(fluidId, amount,
+                level.getGameTime() + RESERVATION_TTL, split));
+        applySplitToReservedBySource(data, split, 1);
+        return true;
+    }
+
+    /** Removes the reservation registered for {@code basinPos}, if any. */
+    public static void releaseReservation(Level level, BlockPos basinPos) {
+        if (level == null || level.isClientSide || basinPos == null)
+            return;
+        MistFieldData data = data(level);
+        MistReservation old = data.reservations.remove(basinPos);
+        if (old != null)
+            applySplitToReservedBySource(data, old.split, -1);
+    }
+
+    /** Whether a live (unexpired) reservation is held for {@code basinPos}. */
+    public static boolean hasWaitingReservation(Level level, BlockPos basinPos) {
+        if (level == null || level.isClientSide || basinPos == null)
+            return false;
+        MistFieldData data = data(level);
+        MistReservation r = data.reservations.get(basinPos);
+        return r != null && r.expiryTick > level.getGameTime();
+    }
+
+    /**
+     * Greedy strongest-first split of {@code amount} across the same-fluid
+     * sources contributing concentration at {@code basinPos}. Each source is
+     * capped at its current physical capacity; any remainder is claimed
+     * virtually on the strongest source, so even a freshly-activated (capacity 0)
+     * field is protected from the condenser while it accumulates.
+     */
+    private static Map<BlockPos, Long> computeGreedySplit(MistFieldData data, BlockPos basinPos,
+            ResourceLocation fluidId, long amount) {
+        record Src(BlockPos pos, long capacity, float conc) {}
+        List<Src> sources = new ArrayList<>();
+
+        for (var e : data.active.entrySet()) {
+            AtomizerField f = e.getValue();
+            if (f.fluid == null || f.fluid.isEmpty())
+                continue;
+            if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(f.fluid.getFluid())))
+                continue;
+            float conc = calcConcentration(basinPos, e.getKey(), f.radius());
+            if (conc > 0)
+                sources.add(new Src(e.getKey(), f.fluidCapacity, conc));
+        }
+
+        for (var e : data.timed.entrySet()) {
+            TimedMistEntry t = e.getValue();
+            if (!fluidId.equals(net.minecraft.core.registries.BuiltInRegistries.FLUID.getKey(t.fluid.getFluid())))
+                continue;
+            float conc = calcConcentration(basinPos, e.getKey(), t.radius());
+            if (conc > 0)
+                sources.add(new Src(e.getKey(), t.fluidCapacity, conc));
+        }
+
+        if (sources.isEmpty())
+            return Map.of();
+
+        sources.sort(Comparator.comparingDouble(Src::conc).reversed());
+
+        Map<BlockPos, Long> split = new HashMap<>();
+        long remaining = amount;
+        for (Src s : sources) {
+            if (remaining <= 0)
+                break;
+            long take = Math.min(remaining, Math.max(s.capacity, 0L));
+            if (take > 0) {
+                split.put(s.pos, take);
+                remaining -= take;
+            }
+        }
+        // Leftover (virtual) claim lands on the strongest source so it is fully
+        // yielded to the recipe even when it has not accumulated enough yet.
+        if (remaining > 0)
+            split.merge(sources.get(0).pos, remaining, Long::sum);
+        return split;
+    }
+
+    /** Adds ({@code sign} 1) or subtracts ({@code sign} -1) a split from the per-source reserved map. */
+    private static void applySplitToReservedBySource(MistFieldData data, Map<BlockPos, Long> split, int sign) {
+        if (sign > 0) {
+            for (var e : split.entrySet())
+                data.reservedBySource.merge(e.getKey(), e.getValue(), Long::sum);
+        } else {
+            for (var e : split.entrySet()) {
+                data.reservedBySource.computeIfPresent(e.getKey(),
+                        (p, v) -> v - e.getValue() <= 0 ? null : v - e.getValue());
+            }
+        }
     }
 
     /**
@@ -400,6 +573,7 @@ public final class MistFieldStore {
      * <ul>
      *   <li>Remove persistent atomizers whose chunks are no longer loaded.</li>
      *   <li>Expire timed entries whose expiry tick has passed.</li>
+     *   <li>Release reservations that expired or whose basin chunk unloaded.</li>
      * </ul>
      */
     public static void tick(ServerLevel level, java.util.function.Consumer<BlockPos> onExpired) {
@@ -415,6 +589,20 @@ public final class MistFieldStore {
             data.timed.entrySet().removeIf(entry -> {
                 if (entry.getValue().expiryTick <= currentTick) {
                     onExpired.accept(entry.getKey());
+                    return true;
+                }
+                return false;
+            });
+        }
+
+        // Release expired or unloaded reservations (leak backstop: a machine
+        // destroyed while holding a reservation, or a basin whose items were
+        // removed, stops refreshing and is released here after the TTL).
+        if (!data.reservations.isEmpty()) {
+            long currentTick = level.getGameTime();
+            data.reservations.entrySet().removeIf(entry -> {
+                if (!level.isLoaded(entry.getKey()) || entry.getValue().expiryTick <= currentTick) {
+                    applySplitToReservedBySource(data, entry.getValue().split, -1);
                     return true;
                 }
                 return false;
@@ -443,6 +631,27 @@ public final class MistFieldStore {
 
         int radius() { return radius; }
         @org.jetbrains.annotations.Nullable FluidStack fluid() { return fluid; }
+    }
+
+    /**
+     * Recipe capacity reservation — a virtual claim of {@code amount} mB on the
+     * sources contributing at the reserving basin. {@code split} records how much
+     * is claimed on each source (used to derive {@code reservedBySource});
+     * {@code expiryTick} bounds the claim's lifetime once it stops being
+     * refreshed (see {@link #RESERVATION_TTL}).
+     */
+    private static final class MistReservation {
+        final ResourceLocation fluidId;
+        final int amount;
+        long expiryTick;
+        final Map<BlockPos, Long> split;
+
+        MistReservation(ResourceLocation fluidId, int amount, long expiryTick, Map<BlockPos, Long> split) {
+            this.fluidId = fluidId;
+            this.amount = amount;
+            this.expiryTick = expiryTick;
+            this.split = split;
+        }
     }
 
     /**

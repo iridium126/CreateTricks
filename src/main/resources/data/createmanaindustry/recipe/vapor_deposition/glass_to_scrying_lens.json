@@ -2,7 +2,8 @@
   "type": "createmanaindustry:vapor_deposition",
   "mist_requirement": {
     "fluid": "createmanaindustry:liquid_media",
-    "min_concentration": 0.1
+    "min_concentration": 0.1,
+    "amount": 25
   },
   "processing_time": 100,
   "ingredients": [

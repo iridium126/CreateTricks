@@ -18,7 +18,7 @@ import net.minecraft.resources.ResourceLocation;
 
 public class MistRecipeParams extends ProcessingRecipeParams {
 
-    protected MistOutput mist;
+    protected MistOutput mistResult;
     protected MistRequirement mistRequirement;
 
     public static final MapCodec<MistRecipeParams> MIST_CODEC = createCodec(MistRecipeParams::new);
@@ -27,11 +27,11 @@ public class MistRecipeParams extends ProcessingRecipeParams {
 
     protected MistRecipeParams() {
         super();
-        this.mist = null;
+        this.mistResult = null;
         this.mistRequirement = null;
     }
 
-    public MistOutput getMist() { return mist; }
+    public MistOutput getMistResult() { return mistResult; }
     public MistRequirement getMistRequirement() { return mistRequirement; }
 
     private static <P extends MistRecipeParams> MapCodec<P> createCodec(Supplier<P> factory) {
@@ -48,8 +48,8 @@ public class MistRecipeParams extends ProcessingRecipeParams {
                         .forGetter(p -> p.processingDuration),
                 HeatCondition.CODEC.optionalFieldOf("heat_requirement", HeatCondition.NONE)
                         .forGetter(p -> p.requiredHeat),
-                MistOutput.CODEC.optionalFieldOf("mist")
-                        .forGetter(p -> Optional.ofNullable(p.mist)),
+                MistOutput.CODEC.optionalFieldOf("mist_result")
+                        .forGetter(p -> Optional.ofNullable(p.mistResult)),
                 MistRequirement.CODEC.optionalFieldOf("mist_requirement")
                         .forGetter(p -> Optional.ofNullable(p.mistRequirement))
         ).apply(instance,
@@ -63,7 +63,7 @@ public class MistRecipeParams extends ProcessingRecipeParams {
                             .ifLeft(params.fluidResults::add));
                     params.processingDuration = processingDuration;
                     params.requiredHeat = requiredHeat;
-                    params.mist = mistOpt.orElse(null);
+                    params.mistResult = mistOpt.orElse(null);
                     params.mistRequirement = mistReqOpt.orElse(null);
                     return params;
                 }));
@@ -83,17 +83,18 @@ public class MistRecipeParams extends ProcessingRecipeParams {
     @Override
     protected void encode(RegistryFriendlyByteBuf buffer) {
         super.encode(buffer);
-        buffer.writeBoolean(mist != null);
-        if (mist != null) {
-            ResourceLocation.STREAM_CODEC.encode(buffer, mist.fluidId());
-            ByteBufCodecs.VAR_INT.encode(buffer, mist.radius());
-            ByteBufCodecs.VAR_INT.encode(buffer, mist.amount());
-            ByteBufCodecs.VAR_INT.encode(buffer, mist.duration());
+        buffer.writeBoolean(mistResult != null);
+        if (mistResult != null) {
+            ResourceLocation.STREAM_CODEC.encode(buffer, mistResult.fluidId());
+            ByteBufCodecs.VAR_INT.encode(buffer, mistResult.radius());
+            ByteBufCodecs.VAR_INT.encode(buffer, mistResult.amount());
+            ByteBufCodecs.VAR_INT.encode(buffer, mistResult.duration());
         }
         buffer.writeBoolean(mistRequirement != null);
         if (mistRequirement != null) {
             ResourceLocation.STREAM_CODEC.encode(buffer, mistRequirement.fluidId());
             buffer.writeDouble(mistRequirement.minConcentration());
+            ByteBufCodecs.VAR_INT.encode(buffer, mistRequirement.amount());
         }
     }
 
@@ -101,7 +102,7 @@ public class MistRecipeParams extends ProcessingRecipeParams {
     protected void decode(RegistryFriendlyByteBuf buffer) {
         super.decode(buffer);
         if (buffer.readBoolean())
-            mist = new MistOutput(
+            mistResult = new MistOutput(
                     ResourceLocation.STREAM_CODEC.decode(buffer),
                     ByteBufCodecs.VAR_INT.decode(buffer),
                     ByteBufCodecs.VAR_INT.decode(buffer),
@@ -109,6 +110,7 @@ public class MistRecipeParams extends ProcessingRecipeParams {
         if (buffer.readBoolean())
             mistRequirement = new MistRequirement(
                     ResourceLocation.STREAM_CODEC.decode(buffer),
-                    buffer.readDouble());
+                    buffer.readDouble(),
+                    ByteBufCodecs.VAR_INT.decode(buffer));
     }
 }

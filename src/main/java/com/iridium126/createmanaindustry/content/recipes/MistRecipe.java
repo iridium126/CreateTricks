@@ -9,8 +9,8 @@ package com.iridium126.createmanaindustry.content.recipes;
  */
 public interface MistRecipe {
 
-    /** Returns the mist output config, or null if this recipe has no mist byproduct. */
-    MistOutput getMistOutput();
+    /** Returns the mist result config, or null if this recipe has no mist byproduct. */
+    MistOutput getMistResult();
 
     /** Returns the mist requirement, or null if this recipe has no mist condition. */
     MistRequirement getMistRequirement();

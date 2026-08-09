@@ -23,7 +23,10 @@ import net.minecraft.world.level.block.state.BlockState;
  * Basin recipe matching extensions:
  * <ul>
  *   <li><b>Mist requirement</b> — a recipe with a {@code mist_requirement} only
- *       matches when that mist is present at the basin position.</li>
+ *       matches when that mist is present at the basin position. When the
+ *       requirement also declares {@code amount} &gt; 0, the recipe additionally
+ *       only matches once the field physically holds that much capacity, and a
+ *       reservation is registered so the condenser yields while it waits.</li>
  *   <li><b>Allay heat gate</b> — a recipe declaring
  *       {@code "heat_requirement": "allayheated"} only matches when the basin's
  *       below block is an Allay Burner in the ALLAYHEATED state. All other heat
@@ -48,6 +51,23 @@ public class BasinRecipeMixin {
         if (!MistFieldStore.hasMatchingMist(basin.getLevel(), basin.getBlockPos(),
                 req.fluidId(), req.minConcentration())) {
             cir.setReturnValue(false);
+            return;
+        }
+
+        // Full-or-nothing capacity gate (matching path only): a recipe that
+        // consumes mist must not match until the field physically holds its
+        // amount — mirroring how Create refuses to match a recipe whose item
+        // ingredients are missing. While it waits, register a reservation so the
+        // condenser yields and the field can accumulate. The completion path
+        // (test=false) skips this: by then the reservation has been protecting
+        // the capacity throughout processing.
+        if (test && req.amount() > 0) {
+            long available = MistFieldStore.availableCapacity(
+                    basin.getLevel(), basin.getBlockPos(), req.fluidId(), false);
+            if (available < req.amount()) {
+                MistFieldStore.reserve(basin.getLevel(), basin.getBlockPos(), req.fluidId(), req.amount());
+                cir.setReturnValue(false);
+            }
         }
     }
 

@@ -10,10 +10,11 @@ public class MistCompactingRecipe extends BasinRecipe implements MistRecipe {
         super(CMIRecipeTypes.MIST_COMPACTING, params);
     }
 
-    /** Returns the mist output config, or null if this recipe has no mist byproduct. */
-    public MistOutput getMistOutput() {
+    /** Returns the mist result config, or null if this recipe has no mist byproduct. */
+    @Override
+    public MistOutput getMistResult() {
         if (getParams() instanceof MistRecipeParams mistParams)
-            return mistParams.getMist();
+            return mistParams.getMistResult();
         return null;
     }
 

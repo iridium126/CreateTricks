@@ -9,7 +9,7 @@
   ],
   "results": [],
   "heat_requirement": "superheated",
-  "mist": {
+  "mist_result": {
     "fluid": "createmanaindustry:liquid_media",
     "radius": 16,
     "amount": 125,

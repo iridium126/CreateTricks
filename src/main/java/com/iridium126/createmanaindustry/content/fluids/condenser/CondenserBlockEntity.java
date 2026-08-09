@@ -142,7 +142,8 @@ public class CondenserBlockEntity extends SmartBlockEntity {
         // Cap by the mist field's actual capacity — a field with no capacity
         // (freshly activated or exhausted) must not claim coolant, otherwise
         // coolant is deducted from the passing flow but nothing condenses.
-        long availableCapacity = MistFieldStore.availableCapacity(level, worldPosition, mistFluidId);
+        // Exclude reserved capacity so waiting/processing recipes always win.
+        long availableCapacity = MistFieldStore.availableCapacity(level, worldPosition, mistFluidId, true);
         if (availableCapacity <= 0)
             return 0;
 
@@ -174,7 +175,9 @@ public class CondenserBlockEntity extends SmartBlockEntity {
             return;
         }
 
-        long collected = MistFieldStore.consumeCapacity(level, worldPosition, mistFluidId, amount);
+        // Never drain capacity reserved by a waiting/processing recipe — the
+        // recipe has priority over the condenser.
+        long collected = MistFieldStore.consumeCapacity(level, worldPosition, mistFluidId, amount, true);
         if (collected <= 0) {
             setCondensing(false);
             return;

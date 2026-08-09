@@ -7,7 +7,8 @@
   "createmanaindustry.recipe.mist_mixing": "Mist Mixing",
   "createmanaindustry.recipe.vapor_deposition": "Vapor Deposition",
   "createmanaindustry.jei.mist_requirement": "Requires mist of %1$s (≥ %2$s)",
-  "createmanaindustry.jei.mist_output": "Emits mist of %1$s (radius: %2$s, amount: %3$s mB, duration: %4$s ticks)",
+  "createmanaindustry.jei.mist_requirement_amount": "Requires mist of %1$s (≥ %2$s); consumes %3$s mB per recipe",
+  "createmanaindustry.jei.mist_output": "Emits mist of %1$s %2$s mB (radius: %3$s, duration: %4$s ticks)",
   "createmanaindustry.jei.vapor_deposition.sealed": "Place a closed Framed Glass Trapdoor on the Basin to seal it",
 
   "block.createmanaindustry.mana_cogwheel": "Mana Cogwheel",

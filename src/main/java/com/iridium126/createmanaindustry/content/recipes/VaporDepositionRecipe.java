@@ -19,11 +19,11 @@ public class VaporDepositionRecipe extends BasinRecipe implements MistRecipe {
         super(CMIRecipeTypes.VAPOR_DEPOSITION, params);
     }
 
-    /** Returns the mist output config, or null if this recipe has no mist byproduct. */
+    /** Returns the mist result config, or null if this recipe has no mist byproduct. */
     @Override
-    public MistOutput getMistOutput() {
+    public MistOutput getMistResult() {
         if (getParams() instanceof MistRecipeParams mistParams)
-            return mistParams.getMist();
+            return mistParams.getMistResult();
         return null;
     }
 

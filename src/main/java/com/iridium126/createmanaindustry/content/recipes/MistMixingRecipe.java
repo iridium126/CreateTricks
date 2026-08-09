@@ -11,9 +11,9 @@ public class MistMixingRecipe extends BasinRecipe implements MistRecipe {
     }
 
     @Override
-    public MistOutput getMistOutput() {
+    public MistOutput getMistResult() {
         if (getParams() instanceof MistRecipeParams mistParams)
-            return mistParams.getMist();
+            return mistParams.getMistResult();
         return null;
     }
 

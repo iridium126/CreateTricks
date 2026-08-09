@@ -1,0 +1,18 @@
+{
+  "type": "createmanaindustry:heated_compacting",
+  "heat_requirement": "superheated",
+  "ingredients": [
+    { "item": "minecraft:quartz" },
+    { "item": "minecraft:redstone" },
+    { "item": "minecraft:redstone" },
+    { "item": "minecraft:redstone" },
+    { "item": "minecraft:redstone" },
+    { "item": "minecraft:redstone" },
+    { "item": "minecraft:redstone" },
+    { "item": "minecraft:redstone" },
+    { "item": "minecraft:redstone" }
+  ],
+  "results": [
+    { "id": "createmanaindustry:molten_rose_quartz", "amount": 125 }
+  ]
+}

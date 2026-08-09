@@ -88,10 +88,10 @@ configurations {
 }
 
 artifacts {
-    add("namedTrickster", exportedJar.get().asFile) {
+    add("namedTrickster", exportedJar.asFile) {
         builtBy tasks.named("exportTricksterNamedJar")
     }
-    add("namedFabricApi", mergedFabricApiJar.get().asFile) {
+    add("namedFabricApi", mergedFabricApiJar.asFile) {
         builtBy tasks.named("mergeFabricApiNamedJar")
     }
 }

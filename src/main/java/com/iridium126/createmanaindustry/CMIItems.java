@@ -32,10 +32,31 @@ public final class CMIItems {
     public static ItemEntry<IncompleteHexItem> INCOMPLETE_ARTIFACT;
     public static ItemEntry<IncompleteMediaBatteryItem> INCOMPLETE_MEDIA_BATTERY;
 
+    // Deposited metal sheets — produced by vapor deposition: a mist deposits
+    // amethyst or rose quartz onto a Create metal sheet. Core items, always
+    // registered.
+    public static ItemEntry<Item> AMETHYST_DEPOSITED_BRASS_SHEET;
+    public static ItemEntry<Item> AMETHYST_DEPOSITED_COPPER_SHEET;
+    public static ItemEntry<Item> AMETHYST_DEPOSITED_GOLDEN_SHEET;
+    public static ItemEntry<Item> AMETHYST_DEPOSITED_IRON_SHEET;
+    public static ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_BRASS_SHEET;
+    public static ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_COPPER_SHEET;
+    public static ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_GOLDEN_SHEET;
+    public static ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_IRON_SHEET;
+
     private CMIItems() {
     }
 
     public static void register() {
+        AMETHYST_DEPOSITED_BRASS_SHEET = depositedSheet("amethyst_deposited_brass_sheet");
+        AMETHYST_DEPOSITED_COPPER_SHEET = depositedSheet("amethyst_deposited_copper_sheet");
+        AMETHYST_DEPOSITED_GOLDEN_SHEET = depositedSheet("amethyst_deposited_golden_sheet");
+        AMETHYST_DEPOSITED_IRON_SHEET = depositedSheet("amethyst_deposited_iron_sheet");
+        ROSE_QUARTZ_DEPOSITED_BRASS_SHEET = depositedSheet("rose_quartz_deposited_brass_sheet");
+        ROSE_QUARTZ_DEPOSITED_COPPER_SHEET = depositedSheet("rose_quartz_deposited_copper_sheet");
+        ROSE_QUARTZ_DEPOSITED_GOLDEN_SHEET = depositedSheet("rose_quartz_deposited_golden_sheet");
+        ROSE_QUARTZ_DEPOSITED_IRON_SHEET = depositedSheet("rose_quartz_deposited_iron_sheet");
+
         if (CreateManaIndustry.TRICKSTER_ACTIVE) {
             KINETICS_SPELL_CORE = REGISTRATE.item("kinetics_spell_core", KineticsSpellCoreItem::create)
                     .recipe((c, p) -> {
@@ -89,6 +110,11 @@ public final class CMIItems {
                 .properties(p -> p.stacksTo(1))
                 .model(NonNullBiConsumer.noop())
                 .register();
+    }
+
+    /** Plain deposited-sheet item — default generated model references the ready texture. */
+    private static ItemEntry<Item> depositedSheet(String name) {
+        return REGISTRATE.item(name, Item::new).register();
     }
 
     private static ResourceLocation hexLoc(String path) {

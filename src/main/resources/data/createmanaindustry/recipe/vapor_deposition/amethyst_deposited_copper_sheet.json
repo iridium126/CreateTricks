@@ -1,0 +1,15 @@
+{
+  "type": "createmanaindustry:vapor_deposition",
+  "mist_requirement": {
+    "fluid": "createmanaindustry:liquid_media",
+    "min_concentration": 0.1,
+    "amount": 10
+  },
+  "processing_time": 10,
+  "ingredients": [
+    { "item": "create:copper_sheet" }
+  ],
+  "results": [
+    { "id": "createmanaindustry:amethyst_deposited_copper_sheet", "count": 1 }
+  ]
+}

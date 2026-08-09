@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "createmanaindustry:item/rose_quartz_deposited_copper_sheet"
+  }
+}

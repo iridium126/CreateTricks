@@ -25,6 +25,10 @@
   "fluid.createmanaindustry.liquid_soul": "ןnoS pınbıꞀ",
   "fluid.createmanaindustry.liquid_source": "ǝɔɹnoS pınbıꞀ",
   "fluid.createmanaindustry.molten_rose_quartz": "zʇɹɐnὉ ǝsoᴚ uǝʇןoW",
+  "item.createmanaindustry.amethyst_deposited_brass_sheet": "ʇǝǝɥS ssɐɹᗺ pǝʇısodǝᗡ ʇsʎɥʇǝɯⱯ",
+  "item.createmanaindustry.amethyst_deposited_copper_sheet": "ʇǝǝɥS ɹǝddoƆ pǝʇısodǝᗡ ʇsʎɥʇǝɯⱯ",
+  "item.createmanaindustry.amethyst_deposited_golden_sheet": "ʇǝǝɥS uǝpןo⅁ pǝʇısodǝᗡ ʇsʎɥʇǝɯⱯ",
+  "item.createmanaindustry.amethyst_deposited_iron_sheet": "ʇǝǝɥS uoɹI pǝʇısodǝᗡ ʇsʎɥʇǝɯⱯ",
   "item.createmanaindustry.coolant_bucket": "ʇǝʞɔnᗺ ʇuɐןooƆ",
   "item.createmanaindustry.empty_allay_burner": "ɹǝuɹnᗺ ʎɐןןⱯ ʎʇdɯƎ",
   "item.createmanaindustry.incomplete_artifact": "ʇɔɐɟıʇɹⱯ ǝʇǝןdɯoɔuI",
@@ -41,5 +45,9 @@
   "item.createmanaindustry.liquid_media_bucket": "ʇǝʞɔnᗺ ɐıpǝW pınbıꞀ",
   "item.createmanaindustry.liquid_soul_bucket": "ʇǝʞɔnᗺ ןnoS pınbıꞀ",
   "item.createmanaindustry.liquid_source_bucket": "ʇǝʞɔnᗺ ǝɔɹnoS pınbıꞀ",
-  "item.createmanaindustry.molten_rose_quartz_bucket": "ʇǝʞɔnᗺ zʇɹɐnὉ ǝsoᴚ uǝʇןoW"
+  "item.createmanaindustry.molten_rose_quartz_bucket": "ʇǝʞɔnᗺ zʇɹɐnὉ ǝsoᴚ uǝʇןoW",
+  "item.createmanaindustry.rose_quartz_deposited_brass_sheet": "ʇǝǝɥS ssɐɹᗺ pǝʇısodǝᗡ zʇɹɐnὉ ǝsoᴚ",
+  "item.createmanaindustry.rose_quartz_deposited_copper_sheet": "ʇǝǝɥS ɹǝddoƆ pǝʇısodǝᗡ zʇɹɐnὉ ǝsoᴚ",
+  "item.createmanaindustry.rose_quartz_deposited_golden_sheet": "ʇǝǝɥS uǝpןo⅁ pǝʇısodǝᗡ zʇɹɐnὉ ǝsoᴚ",
+  "item.createmanaindustry.rose_quartz_deposited_iron_sheet": "ʇǝǝɥS uoɹI pǝʇısodǝᗡ zʇɹɐnὉ ǝsoᴚ"
 }

@@ -1,7 +1,7 @@
 package com.iridium126.createmanaindustry.client.render;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ClientConfig;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import foundry.veil.api.client.render.VeilRenderSystem;
@@ -201,7 +201,7 @@ public final class MistIrisHook {
                 depthScaleUniform.setFloat(distortion.depthScale());
             var debugShadowUniform = shader.getUniform("DebugShadowVisualization");
             if (debugShadowUniform != null)
-                debugShadowUniform.setInt(Config.mistDebugShadow ? 1 : 0);
+                debugShadowUniform.setInt(ClientConfig.mistDebugShadow ? 1 : 0);
 
             shader.setDefaultUniforms(VertexFormat.Mode.TRIANGLE_STRIP);
             VeilRenderSystem.drawScreenQuad();

@@ -40,7 +40,6 @@
     "render.ModelsMixin",
     "render.SafeBlockEntityRendererMixin",
     "render.LevelRendererAccessor",
-    "render.LiquidBlockRendererMixin",
     "kinetics.KineticBlockEntityVisualMixin",
     "trickster.ModularSpellConstructBlockEntityRendererMixin",
     "bnb.CogwheelChainBehaviourRendererMixin",

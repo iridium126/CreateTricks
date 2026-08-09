@@ -4,7 +4,7 @@ import at.petrak.hexcasting.api.item.MediaHolderItem;
 
 import com.iridium126.createmanaindustry.CMIFluids;
 import com.iridium126.createmanaindustry.CMIItems;
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.iridium126.createmanaindustry.content.fluids.CMIFluidConversions;
 import com.iridium126.createmanaindustry.content.items.IncompleteHexItem;
 import com.iridium126.createmanaindustry.content.items.IncompleteMediaBatteryItem;
@@ -84,7 +84,7 @@ public final class HexItemFillingLogic {
             return -1;
 
         // Cap the media added per operation to what one bucket provides
-        long maxPerOp = Config.mediaPerBucket;
+        long maxPerOp = ServerConfig.mediaPerBucket;
         long toAdd = Math.min(remaining, maxPerOp);
         return CMIFluidConversions.mediaToFluidAmount(toAdd);
     }

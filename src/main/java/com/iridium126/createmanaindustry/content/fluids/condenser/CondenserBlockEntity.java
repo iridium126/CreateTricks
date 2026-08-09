@@ -2,7 +2,7 @@ package com.iridium126.createmanaindustry.content.fluids.condenser;
 
 import java.util.List;
 
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore;
 import com.simibubi.create.AllParticleTypes;
 import com.simibubi.create.content.fluids.FluidPropagator;
@@ -147,7 +147,7 @@ public class CondenserBlockEntity extends SmartBlockEntity {
         if (availableCapacity <= 0)
             return 0;
 
-        int desired = Math.max(1, (int) (concentration * Config.condenseEfficiency * (1 + flowPressure / 64)));
+        int desired = Math.max(1, (int) (concentration * ServerConfig.condenseEfficiency * (1 + flowPressure / 64)));
         int byCapacity = (int) Math.min(desired, availableCapacity);
         return Math.min(byCapacity, drainRemaining);
     }

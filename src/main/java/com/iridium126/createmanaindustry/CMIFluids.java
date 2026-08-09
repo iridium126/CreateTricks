@@ -16,10 +16,8 @@ import net.minecraft.world.item.BucketItem;
 import net.minecraft.world.item.DispensibleContainerItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.DispenserBlock;
-import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.material.MapColor;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.fml.LogicalSide;
@@ -44,6 +42,10 @@ public class CMIFluids {
                     .properties(p -> p.mapColor(MapColor.COLOR_LIGHT_BLUE))
                     // Let the rendered fluid stay full-bright without making the placed liquid emit world light.
                     .properties(p -> p.lightLevel($ -> 0))
+                    // The emissiveRendering flag makes Sodium and the
+                    // shader lightmap treat the fluid as full-bright, while
+                    // remaining purely a render flag (no world light emission).
+                    .properties(p -> p.emissiveRendering((state, level, pos) -> true))
                     .build()
                     .bucket()
                     .model(NonNullBiConsumer.noop())
@@ -171,11 +173,6 @@ public class CMIFluids {
         @Override
         public int getLightLevel() {
             return shouldRenderFullBright() ? FULL_BRIGHT_LIGHT_LEVEL : 0;
-        }
-
-        @Override
-        public int getLightLevel(FluidState state, BlockAndTintGetter getter, BlockPos pos) {
-            return getLightLevel();
         }
 
         @Override

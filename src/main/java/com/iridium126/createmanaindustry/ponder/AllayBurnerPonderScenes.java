@@ -2,7 +2,6 @@ package com.iridium126.createmanaindustry.ponder;
 
 import com.iridium126.createmanaindustry.CMIBlocks;
 import com.iridium126.createmanaindustry.CMIFluids;
-import com.iridium126.createmanaindustry.config.Config;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlock;
 
 import net.createmod.catnip.math.Pointing;
@@ -188,7 +187,7 @@ public class AllayBurnerPonderScenes {
         // billboarded mist volume as a scene element instead. Elements must be
         // registered via an instruction: PonderScene.begin() clears them and
         // replays all instructions on every scene restart.
-        //PonderMistElement mist = new PonderMistElement(BURNER, Config.allayBurnerMistRadius, 0.28f);
+        //PonderMistElement mist = new PonderMistElement(BURNER, ServerConfig.allayBurnerMistRadius, 0.28f);
         //scene.addInstruction(s -> s.addElement(mist));
         scene.idle(5);
 

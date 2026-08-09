@@ -2,7 +2,7 @@ package com.iridium126.createmanaindustry;
 
 import static com.iridium126.createmanaindustry.CreateManaIndustry.REGISTRATE;
 
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.iridium126.createmanaindustry.content.items.IncompleteHexItem;
 import com.iridium126.createmanaindustry.content.items.IncompleteKnotItem;
 import com.iridium126.createmanaindustry.content.items.IncompleteMediaBatteryItem;
@@ -62,22 +62,22 @@ public final class CMIItems {
         }
         if (CreateManaIndustry.HEX_ACTIVE) {
             INCOMPLETE_CYPHER = REGISTRATE.item("incomplete_cypher",
-                    p -> new IncompleteHexItem(p, () -> Config.cypherMaxMedia, hexLoc("cypher")))
+                    p -> new IncompleteHexItem(p, () -> ServerConfig.cypherMaxMedia, hexLoc("cypher")))
                     .properties(p -> p.stacksTo(1))
                     .model(NonNullBiConsumer.noop())
                     .register();
             INCOMPLETE_TRINKET = REGISTRATE.item("incomplete_trinket",
-                    p -> new IncompleteHexItem(p, () -> Config.trinketMaxMedia, hexLoc("trinket")))
+                    p -> new IncompleteHexItem(p, () -> ServerConfig.trinketMaxMedia, hexLoc("trinket")))
                     .properties(p -> p.stacksTo(1))
                     .model(NonNullBiConsumer.noop())
                     .register();
             INCOMPLETE_ARTIFACT = REGISTRATE.item("incomplete_artifact",
-                    p -> new IncompleteHexItem(p, () -> Config.artifactMaxMedia, hexLoc("artifact")))
+                    p -> new IncompleteHexItem(p, () -> ServerConfig.artifactMaxMedia, hexLoc("artifact")))
                     .properties(p -> p.stacksTo(1))
                     .model(NonNullBiConsumer.noop())
                     .register();
             INCOMPLETE_MEDIA_BATTERY = REGISTRATE.item("incomplete_media_battery",
-                    p -> new IncompleteMediaBatteryItem(p, () -> Config.batteryMaxMedia, hexLoc("battery")))
+                    p -> new IncompleteMediaBatteryItem(p, () -> ServerConfig.batteryMaxMedia, hexLoc("battery")))
                     .properties(p -> p.stacksTo(1))
                     .model(NonNullBiConsumer.noop())
                     .register();

@@ -66,23 +66,61 @@
 
 ## 配置
 
-所有配置项均位于通用配置文件（`createmanaindustry-common.toml`）：
+配置按端拆分。游戏数值位于**服务端配置**（`createmanaindustry-server.toml`），会同步给连接进来的客户端，以服务端为准；渲染选项位于**客户端配置**（`createmanaindustry-client.toml`）。
+
+### 服务端 — `createmanaindustry-server.toml`
+
+**fluid** — 流体转换比率：
+
+| 键 | 默认值 | 说明 |
+|---|---|---|
+| `manaPerBucket` | 2048 | 一桶液态魔力所含的魔力值 |
+| `mediaPerBucket` | 400000 | 一桶液态媒质所含的媒质值 |
+| `sourcePerBucket` | 1000 | 一桶液态魔源所含的魔源值 |
+
+**kinetics** — 动能转魔力：
 
 | 键 | 默认值 | 说明 |
 |---|---|---|
 | `manaPerStress` | 0.001 | 每 tick 每应力单位产生的魔力量 |
-| `manaPerBucket` | 2048 | 一桶液态魔力所含的魔力值 |
-| `mediaPerBucket` | 400000 | 一桶液态媒质所含的媒质值 |
-| `mediaConsumedPerTick` | 50 | 悦灵燃烧室燃烧时每 tick 消耗的媒质（决定燃料燃烧时长与"点燃燃烧室"图案的花费） |
 | `kineticStressTrickManaMultiplier` | 2.0 | 临时应力戏法的魔力消耗倍率 |
+
+**mist** — 体积雾场行为：
+
+| 键 | 默认值 | 说明 |
+|---|---|---|
 | `mistMaxRadius` | 16 | 雾化器最大雾场半径（格） |
 | `mistFluidPerTick` | 8 | 256 RPM 时每 tick 的基础流体消耗 |
 | `mistBaseConcentration` | 1.0 | 距离 0 处的雾场浓度 |
 | `condenseEfficiency` | 5.0 | 每浓度单位每 tick 冷凝的基准流体量（mB） |
+
+**allay_burner** — 悦灵燃烧室燃料与雾：
+
+| 键 | 默认值 | 说明 |
+|---|---|---|
+| `mediaConsumedPerTick` | 50 | 燃烧时每 tick 消耗的媒质（决定燃料燃烧时长与"点燃燃烧室"图案的花费） |
+| `allayBurnerMistRadius` | 4 | 液态灵魂雾场半径 |
+| `allayBurnerMistPerTick` | 1 | 每 tick 增加的液态灵魂雾容量 |
+
+**hexcasting** — 未完成物品媒质容量：
+
+| 键 | 默认值 | 说明 |
+|---|---|---|
 | `cypherMaxMedia` | 6400000 | 未完成杂件的最大媒质容量 |
 | `trinketMaxMedia` | 64000000 | 未完成缀品的最大媒质容量 |
 | `artifactMaxMedia` | 640000000 | 未完成造物的最大媒质容量 |
 | `batteryMaxMedia` | 640000000 | 未完成媒质之瓶的最大媒质容量 |
+
+动力学方块的**应力**值（`impact`/`capacity` 两节）也位于该文件。
+
+### 客户端 — `createmanaindustry-client.toml`
+
+**rendering** — 体积雾渲染：
+
+| 键 | 默认值 | 说明 |
+|---|---|---|
+| `mistGlowStrength` | 0.5 | 体积雾发光的全局倍率 |
+| `mistDebugShadow` | false | 调试：以雾色可视化 Tyndall 阴影贴图采样 |
 
 ## 构建
 

@@ -116,23 +116,64 @@ spell-casting item production, and more — all through Create's mechanical syst
 
 ## Configuration
 
-All values are in the common config (`createmanaindustry-common.toml`):
+Configs are split by side. Gameplay values live in the **server config**
+(`createmanaindustry-server.toml`) and are synced to connecting clients, so a
+server's values win for everyone; rendering options live in the **client
+config** (`createmanaindustry-client.toml`).
+
+### Server — `createmanaindustry-server.toml`
+
+**fluid** — fluid conversion ratios:
+
+| Key | Default | Description |
+|---|---|---|
+| `manaPerBucket` | 2048 | Mana in one bucket of Liquid Mana |
+| `mediaPerBucket` | 400000 | Media in one bucket of Liquid Media |
+| `sourcePerBucket` | 1000 | Source in one bucket of Liquid Source |
+
+**kinetics** — kinetic-to-mana conversion:
 
 | Key | Default | Description |
 |---|---|---|
 | `manaPerStress` | 0.001 | Mana per stress unit per tick |
-| `manaPerBucket` | 2048 | Mana in one bucket of Liquid Mana |
-| `mediaPerBucket` | 400000 | Media in one bucket of Liquid Media |
-| `mediaConsumedPerTick` | 50 | Media consumed per tick while the Allay Burner is burning (drives fuel burn duration and the Light Burner spell's cost) |
-| `kineticStressTrickManaMultiplier` | 2.0 | Mana cost multiplier for temporary stress trick |
+| `kineticStressTrickManaMultiplier` | 2.0 | Mana cost multiplier for the temporary stress trick |
+
+**mist** — volumetric mist field behaviour:
+
+| Key | Default | Description |
+|---|---|---|
 | `mistMaxRadius` | 16 | Max atomizer mist radius in blocks |
 | `mistFluidPerTick` | 8 | Base fluid consumption per tick at 256 RPM |
 | `mistBaseConcentration` | 1.0 | Concentration at distance 0 |
 | `condenseEfficiency` | 5.0 | Base mB/tick condensed per concentration unit |
+
+**allay_burner** — Allay Burner fuel and mist:
+
+| Key | Default | Description |
+|---|---|---|
+| `mediaConsumedPerTick` | 50 | Media consumed per tick while burning (drives fuel burn duration and the Light Burner spell's cost) |
+| `allayBurnerMistRadius` | 4 | Radius of the Liquid Soul mist field |
+| `allayBurnerMistPerTick` | 1 | Liquid Soul mist capacity added per tick |
+
+**hexcasting** — incomplete item media capacities:
+
+| Key | Default | Description |
+|---|---|---|
 | `cypherMaxMedia` | 6400000 | Max media for incomplete cyphers |
 | `trinketMaxMedia` | 64000000 | Max media for incomplete trinkets |
 | `artifactMaxMedia` | 640000000 | Max media for incomplete artifacts |
 | `batteryMaxMedia` | 640000000 | Max media for incomplete media batteries |
+
+The kinetic blocks' **stress** values (`impact` / `capacity` sections) also live in this file.
+
+### Client — `createmanaindustry-client.toml`
+
+**rendering** — volumetric mist rendering:
+
+| Key | Default | Description |
+|---|---|---|
+| `mistGlowStrength` | 0.5 | Global multiplier for volumetric mist glow |
+| `mistDebugShadow` | false | DEBUG: visualize Tyndall shadow-map sampling as mist color |
 
 ## Build
 

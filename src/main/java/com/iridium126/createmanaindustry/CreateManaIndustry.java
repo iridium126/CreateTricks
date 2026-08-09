@@ -12,8 +12,8 @@ import com.iridium126.createmanaindustry.compat.hexcasting.circle.SlateKnotInter
 import com.iridium126.createmanaindustry.compat.trickster.CMITricksterIotaRegister;
 import com.samsthenerd.inline.api.InlineAPI;
 import com.iridium126.createmanaindustry.compat.trickster.KineticStressTrickRegister;
-import com.iridium126.createmanaindustry.config.CMIStress;
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ClientConfig;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlock;
 import com.simibubi.create.api.stress.BlockStressValues;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlockEntity;
@@ -33,7 +33,6 @@ import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
-import net.neoforged.neoforge.common.ModConfigSpec;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
@@ -112,13 +111,15 @@ public class CreateManaIndustry {
             CircleSlateManaPool.ensureTypeRegistered();
         }
 
-        ModConfigSpec.Builder stressBuilder = new ModConfigSpec.Builder();
-        CMIStress.INSTANCE.registerAll(stressBuilder);
-        modContainer.registerConfig(ModConfig.Type.SERVER, stressBuilder.build());
-        BlockStressValues.IMPACTS.registerProvider(CMIStress.INSTANCE::getImpact);
-        BlockStressValues.CAPACITIES.registerProvider(CMIStress.INSTANCE::getCapacity);
+        // Server-authoritative gameplay + stress config (synced to clients), and
+        // the client-only rendering config. ServerConfig.build() must run after
+        // block registration so the stress defaults are populated.
+        ServerConfig.build();
+        modContainer.registerConfig(ModConfig.Type.SERVER, ServerConfig.SPEC);
+        BlockStressValues.IMPACTS.registerProvider(ServerConfig::getImpact);
+        BlockStressValues.CAPACITIES.registerProvider(ServerConfig::getCapacity);
 
-        modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+        modContainer.registerConfig(ModConfig.Type.CLIENT, ClientConfig.SPEC);
     }
 
     public static ResourceLocation modLoc(String path) {

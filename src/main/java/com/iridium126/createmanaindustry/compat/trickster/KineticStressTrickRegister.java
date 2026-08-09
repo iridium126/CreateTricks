@@ -3,7 +3,7 @@ package com.iridium126.createmanaindustry.compat.trickster;
 import java.util.List;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.iridium126.createmanaindustry.content.kinetics.TemporaryStress;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 
@@ -94,8 +94,8 @@ public final class KineticStressTrickRegister {
             if (!(be instanceof KineticBlockEntity kinetic))
                 throw new InvalidKineticTargetBlunder(trick, pos);
 
-            double manaCost = Config.manaPerStress * stressMagnitude * durationTicks
-                    * Config.kineticStressTrickManaMultiplier;
+            double manaCost = ServerConfig.manaPerStress * stressMagnitude * durationTicks
+                    * ServerConfig.kineticStressTrickManaMultiplier;
             TricksterManaAccess.useTraditionalMana(ctx, trick, manaCost);
 
             float speed = (float) speedInput;

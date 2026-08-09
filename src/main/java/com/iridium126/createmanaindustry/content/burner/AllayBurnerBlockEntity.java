@@ -10,7 +10,7 @@ import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistSync;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore;
 import com.iridium126.createmanaindustry.compat.hexcasting.HexCompat;
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
 import com.simibubi.create.content.fluids.tank.FluidTankBlock;
 import com.simibubi.create.content.processing.basin.BasinBlock;
@@ -66,7 +66,7 @@ import net.neoforged.neoforge.fluids.capability.IFluidHandler;
  * consumed when the burn time has run out. Fuel/overfill logic mirrors
  * Create's {@link BlazeBurnerBlockEntity} (INSERTION_THRESHOLD semantics;
  * overflow is uncapped — players may keep adding fuel indefinitely). Burn
- * durations derive from {@code Config.mediaConsumedPerTick} media consumed
+ * durations derive from {@code ServerConfig.mediaConsumedPerTick} media consumed
  * per tick.
  */
 public class AllayBurnerBlockEntity extends SmartBlockEntity
@@ -143,7 +143,7 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity
         // on the same tick fuel is applied and off the tick it runs out.
         boolean burning = getHeatLevel() == AllayBurnerBlock.HeatLevel.ALLAYHEATED;
         if (burning) {
-            int radius = Config.allayBurnerMistRadius;
+            int radius = ServerConfig.allayBurnerMistRadius;
             if (!wasActive) {
                 MistFieldStore.setActive(level, worldPosition, true, radius,
                         new FluidStack(CMIFluids.LIQUID_SOUL.get(), 1));
@@ -155,7 +155,7 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity
                 currentRadius = radius;
                 sendData();
             }
-            MistFieldStore.addCapacity(level, worldPosition, Config.allayBurnerMistPerTick);
+            MistFieldStore.addCapacity(level, worldPosition, ServerConfig.allayBurnerMistPerTick);
         } else if (wasActive) {
             MistFieldStore.setActive(level, worldPosition, false, 0);
             wasActive = false;
@@ -475,12 +475,12 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity
      * bucket burns 8000 ticks.
      */
     protected int liquidBurnTicksPerMb() {
-        long mediaPerMb = Math.max(1, Config.mediaPerBucket / 1000L);
-        return (int) Math.max(1, mediaPerMb / Config.mediaConsumedPerTick);
+        long mediaPerMb = Math.max(1, ServerConfig.mediaPerBucket / 1000L);
+        return (int) Math.max(1, mediaPerMb / ServerConfig.mediaConsumedPerTick);
     }
 
     protected int burnTicksForMedia(long media) {
-        return (int) Math.max(1, media / Config.mediaConsumedPerTick);
+        return (int) Math.max(1, media / ServerConfig.mediaConsumedPerTick);
     }
 
     protected long getMediaAmount(Item item) {

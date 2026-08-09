@@ -18,7 +18,7 @@ import net.neoforged.neoforge.fluids.capability.IFluidHandler;
  *   <li>Draining converts source units back into Liquid Source fluid,
  *       removing the equivalent source from the jar.</li>
  * </ul>
- * Conversion uses {@code Config.sourcePerBucket} at runtime so the ratio
+ * Conversion uses {@code ServerConfig.sourcePerBucket} at runtime so the ratio
  * updates immediately when the config changes.
  * <p>
  * This class must <b>only</b> be accessed when

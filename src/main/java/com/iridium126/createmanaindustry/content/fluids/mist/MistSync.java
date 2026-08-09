@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 
 import net.minecraft.core.BlockPos;
 import net.neoforged.neoforge.fluids.FluidStack;
@@ -51,9 +51,9 @@ public final class MistSync {
         notifyCallbacks(pos, fluid, radius);
     }
 
-    /** Backward-compatible overload — defaults radius to {@code Config.mistMaxRadius}. */
+    /** Backward-compatible overload — defaults radius to {@code ServerConfig.mistMaxRadius}. */
     public static void notifyClientSync(BlockPos pos, FluidStack fluid) {
-        notifyCallbacks(pos, fluid, Config.mistMaxRadius);
+        notifyCallbacks(pos, fluid, ServerConfig.mistMaxRadius);
     }
 
     private static void notifyCallbacks(BlockPos pos, FluidStack fluid, int radius) {

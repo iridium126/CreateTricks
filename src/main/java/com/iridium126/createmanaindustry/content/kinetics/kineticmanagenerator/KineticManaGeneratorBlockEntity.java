@@ -4,7 +4,7 @@ import java.util.List;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.compat.trickster.TricksterManaAccess;
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.simibubi.create.content.kinetics.simpleRelays.SimpleKineticBlockEntity;
 import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour;
 import com.simibubi.create.foundation.blockEntity.behaviour.scrollValue.ScrollValueBehaviour;
@@ -66,7 +66,7 @@ public class KineticManaGeneratorBlockEntity extends SimpleKineticBlockEntity {
         if (stressConsumed <= 0)
             return;
 
-        float mana = (float) (stressConsumed * Config.manaPerStress);
+        float mana = (float) (stressConsumed * ServerConfig.manaPerStress);
         if (mana <= 0)
             return;
 

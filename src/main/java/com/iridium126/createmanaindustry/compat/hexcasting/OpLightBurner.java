@@ -2,7 +2,7 @@ package com.iridium126.createmanaindustry.compat.hexcasting;
 
 import java.util.List;
 
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlock;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlockEntity;
 import com.iridium126.createmanaindustry.mixin.burner.BlazeBurnerBlockEntityAccessor;
@@ -74,7 +74,7 @@ public class OpLightBurner implements SpellAction {
         int ticks = Math.max(1, (int) (doubleIota.getDouble() * 20.0));
         // Media is charged per second at the Allay Burner's burn rate, so the
         // spell is economically equivalent to pouring in fuel.
-        long cost = Config.mediaConsumedPerTick * ticks;
+        long cost = ServerConfig.mediaConsumedPerTick * ticks;
 
         BlockState state = env.getWorld().getBlockState(pos);
         BlockEntity be = env.getWorld().getBlockEntity(pos);

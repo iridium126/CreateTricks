@@ -8,7 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.CMIFluids;
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ClientConfig;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistSync;
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.math.Axis;
@@ -373,7 +373,7 @@ public final class MistClientHandler {
                 // media 10, water 0), scaled by the global config multiplier.
                 int lightLevel = fluid.getFluidType().getLightLevel(new FluidStack(fluid, 1));
                 paletteData[i * 4 + 3] = (float) Math.min(1.0, lightLevel / 15.0)
-                        * (float) Config.mistGlowStrength;
+                        * (float) ClientConfig.mistGlowStrength;
                 paletteCount++;
                 return i;
             });

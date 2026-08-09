@@ -24,7 +24,7 @@ import com.simibubi.create.foundation.data.CreateRegistrate;
 import com.simibubi.create.foundation.data.ModelGen;
 import com.simibubi.create.foundation.data.SharedProperties;
 import com.simibubi.create.foundation.data.TagGen;
-import com.iridium126.createmanaindustry.config.CMIStress;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.tterrag.registrate.providers.RegistrateRecipeProvider;
 import com.tterrag.registrate.util.entry.BlockEntry;
 import com.tterrag.registrate.util.entry.ItemEntry;
@@ -80,7 +80,7 @@ public final class CMIBlocks {
                 .mapColor(MapColor.COLOR_YELLOW))
             .blockstate(BlockStateGen.directionalBlockProvider(true))
             .transform(TagGen.pickaxeOnly())
-            .transform(CMIStress.setImpact(4.0))
+            .transform(ServerConfig.setImpact(4.0))
             .item()
             .transform(ModelGen.customItemModel())
             .recipe((c, p) -> {
@@ -209,7 +209,7 @@ public final class CMIBlocks {
             .block("mana_cogwheel", ManaCogwheelBlock::new)
             .initialProperties(() -> Blocks.IRON_BLOCK)
             .properties(p -> p.mapColor(MapColor.COLOR_LIGHT_BLUE))
-            .transform(CMIStress.setCapacity(8.0))
+            .transform(ServerConfig.setCapacity(8.0))
             .transform(TagGen.axeOrPickaxe())
             .blockstate(BlockStateGen.axisBlockProvider(false))
             .onRegister(CreateRegistrate.blockModel(() -> BracketedKineticBlockModel::new))
@@ -230,7 +230,7 @@ public final class CMIBlocks {
             .initialProperties(() -> Blocks.IRON_BLOCK)
             .properties(p -> p.noOcclusion().mapColor(MapColor.PODZOL))
             .blockstate((c, p) -> {})
-            .transform(CMIStress.setNoImpact())
+            .transform(ServerConfig.setNoImpact())
             .transform(EncasingRegistry.addVariantTo(CMIBlocks.MANA_COGWHEEL))
             .loot((p, lb) -> p.dropOther(lb, CMIBlocks.MANA_COGWHEEL.get()))
             .transform(TagGen.axeOrPickaxe())
@@ -242,7 +242,7 @@ public final class CMIBlocks {
             .initialProperties(() -> Blocks.IRON_BLOCK)
             .properties(p -> p.noOcclusion().mapColor(MapColor.TERRACOTTA_BROWN))
             .blockstate((c, p) -> {})
-            .transform(CMIStress.setNoImpact())
+            .transform(ServerConfig.setNoImpact())
             .transform(EncasingRegistry.addVariantTo(CMIBlocks.MANA_COGWHEEL))
             .loot((p, lb) -> p.dropOther(lb, CMIBlocks.MANA_COGWHEEL.get()))
             .transform(TagGen.axeOrPickaxe())

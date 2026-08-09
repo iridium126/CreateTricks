@@ -2,7 +2,7 @@ package com.iridium126.createmanaindustry.content.kinetics.kineticatomizer;
 
 import java.util.List;
 
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistSync;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
@@ -143,7 +143,7 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
             currentRadius = newRadius;
 
             float speedFactor = absSpeed / 256f;
-            int toConsume = Math.max(1, (int) (Config.mistFluidPerTick * speedFactor));
+            int toConsume = Math.max(1, (int) (ServerConfig.mistFluidPerTick * speedFactor));
             FluidStack drained = tank.drain(toConsume, IFluidHandler.FluidAction.EXECUTE);
             if (!drained.isEmpty())
                 MistFieldStore.addCapacity(level, worldPosition, drained.getAmount());
@@ -156,7 +156,7 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
     }
 
     private int computeRadius(float absSpeed) {
-        return Math.max(1, Math.round(absSpeed * Config.mistMaxRadius / 256f));
+        return Math.max(1, Math.round(absSpeed * ServerConfig.mistMaxRadius / 256f));
     }
 
     @Override

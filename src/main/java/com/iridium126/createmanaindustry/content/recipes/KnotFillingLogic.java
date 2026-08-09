@@ -6,7 +6,7 @@ import com.iridium126.createmanaindustry.CMIComponents;
 import com.iridium126.createmanaindustry.CMIFluids;
 import com.iridium126.createmanaindustry.CMIItems;
 import com.iridium126.createmanaindustry.compat.trickster.TricksterManaAccess;
-import com.iridium126.createmanaindustry.config.Config;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.iridium126.createmanaindustry.content.fluids.CMIFluidConversions;
 
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -68,7 +68,7 @@ public final class KnotFillingLogic {
         if (remaining <= 0)
             return -1;
 
-        float toAdd = Math.min(remaining, Config.manaPerBucket);
+        float toAdd = Math.min(remaining, ServerConfig.manaPerBucket);
         return CMIFluidConversions.manaToFluidAmount(toAdd);
     }
 
@@ -92,7 +92,7 @@ public final class KnotFillingLogic {
         if (remaining <= 0)
             return ItemStack.EMPTY;
 
-        float toAdd = Math.min(remaining, Config.manaPerBucket);
+        float toAdd = Math.min(remaining, ServerConfig.manaPerBucket);
         float newProgress = currentProgress + toAdd;
 
         if (newProgress >= entry.resolvedCreationCost) {

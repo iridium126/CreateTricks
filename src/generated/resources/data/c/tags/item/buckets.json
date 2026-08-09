@@ -4,6 +4,7 @@
     "createmanaindustry:liquid_media_bucket",
     "createmanaindustry:liquid_source_bucket",
     "createmanaindustry:liquid_soul_bucket",
-    "createmanaindustry:coolant_bucket"
+    "createmanaindustry:coolant_bucket",
+    "createmanaindustry:molten_rose_quartz_bucket"
   ]
 }

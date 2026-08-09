@@ -33,7 +33,8 @@
     "bnb.PlacingCogwheelChainMixin",
     "bnb.PlaceCogwheelChainPacketMixin",
     "bnb.KineticBlockEntityChainStressMixin",
-    "vanilla.BaseSpawnerAccessor"
+    "vanilla.BaseSpawnerAccessor",
+    "vanilla.EntityIsInLavaMixin"
   ],
   "client": [
     "render.CachedBuffersMixin",

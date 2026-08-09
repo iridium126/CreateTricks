@@ -13,6 +13,7 @@
   "block.createmanaindustry.liquid_soul": "ןnoS pınbıꞀ",
   "block.createmanaindustry.liquid_source": "ǝɔɹnoS pınbıꞀ",
   "block.createmanaindustry.mana_cogwheel": "ןǝǝɥʍboƆ ɐuɐW",
+  "block.createmanaindustry.molten_rose_quartz": "zʇɹɐnὉ ǝsoᴚ uǝʇןoW",
   "block.createmanaindustry.oxidized_condenser": "ɹǝsuǝpuoƆ pǝzıpıxO",
   "block.createmanaindustry.waxed_condenser": "ɹǝsuǝpuoƆ pǝxɐM",
   "block.createmanaindustry.waxed_exposed_condenser": "ɹǝsuǝpuoƆ pǝsodxƎ pǝxɐM",
@@ -23,6 +24,7 @@
   "fluid.createmanaindustry.liquid_media": "ɐıpǝW pınbıꞀ",
   "fluid.createmanaindustry.liquid_soul": "ןnoS pınbıꞀ",
   "fluid.createmanaindustry.liquid_source": "ǝɔɹnoS pınbıꞀ",
+  "fluid.createmanaindustry.molten_rose_quartz": "zʇɹɐnὉ ǝsoᴚ uǝʇןoW",
   "item.createmanaindustry.coolant_bucket": "ʇǝʞɔnᗺ ʇuɐןooƆ",
   "item.createmanaindustry.empty_allay_burner": "ɹǝuɹnᗺ ʎɐןןⱯ ʎʇdɯƎ",
   "item.createmanaindustry.incomplete_artifact": "ʇɔɐɟıʇɹⱯ ǝʇǝןdɯoɔuI",
@@ -38,5 +40,6 @@
   "item.createmanaindustry.liquid_mana_bucket": "ʇǝʞɔnᗺ ɐuɐW pınbıꞀ",
   "item.createmanaindustry.liquid_media_bucket": "ʇǝʞɔnᗺ ɐıpǝW pınbıꞀ",
   "item.createmanaindustry.liquid_soul_bucket": "ʇǝʞɔnᗺ ןnoS pınbıꞀ",
-  "item.createmanaindustry.liquid_source_bucket": "ʇǝʞɔnᗺ ǝɔɹnoS pınbıꞀ"
+  "item.createmanaindustry.liquid_source_bucket": "ʇǝʞɔnᗺ ǝɔɹnoS pınbıꞀ",
+  "item.createmanaindustry.molten_rose_quartz_bucket": "ʇǝʞɔnᗺ zʇɹɐnὉ ǝsoᴚ uǝʇןoW"
 }

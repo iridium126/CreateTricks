@@ -243,13 +243,25 @@ dependencies {
     // The raw fabric-api artifact is intermediary-mapped; use the loom-remap
     // export (Mojang-mapped, same as namedTrickster) so fabric types resolve
     // with Mojang signatures.
-    compileOnly(project(path: ":loom-remap", configuration: "namedFabricApi"))
+    //
+    // Prefer the vendored named jars (loom-remap/remapped-libs/) when present so
+    // the :loom-remap subproject is skipped — no Minecraft download / re-remap on
+    // every build. Pass -PregenerateRemap (or delete the vendored jars) to re-remap
+    // through the subproject.
+    def namedTricksterJar = project.file("loom-remap/remapped-libs/trickster-${trickster_project_id}-${trickster_file_id}-named.jar")
+    def namedFabricApiJar = project.file("loom-remap/remapped-libs/fabric-api-${fabric_api_version}-named.jar")
+    boolean useVendoredNamedJars = !project.hasProperty("regenerateRemap")
+            && namedTricksterJar.exists() && namedFabricApiJar.exists()
+    if (useVendoredNamedJars) {
+        compileOnly files(namedTricksterJar, namedFabricApiJar)
+    } else {
+        compileOnly(project(path: ":loom-remap", configuration: "namedFabricApi"))
+        compileOnly(project(path: ":loom-remap", configuration: "namedTrickster"))
+    }
     compileOnly "io.vavr:vavr:0.10.4"
     // Endec API for custom FragmentType endecs (runtime endec is bundled in owo-lib, required by trickster)
     compileOnly "io.wispforest:endec:0.1.5.1"
-    // Compile against the Loom-exported Mojang-mapped jar, but load the original Fabric jar at runtime.
-    compileOnly(project(path: ":loom-remap", configuration: "namedTrickster"))
-    localRuntime "curse.maven:trickster-1137971:8324614"
+    localRuntime "curse.maven:trickster-${trickster_project_id}:${trickster_file_id}"
     runtimeOnly "curse.maven:cicada-989574:7068950"
     runtimeOnly "curse.maven:lavender-api-962916:6107175"
     runtimeOnly "curse.maven:cardinal-components-api-318449:7250871"

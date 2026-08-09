@@ -31,14 +31,16 @@ dependencies {
     mappings loom.officialMojangMappings()
 
     modImplementation "net.fabricmc:fabric-loader:0.16.14"
-    modImplementation "curse.maven:trickster-1137971:8324614"
-    modImplementation "net.fabricmc.fabric-api:fabric-api:0.102.0+1.21.1"
+    modImplementation "curse.maven:trickster-${trickster_project_id}:${trickster_file_id}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
     implementation "io.vavr:vavr:0.10.4"
 }
 
-def exportedDir = layout.buildDirectory.dir("remapped-libs")
-def exportedJar = layout.buildDirectory.file("remapped-libs/trickster-1137971-8324614-named.jar")
-def mergedFabricApiJar = layout.buildDirectory.file("remapped-libs/fabric-api-0.102.0+1.21.1-named.jar")
+// Export into a stable dir outside build/ so the named jars survive `clean`
+// and the root project can consume them without evaluating this subproject.
+def exportedDir = layout.projectDirectory.dir("remapped-libs")
+def exportedJar = layout.projectDirectory.file("remapped-libs/trickster-${trickster_project_id}-${trickster_file_id}-named.jar")
+def mergedFabricApiJar = layout.projectDirectory.file("remapped-libs/fabric-api-${fabric_api_version}-named.jar")
 
 tasks.register("exportTricksterNamedJar", Copy) {
     dependsOn configurations.compileClasspath
@@ -54,7 +56,7 @@ tasks.register("exportTricksterNamedJar", Copy) {
     })
 
     into(exportedDir)
-    rename { "trickster-1137971-8324614-named.jar" }
+    rename { "trickster-${trickster_project_id}-${trickster_file_id}-named.jar" }
 }
 
 // The fabric-api bundler jar does not include every module (e.g.
@@ -75,7 +77,7 @@ tasks.register("mergeFabricApiNamedJar", Zip) {
         matches.collect { zipTree(it) }
     })
 
-    archiveFileName = "fabric-api-0.102.0+1.21.1-named.jar"
+    archiveFileName = "fabric-api-${fabric_api_version}-named.jar"
     destinationDirectory = exportedDir
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }

@@ -18,4 +18,15 @@ plugins {
     id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
 }
 
-include("loom-remap")
+def tricksterProjectId = providers.gradleProperty("trickster_project_id").get()
+def tricksterFileId = providers.gradleProperty("trickster_file_id").get()
+def remappedTrickster = file("loom-remap/remapped-libs/trickster-${tricksterProjectId}-${tricksterFileId}-named.jar")
+
+// Only include the Loom remap subproject when its remapped named jars are
+// missing or a regeneration was explicitly requested (-PregenerateRemap).
+// Evaluating the subproject downloads the Minecraft jar and re-remaps
+// Trickster / fabric-api on every build, so skip it when the vendored jars
+// in loom-remap/remapped-libs/ are already present.
+if (gradle.startParameter.projectProperties.containsKey("regenerateRemap") || !remappedTrickster.exists()) {
+    include("loom-remap")
+}

@@ -2,6 +2,7 @@ package com.iridium126.createmanaindustry.content.kinetics.kineticatomizer;
 
 import java.util.List;
 
+import com.iridium126.createmanaindustry.CMIFluids;
 import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistSync;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore;
@@ -27,7 +28,11 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
     private final FluidTank tank = new FluidTank(TANK_CAPACITY) {
         @Override
         public boolean isFluidValid(FluidStack stack) {
-            return !stack.is(FluidTags.LAVA);
+            // Molten Rose Quartz is never atomized — its mist comes only from
+            // recipe byproducts (vapor deposition), never from spraying.
+            return !stack.is(FluidTags.LAVA)
+                    && !stack.is(CMIFluids.MOLTEN_ROSE_QUARTZ.get())
+                    && !stack.is(CMIFluids.MOLTEN_ROSE_QUARTZ.get().getSource());
         }
 
         @Override

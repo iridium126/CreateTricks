@@ -4,6 +4,8 @@ import static com.iridium126.createmanaindustry.CreateManaIndustry.REGISTRATE;
 
 import java.util.function.Consumer;
 
+import com.iridium126.createmanaindustry.content.fluids.MoltenRoseQuartzFluid;
+import com.iridium126.createmanaindustry.content.fluids.MoltenRoseQuartzFluidType;
 import com.tterrag.registrate.util.entry.FluidEntry;
 import com.tterrag.registrate.util.nullness.NonNullBiConsumer;
 
@@ -12,6 +14,7 @@ import net.minecraft.core.dispenser.BlockSource;
 import net.minecraft.core.dispenser.DefaultDispenseItemBehavior;
 import net.minecraft.core.dispenser.DispenseItemBehavior;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.item.BucketItem;
 import net.minecraft.world.item.DispensibleContainerItem;
 import net.minecraft.world.item.ItemStack;
@@ -19,11 +22,13 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.DispenserBlock;
 import net.minecraft.world.level.material.MapColor;
+import net.minecraft.world.level.pathfinder.PathType;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.fml.LogicalSide;
 import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.fml.util.thread.EffectiveSide;
 import net.neoforged.neoforge.client.extensions.common.IClientFluidTypeExtensions;
+import net.neoforged.neoforge.common.SoundActions;
 import net.neoforged.neoforge.common.Tags;
 import net.neoforged.neoforge.fluids.BaseFlowingFluid;
 import net.neoforged.neoforge.fluids.FluidStack;
@@ -119,6 +124,35 @@ public class CMIFluids {
                     .properties(p -> p.mapColor(MapColor.ICE))
                     .build()
                     .bucket()
+                    .onRegister(CMIFluids::registerFluidDispenseBehavior)
+                    .tag(Tags.Items.BUCKETS)
+                    .build()
+                    .register();
+
+    /**
+     * Molten Rose Quartz — strictly mirrors lava: emissive block (light 15),
+     * lava particle/sound ambience, dense viscous movement, player damage via
+     * {@code EntityIsInLavaMixin}. Carved-out exceptions (no fire spread, no
+     * water→stone, no infinite source) live in {@link MoltenRoseQuartzFluid}.
+     */
+    public static final FluidEntry<MoltenRoseQuartzFluid.Flowing> MOLTEN_ROSE_QUARTZ =
+            REGISTRATE.fluid("molten_rose_quartz",
+                    CreateManaIndustry.modLoc("fluid/molten_rose_quartz_still"),
+                    CreateManaIndustry.modLoc("fluid/molten_rose_quartz_flow"),
+                    MoltenRoseQuartzFluidType::new,
+                    MoltenRoseQuartzFluid.Flowing::new)
+                    .properties(b -> b.lightLevel(15).density(3000).viscosity(6000).temperature(1300)
+                            .canSwim(false).canDrown(false)
+                            .pathType(PathType.LAVA)
+                            .sound(SoundActions.BUCKET_FILL, SoundEvents.BUCKET_FILL_LAVA)
+                            .sound(SoundActions.BUCKET_EMPTY, SoundEvents.BUCKET_EMPTY_LAVA))
+                    .fluidProperties(p -> p.levelDecreasePerBlock(2).explosionResistance(100f))
+                    .source(MoltenRoseQuartzFluid.Source::new)
+                    .block()
+                    .properties(p -> p.mapColor(MapColor.COLOR_PINK))
+                    .build()
+                    .bucket()
+                    .model(NonNullBiConsumer.noop())
                     .onRegister(CMIFluids::registerFluidDispenseBehavior)
                     .tag(Tags.Items.BUCKETS)
                     .build()

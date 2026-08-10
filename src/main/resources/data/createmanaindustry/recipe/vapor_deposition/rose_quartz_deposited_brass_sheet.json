@@ -1,5 +1,6 @@
 {
   "type": "createmanaindustry:vapor_deposition",
+  "heat_requirement": "heated",
   "mist_requirement": {
     "fluid": "createmanaindustry:molten_rose_quartz",
     "min_concentration": 0.1,

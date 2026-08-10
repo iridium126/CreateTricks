@@ -13,6 +13,6 @@
     { "item": "minecraft:redstone" }
   ],
   "results": [
-    { "id": "createmanaindustry:molten_rose_quartz", "amount": 125 }
+    { "id": "createmanaindustry:molten_rose_quartz", "amount": 250 }
   ]
 }

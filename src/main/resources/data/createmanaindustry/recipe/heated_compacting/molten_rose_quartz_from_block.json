@@ -1,0 +1,10 @@
+{
+  "type": "createmanaindustry:heated_compacting",
+  "heat_requirement": "superheated",
+  "ingredients": [
+    { "item": "create:rose_quartz_block" }
+  ],
+  "results": [
+    { "id": "createmanaindustry:molten_rose_quartz", "amount": 125 }
+  ]
+}

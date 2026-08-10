@@ -6,7 +6,7 @@
       "item": "minecraft:amethyst_block"
     },
     "S": {
-      "item": "create:iron_sheet"
+      "item": "createmanaindustry:amethyst_deposited_iron_sheet"
     }
   },
   "pattern": [

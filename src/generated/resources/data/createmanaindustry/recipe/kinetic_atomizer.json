@@ -3,23 +3,23 @@
   "category": "misc",
   "key": {
     "B": {
-      "item": "create:brass_ingot"
+      "item": "create:brass_block"
     },
     "C": {
       "item": "create:cogwheel"
-    },
-    "I": {
-      "item": "minecraft:copper_ingot"
     },
     "L": {
       "item": "createmanaindustry:liquid_mana_bucket"
     },
     "P": {
       "item": "create:fluid_pipe"
+    },
+    "S": {
+      "item": "create:copper_sheet"
     }
   },
   "pattern": [
-    " I ",
+    " S ",
     "LCL",
     "BPB"
   ],

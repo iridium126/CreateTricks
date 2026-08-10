@@ -14,6 +14,7 @@ import com.iridium126.createmanaindustry.compat.jei.category.HeatedCompactingCat
 import com.iridium126.createmanaindustry.compat.jei.category.MistCompactingCategory;
 import com.iridium126.createmanaindustry.compat.jei.category.MistMixingCategory;
 import com.iridium126.createmanaindustry.compat.jei.category.VaporDepositionCategory;
+import com.iridium126.createmanaindustry.compat.jei.category.VaporizingCategory;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.compat.jei.DoubleItemIcon;
 import com.simibubi.create.compat.jei.EmptyBackground;
@@ -53,6 +54,9 @@ public class CMIJEIPlugin implements IModPlugin {
 
     public static final RecipeType<RecipeHolder<BasinRecipe>> VAPOR_DEPOSITION_TYPE =
             RecipeType.createRecipeHolderType(CreateManaIndustry.modLoc("vapor_deposition"));
+
+    public static final RecipeType<RecipeHolder<BasinRecipe>> VAPORIZING_TYPE =
+            RecipeType.createRecipeHolderType(CreateManaIndustry.modLoc("vaporizing"));
 
     private final List<CreateRecipeCategory<BasinRecipe>> allCategories = new ArrayList<>();
 
@@ -153,6 +157,28 @@ public class CMIJEIPlugin implements IModPlugin {
             allCategories.add(new VaporDepositionCategory(info));
         }
 
+        // Vaporizing
+        {
+            IDrawable icon = new DoubleItemIcon(
+                    () -> new ItemStack(AllBlocks.BASIN.get()),
+                    () -> new ItemStack(AllBlocks.FRAMED_GLASS_TRAPDOOR.get()));
+            IDrawable background = new EmptyBackground(177, 103);
+            List<RecipeHolder<BasinRecipe>> recipes = new ArrayList<>();
+            List<java.util.function.Supplier<? extends ItemStack>> catalysts = new ArrayList<>();
+            catalysts.add(() -> new ItemStack(AllBlocks.FRAMED_GLASS_TRAPDOOR.get()));
+            catalysts.add(() -> new ItemStack(AllBlocks.BASIN.get()));
+            catalysts.add(() -> new ItemStack(CMIBlocks.KINETIC_ATOMIZER.get()));
+
+            var info = new CreateRecipeCategory.Info<>(
+                    VAPORIZING_TYPE,
+                    Component.translatable("createmanaindustry.recipe.vaporizing"),
+                    background,
+                    icon,
+                    () -> recipes,
+                    catalysts);
+            allCategories.add(new VaporizingCategory(info));
+        }
+
         registration.addRecipeCategories(allCategories.toArray(IRecipeCategory[]::new));
     }
 
@@ -184,6 +210,11 @@ public class CMIJEIPlugin implements IModPlugin {
                 .getAllRecipesFor((net.minecraft.world.item.crafting.RecipeType) CMIRecipeTypes.VAPOR_DEPOSITION.getType());
         if (!vaporDeposition.isEmpty())
             registration.addRecipes(VAPOR_DEPOSITION_TYPE, vaporDeposition);
+
+        List<RecipeHolder<BasinRecipe>> vaporizing = (List) recipeManager
+                .getAllRecipesFor((net.minecraft.world.item.crafting.RecipeType) CMIRecipeTypes.VAPORIZING.getType());
+        if (!vaporizing.isEmpty())
+            registration.addRecipes(VAPORIZING_TYPE, vaporizing);
     }
 
     @Override
@@ -193,13 +224,14 @@ public class CMIJEIPlugin implements IModPlugin {
         registration.addRecipeCatalyst(new ItemStack(AllBlocks.MECHANICAL_PRESS.get()),
                 HEATED_COMPACTING_TYPE, MIST_COMPACTING_TYPE);
         registration.addRecipeCatalyst(new ItemStack(AllBlocks.FRAMED_GLASS_TRAPDOOR.get()),
-                VAPOR_DEPOSITION_TYPE);
+                VAPOR_DEPOSITION_TYPE, VAPORIZING_TYPE);
         registration.addRecipeCatalyst(new ItemStack(AllBlocks.BASIN.get()),
-                HEATED_COMPACTING_TYPE, MIST_COMPACTING_TYPE, MIST_MIXING_TYPE, VAPOR_DEPOSITION_TYPE);
+                HEATED_COMPACTING_TYPE, MIST_COMPACTING_TYPE, MIST_MIXING_TYPE, VAPOR_DEPOSITION_TYPE,
+                VAPORIZING_TYPE);
         registration.addRecipeCatalyst(new ItemStack(AllBlocks.BLAZE_BURNER.get()),
                 HEATED_COMPACTING_TYPE);
         registration.addRecipeCatalyst(new ItemStack(CMIBlocks.KINETIC_ATOMIZER.get()),
-                MIST_COMPACTING_TYPE, MIST_MIXING_TYPE, VAPOR_DEPOSITION_TYPE);
+                MIST_COMPACTING_TYPE, MIST_MIXING_TYPE, VAPOR_DEPOSITION_TYPE, VAPORIZING_TYPE);
     }
 
 }

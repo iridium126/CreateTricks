@@ -6,7 +6,7 @@ import java.util.Optional;
 
 import javax.annotation.ParametersAreNonnullByDefault;
 
-import com.iridium126.createmanaindustry.compat.jei.VaporDepositionStationElement;
+import com.iridium126.createmanaindustry.compat.jei.VaporizingStationElement;
 import com.iridium126.createmanaindustry.content.recipes.MistOutput;
 import com.iridium126.createmanaindustry.content.recipes.MistRecipe;
 import com.iridium126.createmanaindustry.content.recipes.MistRequirement;
@@ -21,16 +21,16 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.material.Fluid;
 
 /**
- * JEI category for {@code vapor_deposition} recipes. The recipe runs in a basin
- * sealed by a closed framed-glass trapdoor — the station drawn here is the
- * deposition lid resting on the basin.
+ * JEI category for {@code vaporizing} recipes. The recipe runs in a basin under
+ * an OPEN framed-glass trapdoor — the station drawn here is the deposition lid
+ * standing open on the basin.
  */
 @ParametersAreNonnullByDefault
-public class VaporDepositionCategory extends CMIHeatedBasinCategory {
+public class VaporizingCategory extends CMIHeatedBasinCategory {
 
-    private final VaporDepositionStationElement station = new VaporDepositionStationElement();
+    private final VaporizingStationElement station = new VaporizingStationElement();
 
-    public VaporDepositionCategory(CreateRecipeCategory.Info<BasinRecipe> info) {
+    public VaporizingCategory(CreateRecipeCategory.Info<BasinRecipe> info) {
         super(info);
     }
 
@@ -73,7 +73,7 @@ public class VaporDepositionCategory extends CMIHeatedBasinCategory {
                     output.amount(), output.radius(), output.duration()));
             }
         }
-        tooltips.add(Component.translatable("createmanaindustry.jei.vapor_deposition.sealed"));
+        tooltips.add(Component.translatable("createmanaindustry.jei.vaporizing.open"));
         return tooltips;
     }
 

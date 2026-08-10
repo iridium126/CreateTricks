@@ -6,10 +6,12 @@
   "createmanaindustry.recipe.mist_compacting": "Mist Compacting",
   "createmanaindustry.recipe.mist_mixing": "Mist Mixing",
   "createmanaindustry.recipe.vapor_deposition": "Vapor Deposition",
+  "createmanaindustry.recipe.vaporizing": "Vaporizing",
   "createmanaindustry.jei.mist_requirement": "Requires mist of %1$s (≥ %2$s)",
   "createmanaindustry.jei.mist_requirement_amount": "Requires mist of %1$s (≥ %2$s); consumes %3$s mB per recipe",
   "createmanaindustry.jei.mist_output": "Emits mist of %1$s %2$s mB (radius: %3$s, duration: %4$s ticks)",
   "createmanaindustry.jei.vapor_deposition.sealed": "Place a closed Framed Glass Trapdoor on the Basin to seal it",
+  "createmanaindustry.jei.vaporizing.open": "Place an open Framed Glass Trapdoor on the Basin",
 
   "createmanaindustry.configuration.title": "Create: Mana Industry",
   "createmanaindustry.configuration.section.createmanaindustry.server.toml": "Server",

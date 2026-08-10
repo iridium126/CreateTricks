@@ -14,6 +14,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import com.iridium126.createmanaindustry.CMIRecipeTypes;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore;
+import com.iridium126.createmanaindustry.content.kinetics.depositionlid.DepositionLidBlockEntity;
 import com.iridium126.createmanaindustry.content.recipes.MistOutput;
 import com.iridium126.createmanaindustry.content.recipes.MistRecipe;
 import com.iridium126.createmanaindustry.content.recipes.MistRequirement;
@@ -108,9 +109,13 @@ public class BasinOperatingBlockEntityMixin {
 
         FluidStack fluid = new FluidStack(BuiltInRegistries.FLUID.get(mist.fluidId()), 1);
 
-        // Timed emission: each recipe completion resets the timer and adds capacity
+        // Timed emission: each recipe completion resets the timer and adds capacity.
+        // expiryTick is an absolute game tick (MistFieldStore.tick compares it
+        // against level.getGameTime()), so the mist_result duration must be
+        // offset onto the current time — passing the bare duration would expire
+        // the entry on the very next tick.
         MistFieldStore.emitOrExtendTimed(self.getLevel(), basinPos, fluid,
-                mist.radius(), mist.duration(), mist.amount());
+                mist.radius(), self.getLevel().getGameTime() + mist.duration(), mist.amount());
         ClientboundMistSyncPacket.sendToTracking(self.getLevel(), basinPos, fluid, mist.radius());
         createmanaindustry$activeMistPos = basinPos;
     }
@@ -124,7 +129,10 @@ public class BasinOperatingBlockEntityMixin {
      *   <li>While processing a mist recipe that consumes mist, refresh the
      *       reservation so the condenser yields and the field keeps its amount
      *       through to completion (the matching gate does not run during
-     *       processing).</li>
+     *       processing). Spinning machines only refresh while actually rotating
+     *       (a stalled press must not hold the reservation forever); the
+     *       shaftless deposition lid always refreshes, since its {@code running}
+     *       flag already means it is genuinely progressing.</li>
      * </ul>
      */
     @Inject(method = "tick", at = @At("RETURN"))
@@ -141,10 +149,16 @@ public class BasinOperatingBlockEntityMixin {
             self.basinChecker.scheduleUpdate();
         }
 
+        // The deposition lid has no shaft and processes basin recipes purely by
+        // timer, so `running` alone means it is actively progressing — the speed
+        // gate (a leak backstop for stalled spinning machines) must not apply.
+        boolean activelyProcessing = self instanceof DepositionLidBlockEntity
+                || (self.isSpeedRequirementFulfilled() && self.getSpeed() != 0);
+
         MistRequirement req = currentRecipe instanceof MistRecipe mr ? mr.getMistRequirement() : null;
         if (req != null && req.amount() > 0
                 && isRunning()
-                && self.isSpeedRequirementFulfilled() && self.getSpeed() != 0
+                && activelyProcessing
                 && this.matchBasinRecipe(currentRecipe)) {
             MistFieldStore.reserve(self.getLevel(), basinPos, req.fluidId(), req.amount());
             createmanaindustry$reservedBasinPos = basinPos;

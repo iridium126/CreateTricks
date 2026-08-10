@@ -7,6 +7,7 @@ import com.iridium126.createmanaindustry.content.recipes.MistCompactingRecipe;
 import com.iridium126.createmanaindustry.content.recipes.MistMixingRecipe;
 import com.iridium126.createmanaindustry.content.recipes.MistRecipeParams;
 import com.iridium126.createmanaindustry.content.recipes.VaporDepositionRecipe;
+import com.iridium126.createmanaindustry.content.recipes.VaporizingRecipe;
 import com.mojang.serialization.MapCodec;
 import com.simibubi.create.content.processing.recipe.ProcessingRecipe;
 import com.simibubi.create.content.processing.recipe.ProcessingRecipeParams;
@@ -152,6 +153,36 @@ public final class CMIRecipeTypes {
         }
     };
 
+    // ---- VAPORIZING --------------------------------------------------------
+
+    public static final ResourceLocation VAPORIZING_ID =
+            CreateManaIndustry.modLoc("vaporizing");
+
+    private static final Supplier<RecipeSerializer<?>> VAPORIZING_SERIALIZER =
+            SERIALIZER_REGISTER.register("vaporizing",
+                    () -> new VaporizingSerializer());
+
+    private static final Supplier<RecipeType<?>> VAPORIZING_TYPE =
+            TYPE_REGISTER.register("vaporizing",
+                    () -> RecipeType.simple(VAPORIZING_ID));
+
+    public static final IRecipeTypeInfo VAPORIZING = new IRecipeTypeInfo() {
+        @Override
+        public ResourceLocation getId() { return VAPORIZING_ID; }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public <T extends RecipeSerializer<?>> T getSerializer() {
+            return (T) VAPORIZING_SERIALIZER.get();
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public <I extends RecipeInput, R extends Recipe<I>> RecipeType<R> getType() {
+            return (RecipeType<R>) VAPORIZING_TYPE.get();
+        }
+    };
+
     // ---- registration -------------------------------------------------------
 
     private CMIRecipeTypes() {}
@@ -234,6 +265,31 @@ public final class CMIRecipeTypes {
 
         @Override
         public StreamCodec<RegistryFriendlyByteBuf, VaporDepositionRecipe> streamCodec() {
+            return streamCodec;
+        }
+    }
+
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private static final class VaporizingSerializer implements RecipeSerializer<VaporizingRecipe> {
+        private final MapCodec<VaporizingRecipe> codec;
+        private final StreamCodec<RegistryFriendlyByteBuf, VaporizingRecipe> streamCodec;
+
+        VaporizingSerializer() {
+            var rawCodec = ProcessingRecipe.codec(
+                    (ProcessingRecipe.Factory) (ProcessingRecipeParams p) -> new VaporizingRecipe(p),
+                    (MapCodec) MistRecipeParams.MIST_CODEC);
+            this.codec = rawCodec;
+            var rawStream = ProcessingRecipe.streamCodec(
+                    (ProcessingRecipe.Factory) (ProcessingRecipeParams p) -> new VaporizingRecipe(p),
+                    (StreamCodec) MistRecipeParams.MIST_STREAM_CODEC);
+            this.streamCodec = rawStream;
+        }
+
+        @Override
+        public MapCodec<VaporizingRecipe> codec() { return codec; }
+
+        @Override
+        public StreamCodec<RegistryFriendlyByteBuf, VaporizingRecipe> streamCodec() {
             return streamCodec;
         }
     }

@@ -9,6 +9,7 @@
     "kinetics.DirectionalShaftHalvesBlockEntityMixin",
     "kinetics.MechanicalPressBlockEntityMixin",
     "kinetics.MechanicalMixerBlockEntityMixin",
+    "fan.FanBlastingCatalystMixin",
     "basin.BasinBlockEntityMixin",
     "basin.BasinOperatingBlockEntityMixin",
     "basin.BasinRecipeMixin",
@@ -34,7 +35,8 @@
     "bnb.PlaceCogwheelChainPacketMixin",
     "bnb.KineticBlockEntityChainStressMixin",
     "vanilla.BaseSpawnerAccessor",
-    "vanilla.EntityIsInLavaMixin"
+    "vanilla.EntityIsInLavaMixin",
+    "vanilla.LivingEntityMoltenRoseQuartzMistMixin"
   ],
   "client": [
     "render.CachedBuffersMixin",

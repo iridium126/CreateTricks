@@ -1,0 +1,19 @@
+{
+  "type": "createmanaindustry:vaporizing",
+  "heat_requirement": "allayheated",
+  "processing_time": 25,
+  "ingredients": [
+    {
+      "type": "neoforge:single",
+      "fluid": "createmanaindustry:molten_rose_quartz",
+      "amount": 125
+    }
+  ],
+  "results": [],
+  "mist_result": {
+    "fluid": "createmanaindustry:molten_rose_quartz",
+    "radius": 32,
+    "amount": 125,
+    "duration": 100
+  }
+}

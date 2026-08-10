@@ -14,7 +14,9 @@ import com.samsthenerd.inline.api.InlineAPI;
 import com.iridium126.createmanaindustry.compat.trickster.KineticStressTrickRegister;
 import com.iridium126.createmanaindustry.config.ClientConfig;
 import com.iridium126.createmanaindustry.config.ServerConfig;
+import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlock;
+import com.simibubi.create.api.boiler.BoilerHeater;
 import com.simibubi.create.api.stress.BlockStressValues;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlockEntity;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorTooltipModifier;
@@ -33,6 +35,7 @@ import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
+import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
@@ -91,6 +94,8 @@ public class CreateManaIndustry {
         CMIItems.register();
         CMIPartialModels.register();
         CMISpriteShifts.register();
+        modEventBus.addListener(CreateManaIndustry::registerDefaultsAfterRegistration);
+
         if (TRICKSTER_ACTIVE) {
             KineticStressTrickRegister.register();
         }
@@ -132,5 +137,23 @@ public class CreateManaIndustry {
                 ClientboundMistSyncPacket.TYPE,
                 ClientboundMistSyncPacket.STREAM_CODEC,
                 ClientboundMistSyncPacket::handle);
+    }
+
+    /**
+     * Registers runtime defaults that reference this mod's registered objects,
+     * mirroring Create's own {@code registerDefaults} pattern: they must run after
+     * registration has finished (hence {@code FMLCommonSetupEvent} + enqueueWork),
+     * not in the constructor where entries are still unbound.
+     */
+    private static void registerDefaultsAfterRegistration(FMLCommonSetupEvent event) {
+        event.enqueueWork(() -> {
+            // Allay Burner provides seething-equivalent boiler heat while ALLAYHEATED.
+            // The custom BoilerHeater reads the Allay Burner's own HEAT_LEVEL (it has
+            // no BlazeBurnerBlock.HEAT_LEVEL, so Create's BLAZE_BURNER heater cannot be
+            // reused) and takes priority over the passive boiler-heaters tag provider.
+            BoilerHeater.REGISTRY.register(CMIBlocks.ALLAY_BURNER.get(),
+                (level, pos, state) -> state.getValue(AllayBurnerBlock.HEAT_LEVEL)
+                        == AllayBurnerBlock.HeatLevel.ALLAYHEATED ? 2 : BoilerHeater.NO_HEAT);
+        });
     }
 }

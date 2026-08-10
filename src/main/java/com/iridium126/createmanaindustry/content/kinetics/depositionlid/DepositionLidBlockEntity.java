@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Optional;
 
 import com.iridium126.createmanaindustry.content.recipes.VaporDepositionRecipe;
+import com.iridium126.createmanaindustry.content.recipes.VaporizingRecipe;
 import com.simibubi.create.AllParticleTypes;
 import com.simibubi.create.content.fluids.particle.FluidParticleData;
 import com.simibubi.create.content.processing.basin.BasinBlockEntity;
@@ -115,11 +116,18 @@ public class DepositionLidBlockEntity extends BasinOperatingBlockEntity {
             progress = 0;
         }
 
-        // Cancel when idle, opened, or the basin below is gone. Self-schedules the
-        // recipe trie poll via the deferral behaviour. Sync the stop (one packet,
-        // only on the true→false transition) so the client stops spawning particles.
+        // Cancel when idle, the lid state no longer matches the running recipe
+        // type, or the basin below is gone. Self-schedules the recipe trie poll
+        // via the deferral behaviour. Sync the stop (one packet, only on the
+        // true→false transition) so the client stops spawning particles.
+        // The state mismatch ignores a null currentRecipe — on the client the
+        // recipe is never present, so it must not force `running` to false.
+        boolean open = getBlockState().getValue(BlockStateProperties.OPEN);
+        boolean stateMismatch = currentRecipe != null
+                && (open ? !(currentRecipe instanceof VaporizingRecipe)
+                         : !(currentRecipe instanceof VaporDepositionRecipe));
         if ((!level.isClientSide && (currentRecipe == null || processingTime == -1))
-                || getBlockState().getValue(BlockStateProperties.OPEN)
+                || stateMismatch
                 || !(level.getBlockEntity(worldPosition.below()) instanceof BasinBlockEntity)) {
             if (this.running && !level.isClientSide)
                 sendData();
@@ -170,8 +178,16 @@ public class DepositionLidBlockEntity extends BasinOperatingBlockEntity {
         this.depositingFluid = resolveDepositingFluid();
     }
 
-    /** The recipe's mist fluid, or empty when the recipe has no mist requirement. */
+    /**
+     * The recipe's mist fluid, or empty when the recipe has no mist requirement.
+     * <p>
+     * Vaporizing recipes resolve to empty regardless — the open lid processes
+     * them silently, with no drip particles. Vapor_deposition keeps its
+     * requirement-driven particles.
+     */
     private FluidStack resolveDepositingFluid() {
+        if (currentRecipe instanceof VaporizingRecipe)
+            return FluidStack.EMPTY;
         if (currentRecipe instanceof VaporDepositionRecipe vaporRecipe) {
             var requirement = vaporRecipe.getMistRequirement();
             if (requirement != null) {
@@ -195,21 +211,31 @@ public class DepositionLidBlockEntity extends BasinOperatingBlockEntity {
         BlockEntity basinBE = level.getBlockEntity(worldPosition.below(1));
         if (!(basinBE instanceof BasinBlockEntity))
             return Optional.empty();
-        if (getBlockState().getValue(BlockStateProperties.OPEN))
-            return Optional.empty();
+        // Both lid states process basin recipes — the OPEN state only decides
+        // which recipe type matches (vapor_deposition closed / vaporizing open),
+        // never whether the basin is usable.
         return Optional.of((BasinBlockEntity) basinBE);
     }
 
     @Override
     protected boolean matchStaticFilters(RecipeHolder<? extends Recipe<?>> recipe) {
-        return recipe.value() instanceof VaporDepositionRecipe;
+        // Strict mutual exclusion by lid state: closed → vapor_deposition only,
+        // open → vaporizing only.
+        boolean open = getBlockState().getValue(BlockStateProperties.OPEN);
+        return open ? recipe.value() instanceof VaporizingRecipe
+                    : recipe.value() instanceof VaporDepositionRecipe;
     }
 
     private static final Object depositionRecipesKey = new Object();
+    private static final Object vaporizingRecipesKey = new Object();
 
     @Override
     protected Object getRecipeCacheKey() {
-        return depositionRecipesKey;
+        // The recipe trie is cached per key with the static filter baked in at
+        // build time, so the two lid states need separate tries — each filters
+        // its own recipe type.
+        boolean open = getBlockState().getValue(BlockStateProperties.OPEN);
+        return open ? vaporizingRecipesKey : depositionRecipesKey;
     }
 
     /** Recipe duration, falling back to {@link #DEFAULT_PROCESSING_TIME} when unspecified. */

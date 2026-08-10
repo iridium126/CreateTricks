@@ -540,13 +540,16 @@ public final class MistClientHandler {
             return new float[]{1.0f, 1.0f, 1.0f};
 
         if (fluid == CMIFluids.LIQUID_MANA.get() || fluid == CMIFluids.LIQUID_MANA.getSource())
-            return new float[]{0.39215686f, 0.98431373f, 1.0f}; // light blue
+            return new float[]{0.231f, 0.831f, 0.957f}; // liquid mana still-texture dominant
 
         if (fluid == CMIFluids.LIQUID_MEDIA.get() || fluid == CMIFluids.LIQUID_MEDIA.getSource())
-            return new float[]{0.76862745f, 0.61960784f, 0.95294118f}; // light purple
+            return new float[]{0.729f, 0.561f, 0.918f}; // liquid media still-texture dominant
 
         if (fluid == CMIFluids.LIQUID_SOUL.get() || fluid == CMIFluids.LIQUID_SOUL.getSource())
             return new float[]{0.35f, 0.55f, 1.0f}; // soul blue
+
+        if (fluid == CMIFluids.MOLTEN_ROSE_QUARTZ.get() || fluid == CMIFluids.MOLTEN_ROSE_QUARTZ.getSource())
+            return new float[]{0.855f, 0.38f, 0.478f}; // molten rose quartz still-texture dominant
 
         // --- Texture-based extraction ---
         ResourceLocation texLoc = IClientFluidTypeExtensions.of(fluid).getStillTexture(stack);

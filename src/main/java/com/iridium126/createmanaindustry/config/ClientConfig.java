@@ -43,7 +43,8 @@ public final class ClientConfig {
 
     @SubscribeEvent
     static void onLoad(ModConfigEvent event) {
-        if (event.getConfig().getSpec() == SPEC) {
+        if (event.getConfig().getSpec() == SPEC
+                && (event instanceof ModConfigEvent.Loading || event instanceof ModConfigEvent.Reloading)) {
             mistGlowStrength = MIST_GLOW_STRENGTH.get();
             mistDebugShadow = MIST_DEBUG_SHADOW.get();
         }

@@ -25,9 +25,14 @@ public class FillingBySpoutHexMixin {
     @Inject(method = "getRequiredAmountForItem", at = @At("HEAD"), cancellable = true)
     private static void createmanaindustry$overrideIncompleteHexItemFluidAmount(Level world, ItemStack stack,
             FluidStack availableFluid, CallbackInfoReturnable<Integer> cir) {
-        int requiredAmount = HexItemFillingLogic.getRequiredFluidAmount(stack, availableFluid);
-        if (requiredAmount >= 0)
-            cir.setReturnValue(requiredAmount);
+        if (!HexItemFillingLogic.isRecognised(stack))
+            return;
+        // Take over for every recognised hex item — fresh, incomplete, or
+        // finished. Returning -1 for a full / non-refillable / wrong-fluid item
+        // makes the spout pass it without consulting Create's filling recipes,
+        // which would otherwise keep filling a full item forever (infinite fill)
+        // or downgrade a finished item back to an incomplete intermediate.
+        cir.setReturnValue(HexItemFillingLogic.getRequiredFluidAmount(stack, availableFluid));
     }
 
     @Inject(method = "fillItem", at = @At("HEAD"), cancellable = true)

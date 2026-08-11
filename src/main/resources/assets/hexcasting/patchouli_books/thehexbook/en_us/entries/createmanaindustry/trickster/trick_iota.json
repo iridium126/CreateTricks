@@ -1,6 +1,7 @@
 {
   "name": "hexcasting.entry.createmanaindustry.trickster.trick_iota",
   "category": "hexcasting:createmanaindustry/trickster",
+  "flag": "mod:trickster",
   "icon": "createmanaindustry:kinetics_spell_core",
   "sortnum": 2,
   "advancement": "hexcasting:root",

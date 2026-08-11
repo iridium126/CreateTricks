@@ -233,7 +233,10 @@ public final class ServerConfig {
 
     @SubscribeEvent
     static void onLoad(ModConfigEvent event) {
-        if (event.getConfig().getSpec() == SPEC) {
+        // Only Loading/Reloading have a loaded backing config; Unloading would throw
+        // "Cannot get config value before config is loaded" on every server stop.
+        if (event.getConfig().getSpec() == SPEC
+                && (event instanceof ModConfigEvent.Loading || event instanceof ModConfigEvent.Reloading)) {
             manaPerStress = MANA_PER_STRESS.get();
             manaPerBucket = MANA_PER_BUCKET.get();
             mediaPerBucket = MEDIA_PER_BUCKET.get();

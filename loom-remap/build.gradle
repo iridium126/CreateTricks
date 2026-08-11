@@ -14,6 +14,16 @@ java {
     toolchain.languageVersion = JavaLanguageVersion.of(21)
 }
 
+// Resolve these once into local variables (same source as settings.gradle).
+// Task closures invoked at execution time — e.g. Copy's `rename { }`, which
+// runs the GString body as a transformer — cannot resolve project properties
+// through their owner chain, but plain locals captured by the closure always
+// can. Referencing `trickster_project_id` directly inside `rename { }` fails
+// with MissingPropertyException exactly at that point.
+def tricksterProjectId = providers.gradleProperty("trickster_project_id").get()
+def tricksterFileId = providers.gradleProperty("trickster_file_id").get()
+def fabricApiVersion = providers.gradleProperty("fabric_api_version").get()
+
 repositories {
     mavenCentral()
     maven {
@@ -31,16 +41,16 @@ dependencies {
     mappings loom.officialMojangMappings()
 
     modImplementation "net.fabricmc:fabric-loader:0.16.14"
-    modImplementation "curse.maven:trickster-${trickster_project_id}:${trickster_file_id}"
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
+    modImplementation "curse.maven:trickster-${tricksterProjectId}:${tricksterFileId}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${fabricApiVersion}"
     implementation "io.vavr:vavr:0.10.4"
 }
 
 // Export into a stable dir outside build/ so the named jars survive `clean`
 // and the root project can consume them without evaluating this subproject.
 def exportedDir = layout.projectDirectory.dir("remapped-libs")
-def exportedJar = layout.projectDirectory.file("remapped-libs/trickster-${trickster_project_id}-${trickster_file_id}-named.jar")
-def mergedFabricApiJar = layout.projectDirectory.file("remapped-libs/fabric-api-${fabric_api_version}-named.jar")
+def exportedJar = layout.projectDirectory.file("remapped-libs/trickster-${tricksterProjectId}-${tricksterFileId}-named.jar")
+def mergedFabricApiJar = layout.projectDirectory.file("remapped-libs/fabric-api-${fabricApiVersion}-named.jar")
 
 tasks.register("exportTricksterNamedJar", Copy) {
     dependsOn configurations.compileClasspath
@@ -56,7 +66,7 @@ tasks.register("exportTricksterNamedJar", Copy) {
     })
 
     into(exportedDir)
-    rename { "trickster-${trickster_project_id}-${trickster_file_id}-named.jar" }
+    rename { "trickster-${tricksterProjectId}-${tricksterFileId}-named.jar" }
 }
 
 // The fabric-api bundler jar does not include every module (e.g.
@@ -77,7 +87,7 @@ tasks.register("mergeFabricApiNamedJar", Zip) {
         matches.collect { zipTree(it) }
     })
 
-    archiveFileName = "fabric-api-${fabric_api_version}-named.jar"
+    archiveFileName = "fabric-api-${fabricApiVersion}-named.jar"
     destinationDirectory = exportedDir
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }

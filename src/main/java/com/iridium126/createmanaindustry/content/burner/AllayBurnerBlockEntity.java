@@ -146,7 +146,7 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity
             int radius = ServerConfig.allayBurnerMistRadius;
             if (!wasActive) {
                 MistFieldStore.setActive(level, worldPosition, true, radius,
-                        new FluidStack(CMIFluids.LIQUID_SOUL.get(), 1));
+                        new FluidStack(CMIFluids.LIQUID_SOUL.get().getSource(), 1));
                 currentRadius = radius;
                 wasActive = true;
                 sendData();
@@ -248,7 +248,7 @@ public class AllayBurnerBlockEntity extends SmartBlockEntity
             wasActive = compound.getBoolean("MistActive");
             currentRadius = compound.getInt("MistRadius");
             MistSync.notifyClientSync(worldPosition,
-                wasActive ? new FluidStack(CMIFluids.LIQUID_SOUL.get(), 1) : FluidStack.EMPTY, currentRadius);
+                wasActive ? new FluidStack(CMIFluids.LIQUID_SOUL.get().getSource(), 1) : FluidStack.EMPTY, currentRadius);
         }
         super.read(compound, registries, clientPacket);
     }

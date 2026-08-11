@@ -1,6 +1,7 @@
 {
   "name": "hexcasting.entry.createmanaindustry.trickster.read_trick_from_item",
   "category": "hexcasting:createmanaindustry/trickster",
+  "flag": "mod:trickster",
   "icon": "trickster:amethyst_knot",
   "sortnum": 0,
   "advancement": "hexcasting:root",

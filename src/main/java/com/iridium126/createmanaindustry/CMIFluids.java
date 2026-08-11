@@ -132,7 +132,7 @@ public class CMIFluids {
     /**
      * Molten Rose Quartz — strictly mirrors lava: emissive block (light 15),
      * lava particle/sound ambience, dense viscous movement, player damage via
-     * {@code EntityIsInLavaMixin}. Carved-out exceptions (no fire spread, no
+     * {@code EntityMoltenRoseQuartzMixin}. Carved-out exceptions (no fire spread, no
      * water→stone, no infinite source) live in {@link MoltenRoseQuartzFluid}.
      */
     public static final FluidEntry<MoltenRoseQuartzFluid.Flowing> MOLTEN_ROSE_QUARTZ =

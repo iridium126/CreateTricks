@@ -35,7 +35,7 @@
     "bnb.PlaceCogwheelChainPacketMixin",
     "bnb.KineticBlockEntityChainStressMixin",
     "vanilla.BaseSpawnerAccessor",
-    "vanilla.EntityIsInLavaMixin",
+    "vanilla.EntityMoltenRoseQuartzMixin",
     "vanilla.LivingEntityMoltenRoseQuartzMistMixin"
   ],
   "client": [

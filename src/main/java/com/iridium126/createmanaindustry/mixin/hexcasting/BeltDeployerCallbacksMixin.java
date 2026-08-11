@@ -32,6 +32,11 @@ import net.minecraft.world.level.Level;
  * the cycle) would leave an invalid-scroll item sitting on the belt while the
  * deployer punches it forever, so the scroll {@code op_id} is validated at the
  * {@code start()} call sites too — an invalid scroll never starts the animation.
+ * <p>
+ * The same {@code start()} call sites reject <b>finished</b> hexcasting spell
+ * items (cypher/trinket/artifact carrying stored hex data): their {@code <x>_or_incomplete}
+ * deployer recipe would otherwise match and downgrade them back to an incomplete
+ * pipeline intermediate. Letting them pass untouched (PASS) keeps them finished.
  */
 @Mixin(value = BeltDeployerCallbacks.class, remap = false)
 public class BeltDeployerCallbacksMixin {
@@ -41,20 +46,24 @@ public class BeltDeployerCallbacksMixin {
     @Inject(method = "onItemReceived", at = @At(value = "INVOKE",
             target = "Lcom/simibubi/create/content/kinetics/deployer/DeployerBlockEntity;start()V"),
             cancellable = true)
-    private static void createmanaindustry$rejectInvalidScrollBeforeStart(TransportedItemStack transported,
+    private static void createmanaindustry$rejectUnprocessableBeforeStart(TransportedItemStack transported,
             TransportedItemStackHandlerBehaviour handler, DeployerBlockEntity blockEntity,
             CallbackInfoReturnable<ProcessingResult> cir) {
-        if (!isValidHeldScroll(blockEntity))
+        // Invalid scroll, or a finished hexcasting spell item that must not be
+        // downgraded back into a pipeline intermediate — let it pass untouched.
+        if (!isValidHeldScroll(blockEntity) || HexItemDataTransfer.isFinishedHexItem(transported.stack))
             cir.setReturnValue(ProcessingResult.PASS);
     }
 
     @Inject(method = "whenItemHeld", at = @At(value = "INVOKE",
             target = "Lcom/simibubi/create/content/kinetics/deployer/DeployerBlockEntity;start()V"),
             cancellable = true)
-    private static void createmanaindustry$rejectInvalidScrollWhenHeld(TransportedItemStack transported,
+    private static void createmanaindustry$rejectUnprocessableWhenHeld(TransportedItemStack transported,
             TransportedItemStackHandlerBehaviour handler, DeployerBlockEntity blockEntity,
             CallbackInfoReturnable<ProcessingResult> cir) {
-        if (!isValidHeldScroll(blockEntity))
+        // Same rejection while already held: a finished item that became held
+        // (or a scroll check that changed) must not start the punch either.
+        if (!isValidHeldScroll(blockEntity) || HexItemDataTransfer.isFinishedHexItem(transported.stack))
             cir.setReturnValue(ProcessingResult.PASS);
     }
 

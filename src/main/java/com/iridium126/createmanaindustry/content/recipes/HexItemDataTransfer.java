@@ -143,6 +143,44 @@ public final class HexItemDataTransfer {
         return opId.location().equals(expected);
     }
 
+    // ---- hex item classification --------------------------------------------
+
+    /**
+     * Whether the stack carries any stored hex data — patterns, pigment, media,
+     * or media capacity. A fresh-crafted hexcasting item and a finished one are
+     * the same {@link Item}; only these data components tell them apart, so this
+     * is the discriminator the filling logic uses to avoid downgrading finished
+     * items back into pipeline intermediates.
+     */
+    public static boolean hasStoredHexData(ItemStack stack) {
+        return stack.has(HexDataComponents.HEX_HOLDER_PATTERNS)
+                || stack.has(HexDataComponents.PIGMENT)
+                || stack.has(HexDataComponents.MEDIA)
+                || stack.has(HexDataComponents.MEDIA_MAX);
+    }
+
+    /**
+     * Whether the stack is a <b>finished</b> hexcasting spell item — a
+     * {@code hexcasting:cypher/trinket/artifact} carrying stored hex data — as
+     * opposed to a fresh-crafted one or an incomplete pipeline intermediate.
+     * Finished items must never be downgraded back to an incomplete intermediate
+     * (spout fill bypasses them, the deployer lets them pass untouched).
+     */
+    public static boolean isFinishedHexItem(ItemStack stack) {
+        if (stack.isEmpty()
+                || stack.getItem() instanceof IncompleteHexItem
+                || stack.getItem() instanceof IncompleteMediaBatteryItem)
+            return false;
+
+        ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+        if (!"hexcasting".equals(id.getNamespace()))
+            return false;
+
+        String path = id.getPath();
+        return ("cypher".equals(path) || "trinket".equals(path) || "artifact".equals(path))
+                && hasStoredHexData(stack);
+    }
+
     // ---- internal ----------------------------------------------------------
 
     /**

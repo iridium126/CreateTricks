@@ -1,6 +1,7 @@
 {
   "name": "hexcasting.entry.createmanaindustry.trickster.execute_trick",
   "category": "hexcasting:createmanaindustry/trickster",
+  "flag": "mod:trickster",
   "icon": "hexcasting:slate",
   "sortnum": 1,
   "advancement": "hexcasting:root",

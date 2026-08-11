@@ -16,41 +16,53 @@ import net.minecraft.world.item.ItemStack;
 import net.neoforged.neoforge.fluids.FluidStack;
 
 /**
- * Manages the multi-step liquid_media filling process for incomplete hex items
- * via Hexcasting's {@code MEDIA} data component.
+ * Manages the multi-step liquid_media filling process for hex items via
+ * Hexcasting's {@code MEDIA} data component.
  * <p>
- * Each incomplete hex item tracks accumulated media directly in
- * {@link at.petrak.hexcasting.common.lib.HexDataComponents#MEDIA}. Filling adds
- * media up to the per-item-type maximum defined in {@link Config}.
+ * Fresh-crafted hexcasting items are converted to their incomplete counterpart
+ * (which tracks accumulated media in
+ * {@link at.petrak.hexcasting.common.lib.HexDataComponents#MEDIA}), incomplete
+ * items keep accumulating up to the per-item-type maximum, and finished
+ * trinkets/artifacts are topped up in place without being downgraded. Finished
+ * cyphers (single-use in Hexcasting) are never refilled.
  */
 public final class HexItemFillingLogic {
 
     private HexItemFillingLogic() {}
 
     /**
-     * Resolves the corresponding incomplete item (as a {@link MediaHolderItem})
-     * for a given input stack.
+     * Resolves the {@link MediaHolderItem} that should receive media for a given
+     * input stack.
      *
-     * @return the incomplete item that should receive media, or {@code null} if
-     *         the stack is not recognised
+     * @return the holder to fill (see {@link #fillIncompleteHexItem} for how
+     *         fresh / incomplete / finished stacks are treated), or {@code null}
+     *         if the stack is not recognised
      */
     private static MediaHolderItem resolve(ItemStack stack) {
         Item item = stack.getItem();
         if (item instanceof MediaHolderItem mhi && isIncompleteItem(item))
             return mhi;
 
-        // Check if it's a fresh-crafted hexcasting item
+        // hexcasting cypher/trinket/artifact:
+        //   - fresh (no stored data) → the incomplete counterpart, so the fill
+        //     converts the item into a pipeline intermediate;
+        //   - finished (stored hex data present) → the item itself, so the fill
+        //     tops up media in place without downgrading it. Even a finished
+        //     cypher — which we never refill (see getRequiredFluidAmount) — must
+        //     resolve non-null here, or the mixin would fall through to Create's
+        //     filling recipe and revert the item.
         ResourceLocation id = BuiltInRegistries.ITEM.getKey(item);
         if (!"hexcasting".equals(id.getNamespace()))
             return null;
 
+        boolean finished = HexItemDataTransfer.hasStoredHexData(stack);
         String path = id.getPath();
         if ("cypher".equals(path) && CMIItems.INCOMPLETE_CYPHER != null)
-            return CMIItems.INCOMPLETE_CYPHER.get();
+            return finished ? (MediaHolderItem) item : CMIItems.INCOMPLETE_CYPHER.get();
         if ("trinket".equals(path) && CMIItems.INCOMPLETE_TRINKET != null)
-            return CMIItems.INCOMPLETE_TRINKET.get();
+            return finished ? (MediaHolderItem) item : CMIItems.INCOMPLETE_TRINKET.get();
         if ("artifact".equals(path) && CMIItems.INCOMPLETE_ARTIFACT != null)
-            return CMIItems.INCOMPLETE_ARTIFACT.get();
+            return finished ? (MediaHolderItem) item : CMIItems.INCOMPLETE_ARTIFACT.get();
 
         return null;
     }
@@ -77,6 +89,12 @@ public final class HexItemFillingLogic {
         if (holder == null)
             return -1;
 
+        // Finished cyphers are single-use in Hexcasting (canRecharge = false,
+        // they break on depletion) — never refill them through the spout.
+        // Trinkets and artifacts are rechargeable and are topped up in place.
+        if (HexItemDataTransfer.isFinishedHexItem(stack) && !holder.canRecharge(stack))
+            return -1;
+
         long maxMedia = holder.getMaxMedia(stack);
         long currentMedia = holder.getMedia(stack);
         long remaining = maxMedia - currentMedia;
@@ -92,11 +110,12 @@ public final class HexItemFillingLogic {
     // ---- fill operation ----------------------------------------------------
 
     /**
-     * Performs one fill step, adding media to the incomplete hex item.
+     * Performs one fill step, adding media to a hex item.
      * <p>
-     * If the input is a fresh-crafted item or glass bottle (not yet incomplete),
-     * it is converted to the corresponding incomplete item with
-     * {@code MEDIA_MAX} set from config before media is added.
+     * A fresh-crafted hexcasting item (no stored data) is first converted to its
+     * incomplete counterpart with {@code MEDIA_MAX} set from config; an
+     * incomplete intermediate is filled in place; a finished trinket/artifact is
+     * topped up in place and stays finished.
      *
      * @param stack the item being filled (not modified in place)
      * @return the result stack, or {@link ItemStack#EMPTY} if invalid
@@ -110,12 +129,24 @@ public final class HexItemFillingLogic {
         if (mediaToAdd <= 0)
             return ItemStack.EMPTY;
 
+        // Finished cyphers are single-use in Hexcasting — never refill them
+        // (defensive: the spout already refuses via getRequiredFluidAmount).
+        if (HexItemDataTransfer.isFinishedHexItem(stack) && !holder.canRecharge(stack))
+            return ItemStack.EMPTY;
+
+        long maxMedia = holder.getMaxMedia(stack);
+        long currentMedia = holder.getMedia(stack);
+        if (currentMedia >= maxMedia)
+            return ItemStack.EMPTY; // already full — consume no fluid
+
         ItemStack result;
-        if (isIncompleteItem(stack.getItem())) {
-            // Already incomplete — copy and add media
+        if (isIncompleteItem(stack.getItem()) || HexItemDataTransfer.hasStoredHexData(stack)) {
+            // Incomplete intermediate, or a finished trinket/artifact being
+            // topped up in place — copy and add media, keeping the item as-is.
             result = stack.copy();
         } else if (holder instanceof Item item) {
-            // Fresh item or glass bottle — create incomplete copy with default max media
+            // Fresh-crafted hexcasting item — create the incomplete counterpart
+            // with default max media before adding media.
             result = new ItemStack(item);
             if (holder instanceof IncompleteHexItem hi)
                 hi.ensureMaxMedia(result);
@@ -125,8 +156,6 @@ public final class HexItemFillingLogic {
             return ItemStack.EMPTY;
         }
 
-        long currentMedia = holder.getMedia(result);
-        long maxMedia = holder.getMaxMedia(result);
         long newMedia = Math.min(currentMedia + mediaToAdd, maxMedia);
         holder.setMedia(result, newMedia);
 
@@ -134,8 +163,8 @@ public final class HexItemFillingLogic {
     }
 
     /**
-     * Checks whether the given stack is a recognised hex item
-     * (fresh-crafted or incomplete).
+     * Checks whether the given stack is a recognised hex item — fresh-crafted,
+     * incomplete, or a finished hexcasting spell item.
      */
     public static boolean isRecognised(ItemStack stack) {
         return resolve(stack) != null;

@@ -58,7 +58,7 @@ public final class MistClientHandler {
 
     /** Per-source client data with animation state for smooth radius transitions. */
     private static final class MistSourceData {
-        final FluidStack fluid;
+        FluidStack fluid;          // mutable: follows a recipe/machine fluid switch in place
         float displayRadius;   // current rendered radius, lerps toward target each frame
         float targetRadius;    // desired radius from server
         boolean fading;        // true = target is 0, remove when display reaches 0
@@ -144,7 +144,12 @@ public final class MistClientHandler {
         } else {
             MistSourceData existing = activeSources.get(pos);
             if (existing != null) {
-                // Update target — display radius lerps to new value
+                // Same or different fluid — mutate in place. Updating `fluid`
+                // keeps the palette in sync with a recipe/machine switch (e.g. a
+                // basin now vaporizing a different mist) while the radius
+                // animation stays continuous; dirty=true triggers a repack that
+                // re-indexes this source against the new fluid's palette entry.
+                existing.fluid = fluid;
                 existing.targetRadius = radius;
                 existing.fading = false;
             } else {

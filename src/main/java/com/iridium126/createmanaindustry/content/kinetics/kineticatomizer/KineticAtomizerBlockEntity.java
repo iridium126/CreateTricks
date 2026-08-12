@@ -16,6 +16,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.material.Fluid;
 import net.neoforged.neoforge.fluids.FluidStack;
 import net.neoforged.neoforge.fluids.capability.IFluidHandler;
 import net.neoforged.neoforge.fluids.capability.templates.FluidTank;
@@ -43,6 +44,8 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
 
     private boolean wasActive = false;
     private int currentRadius = 0;
+    /** Fluid whose mist the server-side field is currently tracking, for mid-operation tank switches. */
+    private Fluid lastAtomizedFluid;
 
     public KineticAtomizerBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
@@ -139,10 +142,21 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
                 // the field's fluid identity go stale when the tank empties and
                 // refills (its amount/instance would track the tank live).
                 MistFieldStore.setActive(level, worldPosition, true, newRadius, tank.getFluid().copy());
+                lastAtomizedFluid = tank.getFluid().getFluid();
             } else if (newRadius != currentRadius) {
                 MistFieldStore.updateRadius(level, worldPosition, newRadius);
             }
             currentRadius = newRadius;
+
+            // Follow a mid-operation tank fluid switch (tank refilled with a
+            // different fluid while the atomizer keeps running), so the
+            // server-side field's fluid — and the client's mist color — stay in
+            // sync with what is actually being atomized.
+            Fluid tankFluid = tank.getFluid().getFluid();
+            if (lastAtomizedFluid != tankFluid) {
+                MistFieldStore.updateFluid(level, worldPosition, tank.getFluid());
+                lastAtomizedFluid = tankFluid;
+            }
 
             float speedFactor = absSpeed / 256f;
             int toConsume = Math.max(1, (int) (ServerConfig.mistFluidPerTick * speedFactor));
@@ -151,6 +165,7 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
                 MistFieldStore.addCapacity(level, worldPosition, drained.getAmount());
         } else if (wasActive) {
             MistFieldStore.setActive(level, worldPosition, false, 0);
+            lastAtomizedFluid = null;
             currentRadius = 0;
         }
         wasActive = isActive;

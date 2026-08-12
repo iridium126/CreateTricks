@@ -268,6 +268,31 @@ public final class MistFieldStore {
     }
 
     /**
+     * Updates the fluid of a persistent (atomizer) source in-place, so a tank
+     * fluid switch mid-operation is reflected in the server-side field (the
+     * client fades the source's color via its own {@code setActive} rebuild).
+     * No-op if no persistent source exists, if the fluid is empty, or if the
+     * fluid type is unchanged.
+     * <p>
+     * When the fluid type changes, the accumulated {@code fluidCapacity} is
+     * reset to zero — the old capacity belongs to the previous fluid and must
+     * not be handed out (to the condenser or recipes) as if it were the new one.
+     */
+    public static void updateFluid(Level level, BlockPos pos, FluidStack fluid) {
+        if (level == null || level.isClientSide || fluid == null || fluid.isEmpty())
+            return;
+
+        data(level).active.computeIfPresent(pos, (p, f) -> {
+            if (f.fluid != null && f.fluid.is(fluid.getFluid()))
+                return f; // unchanged — keep radius and capacity
+            // Copy to avoid aliasing the caller's (tank) stack — see setActive.
+            f.fluid = fluid.copy();
+            f.fluidCapacity = 0L;
+            return f;
+        });
+    }
+
+    /**
      * Creates or refreshes a timed mist entry. If an entry already exists at
      * {@code pos}, its expiry is reset and capacity is added. Otherwise a new
      * entry is created.
@@ -613,14 +638,15 @@ public final class MistFieldStore {
     /**
      * Mutable per-atomizer field parameters.
      * <p>
-     * radius and fluidCapacity are mutable — radius changes with atomizer speed,
-     * and fluidCapacity accumulates drained fluid. Mutations go through the
-     * per-level map's compute family; per-level access is single-threaded (server
-     * thread only).
+     * radius, fluid and fluidCapacity are mutable — radius changes with atomizer
+     * speed, fluid follows a mid-operation tank fluid switch (with a capacity
+     * reset, see {@link #updateFluid}), and fluidCapacity accumulates drained
+     * fluid. Mutations go through the per-level map's compute family; per-level
+     * access is single-threaded (server thread only).
      */
     private static final class AtomizerField {
         int radius;
-        @org.jetbrains.annotations.Nullable final FluidStack fluid;
+        @org.jetbrains.annotations.Nullable FluidStack fluid;
         long fluidCapacity;
 
         AtomizerField(int radius, @org.jetbrains.annotations.Nullable FluidStack fluid) {

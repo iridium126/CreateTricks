@@ -4,8 +4,8 @@ import static com.iridium126.createmanaindustry.CreateManaIndustry.REGISTRATE;
 
 import java.util.function.Consumer;
 
-import com.iridium126.createmanaindustry.content.fluids.MoltenRoseQuartzFluid;
-import com.iridium126.createmanaindustry.content.fluids.MoltenRoseQuartzFluidType;
+import com.iridium126.createmanaindustry.content.fluids.MoltenFluid;
+import com.iridium126.createmanaindustry.content.fluids.MoltenFluidType;
 import com.tterrag.registrate.util.entry.FluidEntry;
 import com.tterrag.registrate.util.nullness.NonNullBiConsumer;
 
@@ -132,24 +132,54 @@ public class CMIFluids {
     /**
      * Molten Rose Quartz — strictly mirrors lava: emissive block (light 15),
      * lava particle/sound ambience, dense viscous movement, player damage via
-     * {@code EntityMoltenRoseQuartzMixin}. Carved-out exceptions (no fire spread, no
-     * water→stone, no infinite source) live in {@link MoltenRoseQuartzFluid}.
+     * {@code EntityMoltenFluidMixin}. Carved-out exceptions (no fire spread, no
+     * water→stone, no infinite source) live in {@link MoltenFluid}.
      */
-    public static final FluidEntry<MoltenRoseQuartzFluid.Flowing> MOLTEN_ROSE_QUARTZ =
+    public static final FluidEntry<MoltenFluid.Flowing> MOLTEN_ROSE_QUARTZ =
             REGISTRATE.fluid("molten_rose_quartz",
                     CreateManaIndustry.modLoc("fluid/molten_rose_quartz_still"),
                     CreateManaIndustry.modLoc("fluid/molten_rose_quartz_flow"),
-                    MoltenRoseQuartzFluidType::new,
-                    MoltenRoseQuartzFluid.Flowing::new)
+                    MoltenFluidType::new,
+                    MoltenFluid.Flowing::new)
                     .properties(b -> b.lightLevel(15).density(3000).viscosity(6000).temperature(1300)
                             .canSwim(false).canDrown(false)
                             .pathType(PathType.LAVA)
                             .sound(SoundActions.BUCKET_FILL, SoundEvents.BUCKET_FILL_LAVA)
                             .sound(SoundActions.BUCKET_EMPTY, SoundEvents.BUCKET_EMPTY_LAVA))
                     .fluidProperties(p -> p.levelDecreasePerBlock(2).explosionResistance(100f))
-                    .source(MoltenRoseQuartzFluid.Source::new)
+                    .source(MoltenFluid.Source::new)
                     .block()
                     .properties(p -> p.mapColor(MapColor.COLOR_PINK))
+                    .build()
+                    .bucket()
+                    .model(NonNullBiConsumer.noop())
+                    .onRegister(CMIFluids::registerFluidDispenseBehavior)
+                    .tag(Tags.Items.BUCKETS)
+                    .build()
+                    .register();
+
+    /**
+     * Molten Prismarine Quartz — the second molten fluid, sharing
+     * {@link MoltenFluid} / {@link MoltenFluidType} and the whole
+     * {@code molten_fluid} tag treatment (damage, mist ignition, atomizer
+     * exclusion, fan blasting catalyst, boiler heat). Only the textures and the
+     * fluid block's map color differ from the rose variant.
+     */
+    public static final FluidEntry<MoltenFluid.Flowing> MOLTEN_PRISMARINE_QUARTZ =
+            REGISTRATE.fluid("molten_prismarine_quartz",
+                    CreateManaIndustry.modLoc("fluid/molten_prismarine_quartz_still"),
+                    CreateManaIndustry.modLoc("fluid/molten_prismarine_quartz_flow"),
+                    MoltenFluidType::new,
+                    MoltenFluid.Flowing::new)
+                    .properties(b -> b.lightLevel(15).density(3000).viscosity(6000).temperature(1300)
+                            .canSwim(false).canDrown(false)
+                            .pathType(PathType.LAVA)
+                            .sound(SoundActions.BUCKET_FILL, SoundEvents.BUCKET_FILL_LAVA)
+                            .sound(SoundActions.BUCKET_EMPTY, SoundEvents.BUCKET_EMPTY_LAVA))
+                    .fluidProperties(p -> p.levelDecreasePerBlock(2).explosionResistance(100f))
+                    .source(MoltenFluid.Source::new)
+                    .block()
+                    .properties(p -> p.mapColor(MapColor.COLOR_CYAN))
                     .build()
                     .bucket()
                     .model(NonNullBiConsumer.noop())

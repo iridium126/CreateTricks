@@ -18,7 +18,8 @@ import net.minecraft.world.level.material.FluidState;
 import net.neoforged.neoforge.fluids.BaseFlowingFluid;
 
 /**
- * Molten Rose Quartz — strictly mirrors vanilla {@code LavaFluid} behaviour
+ * Shared base for this mod's molten fluids (Molten Rose Quartz, Molten
+ * Prismarine Quartz, …) — strictly mirrors vanilla {@code LavaFluid} behaviour
  * (particles, sounds, flowing parameters, fluid replacement, block fizzing),
  * except for the exceptions the mod owner carved out:
  * <ul>
@@ -35,9 +36,9 @@ import net.neoforged.neoforge.fluids.BaseFlowingFluid;
  * the supplier wiring ({@code getFlowing}/{@code getSource}/{@code getBucket}).
  * The lava-specific methods below are ported from {@code LavaFluid}.
  */
-public abstract class MoltenRoseQuartzFluid extends BaseFlowingFluid {
+public abstract class MoltenFluid extends BaseFlowingFluid {
 
-    protected MoltenRoseQuartzFluid(Properties properties) {
+    protected MoltenFluid(Properties properties) {
         super(properties);
     }
 
@@ -107,7 +108,7 @@ public abstract class MoltenRoseQuartzFluid extends BaseFlowingFluid {
         return i;
     }
 
-    public static class Flowing extends MoltenRoseQuartzFluid {
+    public static class Flowing extends MoltenFluid {
         public Flowing(Properties properties) {
             super(properties);
             registerDefaultState(getStateDefinition().any().setValue(LEVEL, 7));
@@ -130,7 +131,7 @@ public abstract class MoltenRoseQuartzFluid extends BaseFlowingFluid {
         }
     }
 
-    public static class Source extends MoltenRoseQuartzFluid {
+    public static class Source extends MoltenFluid {
         public Source(Properties properties) {
             super(properties);
         }

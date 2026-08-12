@@ -551,6 +551,9 @@ public final class MistClientHandler {
         if (fluid == CMIFluids.MOLTEN_ROSE_QUARTZ.get() || fluid == CMIFluids.MOLTEN_ROSE_QUARTZ.getSource())
             return new float[]{0.855f, 0.38f, 0.478f}; // molten rose quartz still-texture dominant
 
+        if (fluid == CMIFluids.MOLTEN_PRISMARINE_QUARTZ.get() || fluid == CMIFluids.MOLTEN_PRISMARINE_QUARTZ.getSource())
+            return new float[]{0.42f, 0.65f, 0.58f}; // molten prismarine quartz still-texture dominant
+
         // --- Texture-based extraction ---
         ResourceLocation texLoc = IClientFluidTypeExtensions.of(fluid).getStillTexture(stack);
         if (texLoc == null)

@@ -47,6 +47,14 @@
     {
       "type": "single",
       "resource": "createmanaindustry:fluid/molten_rose_quartz_still"
+    },
+    {
+      "type": "single",
+      "resource": "createmanaindustry:fluid/molten_prismarine_quartz_flow"
+    },
+    {
+      "type": "single",
+      "resource": "createmanaindustry:fluid/molten_prismarine_quartz_still"
     }
   ]
 }

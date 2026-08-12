@@ -1,0 +1,10 @@
+{
+  "type": "createmanaindustry:heated_compacting",
+  "heat_requirement": "superheated",
+  "ingredients": [
+    { "item": "createmanaindustry:prismarine_quartz_block" }
+  ],
+  "results": [
+    { "id": "createmanaindustry:molten_prismarine_quartz", "amount": 125 }
+  ]
+}

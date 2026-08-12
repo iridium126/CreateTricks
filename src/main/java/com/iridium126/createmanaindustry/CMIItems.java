@@ -14,9 +14,11 @@ import com.tterrag.registrate.util.nullness.NonNullBiConsumer;
 
 import net.minecraft.data.recipes.RecipeCategory;
 import net.minecraft.data.recipes.ShapedRecipeBuilder;
+import net.minecraft.data.recipes.ShapelessRecipeBuilder;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
+import net.neoforged.neoforge.common.Tags;
 
 public final class CMIItems {
 
@@ -32,31 +34,46 @@ public final class CMIItems {
     public static ItemEntry<IncompleteHexItem> INCOMPLETE_ARTIFACT;
     public static ItemEntry<IncompleteMediaBatteryItem> INCOMPLETE_MEDIA_BATTERY;
 
+    // Prismarine Quartz — this mod's parallel to Create's Rose Quartz: a plain
+    // gem item obtained from quartz + prismarine shards, smelted (superheated
+    // compacting) into Molten Prismarine Quartz. Core item, always registered.
+    public static final ItemEntry<Item> PRISMARINE_QUARTZ = REGISTRATE.item("prismarine_quartz", Item::new)
+                .recipe((c, p) -> {
+                    // Mirrors Create's rose_quartz crafting (1 c:gems/quartz + 8 redstone),
+                    // substituting prismarine shards for the mod's own prismarine identity.
+                    // Saved under crafting/materials like Create's own rose_quartz.json.
+                    ShapelessRecipeBuilder.shapeless(RecipeCategory.MISC, c.get())
+                            .requires(Tags.Items.GEMS_QUARTZ)
+                            .requires(Items.PRISMARINE_SHARD)
+                            .requires(Items.PRISMARINE_SHARD)
+                            .requires(Items.PRISMARINE_SHARD)
+                            .requires(Items.PRISMARINE_SHARD)
+                            .requires(Items.PRISMARINE_SHARD)
+                            .requires(Items.PRISMARINE_SHARD)
+                            .requires(Items.PRISMARINE_SHARD)
+                            .requires(Items.PRISMARINE_SHARD)
+                            .unlockedBy("has_prismarine_shard",
+                                    RegistrateRecipeProvider.has(Items.PRISMARINE_SHARD))
+                            .save(p, CreateManaIndustry.modLoc("crafting/materials/prismarine_quartz"));
+                })
+                .register();
+
     // Deposited metal sheets — produced by vapor deposition: a mist deposits
     // amethyst or rose quartz onto a Create metal sheet. Core items, always
     // registered.
-    public static ItemEntry<Item> AMETHYST_DEPOSITED_BRASS_SHEET;
-    public static ItemEntry<Item> AMETHYST_DEPOSITED_COPPER_SHEET;
-    public static ItemEntry<Item> AMETHYST_DEPOSITED_GOLDEN_SHEET;
-    public static ItemEntry<Item> AMETHYST_DEPOSITED_IRON_SHEET;
-    public static ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_BRASS_SHEET;
-    public static ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_COPPER_SHEET;
-    public static ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_GOLDEN_SHEET;
-    public static ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_IRON_SHEET;
+    public static final ItemEntry<Item> AMETHYST_DEPOSITED_BRASS_SHEET = depositedSheet("amethyst_deposited_brass_sheet");
+    public static final ItemEntry<Item> AMETHYST_DEPOSITED_COPPER_SHEET = depositedSheet("amethyst_deposited_copper_sheet");
+    public static final ItemEntry<Item> AMETHYST_DEPOSITED_GOLDEN_SHEET = depositedSheet("amethyst_deposited_golden_sheet");
+    public static final ItemEntry<Item> AMETHYST_DEPOSITED_IRON_SHEET = depositedSheet("amethyst_deposited_iron_sheet");
+    public static final ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_BRASS_SHEET = depositedSheet("rose_quartz_deposited_brass_sheet");
+    public static final ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_COPPER_SHEET = depositedSheet("rose_quartz_deposited_copper_sheet");
+    public static final ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_GOLDEN_SHEET = depositedSheet("rose_quartz_deposited_golden_sheet");
+    public static final ItemEntry<Item> ROSE_QUARTZ_DEPOSITED_IRON_SHEET = depositedSheet("rose_quartz_deposited_iron_sheet");
 
     private CMIItems() {
     }
 
     public static void register() {
-        AMETHYST_DEPOSITED_BRASS_SHEET = depositedSheet("amethyst_deposited_brass_sheet");
-        AMETHYST_DEPOSITED_COPPER_SHEET = depositedSheet("amethyst_deposited_copper_sheet");
-        AMETHYST_DEPOSITED_GOLDEN_SHEET = depositedSheet("amethyst_deposited_golden_sheet");
-        AMETHYST_DEPOSITED_IRON_SHEET = depositedSheet("amethyst_deposited_iron_sheet");
-        ROSE_QUARTZ_DEPOSITED_BRASS_SHEET = depositedSheet("rose_quartz_deposited_brass_sheet");
-        ROSE_QUARTZ_DEPOSITED_COPPER_SHEET = depositedSheet("rose_quartz_deposited_copper_sheet");
-        ROSE_QUARTZ_DEPOSITED_GOLDEN_SHEET = depositedSheet("rose_quartz_deposited_golden_sheet");
-        ROSE_QUARTZ_DEPOSITED_IRON_SHEET = depositedSheet("rose_quartz_deposited_iron_sheet");
-
         if (CreateManaIndustry.TRICKSTER_ACTIVE) {
             KINETICS_SPELL_CORE = REGISTRATE.item("kinetics_spell_core", KineticsSpellCoreItem::create)
                     .recipe((c, p) -> {

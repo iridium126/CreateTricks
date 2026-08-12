@@ -1,0 +1,10 @@
+{
+  "type": "minecraft:stonecutting",
+  "ingredient": {
+    "item": "createmanaindustry:prismarine_quartz"
+  },
+  "result": {
+    "count": 2,
+    "id": "createmanaindustry:prismarine_quartz_block"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "type": "createmanaindustry:heated_compacting",
+  "heat_requirement": "superheated",
+  "ingredients": [
+    { "tag": "c:gems/quartz" },
+    { "item": "minecraft:prismarine_shard" },
+    { "item": "minecraft:prismarine_shard" },
+    { "item": "minecraft:prismarine_shard" },
+    { "item": "minecraft:prismarine_shard" },
+    { "item": "minecraft:prismarine_shard" },
+    { "item": "minecraft:prismarine_shard" },
+    { "item": "minecraft:prismarine_shard" },
+    { "item": "minecraft:prismarine_shard" }
+  ],
+  "results": [
+    { "id": "createmanaindustry:molten_prismarine_quartz", "amount": 250 }
+  ]
+}

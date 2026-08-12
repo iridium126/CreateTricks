@@ -3,6 +3,8 @@
     "createmanaindustry:molten_rose_quartz",
     "createmanaindustry:flowing_molten_rose_quartz",
     "createmanaindustry:molten_prismarine_quartz",
-    "createmanaindustry:flowing_molten_prismarine_quartz"
+    "createmanaindustry:flowing_molten_prismarine_quartz",
+    "minecraft:lava",
+    "minecraft:flowing_lava"
   ]
 }

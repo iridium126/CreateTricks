@@ -26,6 +26,7 @@ import com.simibubi.create.foundation.data.SharedProperties;
 import com.simibubi.create.foundation.data.TagGen;
 import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.tterrag.registrate.providers.RegistrateRecipeProvider;
+import com.tterrag.registrate.util.DataIngredient;
 import com.tterrag.registrate.util.entry.BlockEntry;
 import com.tterrag.registrate.util.entry.ItemEntry;
 import com.tterrag.registrate.util.nullness.NonNullBiConsumer;
@@ -34,6 +35,8 @@ import net.minecraft.client.renderer.RenderType;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.RotatedPillarBlock;
+import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.WeatheringCopper;
 import net.minecraft.world.level.material.MapColor;
 import net.minecraft.data.recipes.RecipeCategory;
@@ -144,6 +147,28 @@ public final class CMIBlocks {
 
     public static final BlockEntry<CondenserBlock> WAXED_OXIDIZED_CONDENSER =
             waxedCondenser("waxed_oxidized_condenser");
+
+    /**
+     * Block of Prismarine Quartz — strictly mirrors Create's Rose Quartz Block
+     * ({@link RotatedPillarBlock}, amethyst-baseline hardness, correct-tool
+     * drops, deepslate sound, pickaxe-only, axis blockstate, stonecutting 2→1),
+     * with only the map color changed to the prismarine cyan family.
+     */
+    public static final BlockEntry<RotatedPillarBlock> PRISMARINE_QUARTZ_BLOCK = REGISTRATE
+            .block("prismarine_quartz_block", RotatedPillarBlock::new)
+            .initialProperties(() -> Blocks.AMETHYST_BLOCK)
+            .properties(p -> p.mapColor(MapColor.COLOR_CYAN)
+                    .requiresCorrectToolForDrops()
+                    .sound(SoundType.DEEPSLATE))
+            .transform(TagGen.pickaxeOnly())
+            .blockstate((c, p) -> p.axisBlock(c.get(),
+                    p.modLoc("block/prismarine_quartz_side"),
+                    p.modLoc("block/prismarine_quartz_top")))
+            .recipe((c, p) -> p.stonecutting(DataIngredient.items(CMIItems.PRISMARINE_QUARTZ.get()),
+                    RecipeCategory.BUILDING_BLOCKS, c::get, 2))
+            .simpleItem()
+            .lang("Block of Prismarine Quartz")
+            .register();
 
     /**
      * Deposition lid — visually and behaviourally identical to

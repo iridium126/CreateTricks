@@ -1,0 +1,32 @@
+{
+  "parent": "minecraft:recipes/root",
+  "criteria": {
+    "has_prismarine_quartz": {
+      "conditions": {
+        "items": [
+          {
+            "items": "createmanaindustry:prismarine_quartz"
+          }
+        ]
+      },
+      "trigger": "minecraft:inventory_changed"
+    },
+    "has_the_recipe": {
+      "conditions": {
+        "recipe": "createmanaindustry:prismarine_quartz_block_from_prismarine_quartz_stonecutting"
+      },
+      "trigger": "minecraft:recipe_unlocked"
+    }
+  },
+  "requirements": [
+    [
+      "has_the_recipe",
+      "has_prismarine_quartz"
+    ]
+  ],
+  "rewards": {
+    "recipes": [
+      "createmanaindustry:prismarine_quartz_block_from_prismarine_quartz_stonecutting"
+    ]
+  }
+}

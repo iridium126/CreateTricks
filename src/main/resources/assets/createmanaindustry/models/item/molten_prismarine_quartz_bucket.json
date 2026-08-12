@@ -1,0 +1,6 @@
+{
+  "loader": "neoforge:fluid_container",
+  "parent": "neoforge:item/bucket",
+  "fluid": "createmanaindustry:molten_prismarine_quartz",
+  "apply_fluid_luminosity": true
+}

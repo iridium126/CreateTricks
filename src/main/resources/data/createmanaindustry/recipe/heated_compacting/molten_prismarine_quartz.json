@@ -2,9 +2,9 @@
   "type": "createmanaindustry:heated_compacting",
   "heat_requirement": "superheated",
   "ingredients": [
-    { "item": "create:rose_quartz" }
+    { "item": "createmanaindustry:prismarine_quartz" }
   ],
   "results": [
-    { "id": "createmanaindustry:molten_rose_quartz", "amount": 250 }
+    { "id": "createmanaindustry:molten_prismarine_quartz", "amount": 250 }
   ]
 }

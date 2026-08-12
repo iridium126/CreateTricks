@@ -2,7 +2,7 @@ package com.iridium126.createmanaindustry.content.kinetics.kineticatomizer;
 
 import java.util.List;
 
-import com.iridium126.createmanaindustry.CMIFluids;
+import com.iridium126.createmanaindustry.CMITags;
 import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistSync;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore;
@@ -13,7 +13,6 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
-import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
@@ -28,11 +27,9 @@ public class KineticAtomizerBlockEntity extends KineticBlockEntity {
     private final FluidTank tank = new FluidTank(TANK_CAPACITY) {
         @Override
         public boolean isFluidValid(FluidStack stack) {
-            // Molten Rose Quartz is never atomized — its mist comes only from
-            // recipe byproducts (vapor deposition), never from spraying.
-            return !stack.is(FluidTags.LAVA)
-                    && !stack.is(CMIFluids.MOLTEN_ROSE_QUARTZ.get())
-                    && !stack.is(CMIFluids.MOLTEN_ROSE_QUARTZ.get().getSource());
+            // Molten fluids (and lava) are never atomized — their mist comes only
+            // from recipe byproducts (vaporizing), never from spraying.
+            return !stack.is(CMITags.MOLTEN_FLUID);
         }
 
         @Override

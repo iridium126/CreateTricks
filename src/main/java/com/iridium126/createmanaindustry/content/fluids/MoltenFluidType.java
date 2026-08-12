@@ -13,17 +13,17 @@ import net.neoforged.neoforge.client.extensions.common.IClientFluidTypeExtension
 import net.neoforged.neoforge.fluids.FluidType;
 
 /**
- * Fluid type for Molten Rose Quartz — carries the rose quartz still/flowing
- * textures and mirrors vanilla {@code LAVA_TYPE}'s movement feel: sluggish
- * entity motion, items sink, and the fluid uses its own movement logic rather
- * than water's.
+ * Shared fluid type for this mod's molten fluids — carries the still/flowing
+ * textures of the individual fluid and mirrors vanilla {@code LAVA_TYPE}'s
+ * movement feel: sluggish entity motion, items sink, and the fluid uses its own
+ * movement logic rather than water's.
  */
-public class MoltenRoseQuartzFluidType extends FluidType {
+public class MoltenFluidType extends FluidType {
 
     private final ResourceLocation stillTexture;
     private final ResourceLocation flowingTexture;
 
-    public MoltenRoseQuartzFluidType(Properties properties, ResourceLocation stillTexture,
+    public MoltenFluidType(Properties properties, ResourceLocation stillTexture,
             ResourceLocation flowingTexture) {
         super(properties);
         this.stillTexture = stillTexture;

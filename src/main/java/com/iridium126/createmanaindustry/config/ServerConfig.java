@@ -59,6 +59,11 @@ public final class ServerConfig {
     private static ModConfigSpec.IntValue ALLAY_BURNER_MIST_RADIUS;
     private static ModConfigSpec.IntValue ALLAY_BURNER_MIST_PER_TICK;
 
+    // ---- fuel_tank ---------------------------------------------------------
+
+    private static ModConfigSpec.IntValue FUEL_TANK_CAPACITY;
+    private static ModConfigSpec.IntValue FUEL_TANK_MAX_BLOCKS;
+
     // ---- hexcasting --------------------------------------------------------
 
     private static ModConfigSpec.LongValue CYPHER_MAX_MEDIA;
@@ -113,6 +118,17 @@ public final class ServerConfig {
         ALLAY_BURNER_MIST_PER_TICK = BUILDER
                 .comment("Liquid Soul mist capacity (mB) added per tick by a burning Allay Burner.")
                 .defineInRange("allayBurnerMistPerTick", 1, 1, 1000);
+        BUILDER.pop();
+
+        BUILDER.comment("Molten Salt Fuel Tank — multi-block fluid storage connecting in arbitrary shapes.").push("fuel_tank");
+        // Bounds are coupled: blocks × capacity × 1000 must stay ≤ Integer.MAX_VALUE
+        // (FluidTank stores mB as an int). 21,474 × 100 × 1000 = 2,147,400,000 ✓.
+        FUEL_TANK_CAPACITY = BUILDER
+                .comment("Fluid capacity of one fuel tank block, in buckets. Total capacity of a connected group = blocks × fuelTankCapacity × 1000 mB. Capped at 100 so blocks × capacity × 1000 never overflows the int tank capacity.")
+                .defineInRange("fuelTankCapacity", 8, 1, 100);
+        FUEL_TANK_MAX_BLOCKS = BUILDER
+                .comment("Maximum number of blocks in one connected fuel tank group. Bounds the connectivity/basin recomputation cost. Capped at 21,474 (= 2,147,483 / 100) so blocks × fuelTankCapacity × 1000 never overflows the int tank capacity.")
+                .defineInRange("fuelTankMaxBlocks", 4096, 1, 21474);
         BUILDER.pop();
 
         BUILDER.comment("Incomplete Hexcasting item media capacities (in Hexcasting dust units, 1 dust = 10,000).").push("hexcasting");
@@ -176,6 +192,8 @@ public final class ServerConfig {
     public static double condenseEfficiency = 5.0;
     public static int allayBurnerMistRadius = 4;
     public static int allayBurnerMistPerTick = 1;
+    public static int fuelTankCapacity = 8;
+    public static int fuelTankMaxBlocks = 4096;
     public static long cypherMaxMedia = 6400000L;
     public static long trinketMaxMedia = 64000000L;
     public static long artifactMaxMedia = 640000000L;
@@ -249,6 +267,8 @@ public final class ServerConfig {
             condenseEfficiency = CONDENSE_EFFICIENCY.get();
             allayBurnerMistRadius = ALLAY_BURNER_MIST_RADIUS.get();
             allayBurnerMistPerTick = ALLAY_BURNER_MIST_PER_TICK.get();
+            fuelTankCapacity = FUEL_TANK_CAPACITY.get();
+            fuelTankMaxBlocks = FUEL_TANK_MAX_BLOCKS.get();
             cypherMaxMedia = CYPHER_MAX_MEDIA.get();
             trinketMaxMedia = TRINKET_MAX_MEDIA.get();
             artifactMaxMedia = ARTIFACT_MAX_MEDIA.get();

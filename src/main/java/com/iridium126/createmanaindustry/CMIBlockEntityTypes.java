@@ -5,6 +5,8 @@ import static com.iridium126.createmanaindustry.CreateManaIndustry.REGISTRATE;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlockEntity;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerRenderer;
 import com.iridium126.createmanaindustry.content.fluids.condenser.CondenserBlockEntity;
+import com.iridium126.createmanaindustry.content.fluids.fueltank.FuelTankBlockEntity;
+import com.iridium126.createmanaindustry.content.fluids.fueltank.FuelTankRenderer;
 import com.iridium126.createmanaindustry.content.kinetics.depositionlid.DepositionLidBlockEntity;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlockEntity;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerRenderer;
@@ -48,6 +50,12 @@ public final class CMIBlockEntityTypes {
     public static final BlockEntityEntry<DepositionLidBlockEntity> DEPOSITION_LID = REGISTRATE
             .blockEntity("deposition_lid", DepositionLidBlockEntity::new)
             .validBlocks(CMIBlocks.DEPOSITION_LID)
+            .register();
+
+    public static final BlockEntityEntry<FuelTankBlockEntity> MOLTEN_SALT_FUEL_TANK = REGISTRATE
+            .blockEntity("molten_salt_fuel_tank", FuelTankBlockEntity::new)
+            .validBlocks(CMIBlocks.MOLTEN_SALT_FUEL_TANK)
+            .renderer(() -> FuelTankRenderer::new)
             .register();
 
     public static final BlockEntityEntry<ManaCogwheelBlockEntity> MANA_COGWHEEL = REGISTRATE

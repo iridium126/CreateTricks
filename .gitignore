@@ -40,5 +40,6 @@ repo/
 !**/src/**/repo/
 
 .refs/
-.claude/skills/
+.claude/
+.agents/
 loom-remap/remapped-libs/

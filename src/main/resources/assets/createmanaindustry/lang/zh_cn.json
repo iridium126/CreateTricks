@@ -108,6 +108,7 @@
   "create.recipe.heat_requirement.allayheated": "悦灵加热",
   "block.createmanaindustry.kinetic_atomizer": "动力雾化器",
   "block.createmanaindustry.kinetic_mana_generator": "动力注魔台",
+  "block.createmanaindustry.molten_salt_fuel_tank": "熔盐堆燃料储罐",
   "block.createmanaindustry.kinetic_mana_generator.tooltip.summary": "消耗_应力_为_Trickster 晶结_充能，通过滑动框调节其_每 RPM 的应力消耗_。",
   "itemGroup.createmanaindustry": "机械动力: 魔法工业",
   "block.createmanaindustry.liquid_mana": "液态魔力",

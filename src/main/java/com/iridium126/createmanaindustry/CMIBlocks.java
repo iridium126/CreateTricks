@@ -2,12 +2,16 @@ package com.iridium126.createmanaindustry;
 
 import static com.iridium126.createmanaindustry.CreateManaIndustry.REGISTRATE;
 import static com.simibubi.create.api.behaviour.movement.MovementBehaviour.movementBehaviour;
+import static com.simibubi.create.api.contraption.storage.fluid.MountedFluidStorageType.mountedFluidStorage;
 
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlock;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlockItem;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerMovementBehaviour;
 import com.iridium126.createmanaindustry.content.fluids.condenser.CondenserBlock;
 import com.iridium126.createmanaindustry.content.fluids.condenser.WeatheringCondenserBlock;
+import com.iridium126.createmanaindustry.content.fluids.fueltank.FuelTankBlock;
+import com.iridium126.createmanaindustry.content.fluids.fueltank.FuelTankModel;
+import com.iridium126.createmanaindustry.content.fluids.fueltank.FuelTankMovementBehavior;
 import com.iridium126.createmanaindustry.content.kinetics.depositionlid.DepositionLidBlock;
 import com.iridium126.createmanaindustry.content.kinetics.depositionlid.DepositionLidCTBehaviour;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlock;
@@ -147,6 +151,30 @@ public final class CMIBlocks {
 
     public static final BlockEntry<CondenserBlock> WAXED_OXIDIZED_CONDENSER =
             waxedCondenser("waxed_oxidized_condenser");
+
+    /**
+     * Molten Salt Fuel Tank — a multi-block fluid storage that connects in any
+     * shape (no Create box constraint). Mirrors Create's fluid tank visually
+     * (copied window models), with a custom connectivity/basin simulation and
+     * merged liquid rendering. Window is always open; no wrench toggle.
+     */
+    public static final BlockEntry<FuelTankBlock> MOLTEN_SALT_FUEL_TANK = REGISTRATE
+            .block("molten_salt_fuel_tank", FuelTankBlock::new)
+            .initialProperties(SharedProperties::copperMetal)
+            .properties(p -> p.noOcclusion()
+                    .isRedstoneConductor((p1, p2, p3) -> true))
+            .transform(TagGen.pickaxeOnly())
+            // blockstate is hand-written (4 top/bottom window variants) in src/main/resources
+            .blockstate((c, p) -> {})
+            .onRegister(CreateRegistrate.blockModel(() -> FuelTankModel::new))
+            .transform(mountedFluidStorage(CMIMountedStorageTypes.MOLTEN_SALT_FUEL_TANK))
+            .onRegister(movementBehaviour(new FuelTankMovementBehavior()))
+            .addLayer(() -> RenderType::cutoutMipped)
+            .item()
+            // item model is hand-written (parents block_single_window)
+            .model(NonNullBiConsumer.noop())
+            .build()
+            .register();
 
     /**
      * Block of Prismarine Quartz — strictly mirrors Create's Rose Quartz Block

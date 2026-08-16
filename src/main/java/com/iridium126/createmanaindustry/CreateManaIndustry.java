@@ -89,6 +89,7 @@ public class CreateManaIndustry {
         CMIComponents.register(modEventBus);
         CMIAttachments.register(modEventBus);
         CMIBlocks.register();
+        CMIMountedStorageTypes.register();
         CMIFluids.register();
         CMIBlockEntityTypes.register();
         CMIItems.register();

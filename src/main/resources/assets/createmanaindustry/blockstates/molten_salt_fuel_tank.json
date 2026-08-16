@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "createmanaindustry:block/molten_salt_fuel_tank/block"
+    }
+  }
+}

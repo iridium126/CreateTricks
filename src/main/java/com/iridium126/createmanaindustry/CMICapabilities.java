@@ -6,6 +6,7 @@ import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlockEntity;
 import com.iridium126.createmanaindustry.content.fluids.EsotericManaFluidHandler;
 import com.iridium126.createmanaindustry.content.fluids.MediaBatteryFluidHandler;
 import com.iridium126.createmanaindustry.content.fluids.TricksterKnotFluidHandler;
+import com.iridium126.createmanaindustry.content.fluids.fueltank.FuelTankBlockEntity;
 import com.iridium126.createmanaindustry.content.items.TricksterKnotItemHandler;
 import com.iridium126.createmanaindustry.content.kinetics.kineticatomizer.KineticAtomizerBlockEntity;
 
@@ -46,6 +47,13 @@ public final class CMICapabilities {
                 Capabilities.FluidHandler.BLOCK,
                 CMIBlockEntityTypes.KINETIC_ATOMIZER.get(),
                 (be, side) -> ((KineticAtomizerBlockEntity) be).getFluidHandler(side));
+
+        // Molten Salt Fuel Tank — every block of the group exposes the controller's
+        // inventory (any face; the handler seeds basin updates with the attaching cell).
+        event.registerBlockEntity(
+                Capabilities.FluidHandler.BLOCK,
+                CMIBlockEntityTypes.MOLTEN_SALT_FUEL_TANK.get(),
+                (be, side) -> ((FuelTankBlockEntity) be).getFluidCapability());
 
         // Media Battery fluid handler — bridges Create fluid system to Hexcasting media.
         // Uses data components only, no Level context needed.

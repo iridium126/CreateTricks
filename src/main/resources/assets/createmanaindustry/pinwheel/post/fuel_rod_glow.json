@@ -1,0 +1,11 @@
+{
+  "stages": [
+    {
+      "type": "veil:blit",
+      "shader": "createmanaindustry:fuel_rod_glow",
+      "in": "minecraft:main",
+      "clear": false
+    }
+  ],
+  "renderStage": "after_translucent_blocks"
+}

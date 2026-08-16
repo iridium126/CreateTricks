@@ -64,6 +64,11 @@ public final class ServerConfig {
     private static ModConfigSpec.IntValue FUEL_TANK_CAPACITY;
     private static ModConfigSpec.IntValue FUEL_TANK_MAX_BLOCKS;
 
+    // ---- fuel_rod ----------------------------------------------------------
+
+    private static ModConfigSpec.IntValue FUEL_ROD_MAX_RADIUS;
+    private static ModConfigSpec.BooleanValue FUEL_ROD_STRICT_STACKING;
+
     // ---- hexcasting --------------------------------------------------------
 
     private static ModConfigSpec.LongValue CYPHER_MAX_MEDIA;
@@ -131,6 +136,17 @@ public final class ServerConfig {
                 .defineInRange("fuelTankMaxBlocks", 4096, 1, 21474);
         BUILDER.pop();
 
+        BUILDER.comment("Molten Salt Reactor Fuel Rod — a multi-block structure of fuel tanks and glass.").push("fuel_rod");
+        // A layer of radius r holds 2(r-2)² + 2(r-2) + 1 tanks; r = 32 gives 1,861,
+        // comfortably inside the fuelTankMaxBlocks group cap with several layers.
+        FUEL_ROD_MAX_RADIUS = BUILDER
+                .comment("Maximum horizontal radius (in blocks) of one fuel rod layer. A layer is a solid diamond of fuel tanks (Manhattan distance < radius - 1) outlined by glass (#minecraft:impermeable) at distance radius - 1; the minimum valid layer (radius 2) is one tank surrounded by four glass blocks.")
+                .defineInRange("fuelRodMaxRadius", 5, 2, 32);
+        FUEL_ROD_STRICT_STACKING = BUILDER
+                .comment("Whether every fuel rod layer's radius must be less than or equal to the layer below it (a cone that widens downward). When false, layers may stack in any radius order as long as their centers align.")
+                .define("fuelRodStrictStacking", true);
+        BUILDER.pop();
+
         BUILDER.comment("Incomplete Hexcasting item media capacities (in Hexcasting dust units, 1 dust = 10,000).").push("hexcasting");
         CYPHER_MAX_MEDIA = BUILDER
                 .comment("Maximum media capacity for incomplete cyphers.")
@@ -194,6 +210,8 @@ public final class ServerConfig {
     public static int allayBurnerMistPerTick = 1;
     public static int fuelTankCapacity = 8;
     public static int fuelTankMaxBlocks = 4096;
+    public static int fuelRodMaxRadius = 5;
+    public static boolean fuelRodStrictStacking = true;
     public static long cypherMaxMedia = 6400000L;
     public static long trinketMaxMedia = 64000000L;
     public static long artifactMaxMedia = 640000000L;
@@ -269,6 +287,8 @@ public final class ServerConfig {
             allayBurnerMistPerTick = ALLAY_BURNER_MIST_PER_TICK.get();
             fuelTankCapacity = FUEL_TANK_CAPACITY.get();
             fuelTankMaxBlocks = FUEL_TANK_MAX_BLOCKS.get();
+            fuelRodMaxRadius = FUEL_ROD_MAX_RADIUS.get();
+            fuelRodStrictStacking = FUEL_ROD_STRICT_STACKING.get();
             cypherMaxMedia = CYPHER_MAX_MEDIA.get();
             trinketMaxMedia = TRINKET_MAX_MEDIA.get();
             artifactMaxMedia = ARTIFACT_MAX_MEDIA.get();

@@ -1,5 +1,6 @@
 package com.iridium126.createmanaindustry;
 
+import com.iridium126.createmanaindustry.client.render.FuelRodBloomHandler;
 import com.iridium126.createmanaindustry.client.render.MistClientHandler;
 import com.iridium126.createmanaindustry.client.render.InlineTrickRenderer;
 import com.iridium126.createmanaindustry.ponder.CMIPonderPlugin;
@@ -25,13 +26,15 @@ public class CreateManaIndustryClient {
     public CreateManaIndustryClient(ModContainer container) {
         container.registerExtensionPoint(IConfigScreenFactory.class, ConfigurationScreen::new);
 
-        // Register the Veil post-processing uniform injection listener.
-        // The mist pipeline is added/removed on demand when atomizers
-        // activate/deactivate — see MistClientHandler.setActive().
-        // The Veil mist pipeline and the iris gbuffer hook are both initialised
-        // inside MistClientHandler.init().
-        if (CreateManaIndustry.VEIL_ACTIVE)
+        // Register the Veil post-processing uniform injection listeners.
+        // The mist/fuel-rod-glow pipelines are added/removed on demand when
+        // atomizers activate / rods form — see MistClientHandler.setActive()
+        // and FuelRodBloomHandler.onRodSync(). The Veil pipelines and the iris
+        // gbuffer hooks are all initialised inside the handlers' init().
+        if (CreateManaIndustry.VEIL_ACTIVE) {
             MistClientHandler.init();
+            FuelRodBloomHandler.init();
+        }
 
         if (CreateManaIndustry.HEX_ACTIVE && CreateManaIndustry.TRICKSTER_ACTIVE)
             InlineClientAPI.INSTANCE.addRenderer(InlineTrickRenderer.INSTANCE);
@@ -51,17 +54,19 @@ public class CreateManaIndustryClient {
         });
     }
 
-    /** Clears client mist sources when the client's level/dimension changes. */
+    /** Clears client mist sources and fuel rod glows when the client's level/dimension changes. */
     @SubscribeEvent
     private static void onLevelUnload(LevelEvent.Unload event) {
         // In single-player the integrated server posts Unload for its ServerLevels
         // on the same bus — only react to the CLIENT's own level so a server
         // dimension unload (e.g. the nether timing out) doesn't clear the
-        // overworld's mist. MistClientHandler sources are keyed by BlockPos only
+        // overworld's effects. Both handlers key their sources by BlockPos only
         // (no dimension), so without a clear on dimension switch they'd linger at
         // the same absolute coordinates in the new dimension.
         if (event.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel
-                && CreateManaIndustry.VEIL_ACTIVE)
+                && CreateManaIndustry.VEIL_ACTIVE) {
             MistClientHandler.clearAll();
+            FuelRodBloomHandler.clearAll();
+        }
     }
 }

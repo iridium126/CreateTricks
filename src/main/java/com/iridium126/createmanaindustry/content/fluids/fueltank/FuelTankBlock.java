@@ -64,6 +64,10 @@ public class FuelTankBlock extends Block implements IWrenchable, IBE<FuelTankBlo
 				return;
 			world.removeBlockEntity(pos);
 			FuelTankConnectivity.split(tankBE);
+			// A removed fuel tank can break or re-root a fuel rod; re-validate the
+			// structures around the hole from any surviving neighbours.
+			if (!world.isClientSide)
+				FuelRodStructure.validateFor(world, pos);
 		}
 	}
 

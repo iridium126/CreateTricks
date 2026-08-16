@@ -15,6 +15,8 @@ import com.iridium126.createmanaindustry.compat.trickster.KineticStressTrickRegi
 import com.iridium126.createmanaindustry.config.ClientConfig;
 import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.iridium126.createmanaindustry.content.burner.AllayBurnerBlock;
+import com.iridium126.createmanaindustry.content.fluids.fueltank.FuelRodStructure;
+import com.iridium126.createmanaindustry.content.fluids.fueltank.FuelTankBlock;
 import com.iridium126.createmanaindustry.content.kinetics.kineticmanagenerator.KineticManaGeneratorBlock;
 import com.simibubi.create.api.boiler.BoilerHeater;
 import com.simibubi.create.api.stress.BlockStressValues;
@@ -27,9 +29,13 @@ import com.simibubi.create.foundation.item.KineticStats;
 import com.simibubi.create.foundation.item.TooltipModifier;
 
 import net.createmod.catnip.lang.FontHelper;
+import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.ModList;
@@ -37,6 +43,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
@@ -117,6 +124,12 @@ public class CreateManaIndustry {
             CircleSlateManaPool.ensureTypeRegistered();
         }
 
+        // Fuel rod structure recognition: glass has no block entity, so its
+        // place/break must be observed through game events (fuel tanks re-validate
+        // through their own connectivity update instead).
+        NeoForge.EVENT_BUS.addListener(CreateManaIndustry::onBlockPlacedForRod);
+        NeoForge.EVENT_BUS.addListener(CreateManaIndustry::onBlockBrokenForRod);
+
         // Server-authoritative gameplay + stress config (synced to clients), and
         // the client-only rendering config. ServerConfig.build() must run after
         // block registration so the stress defaults are populated.
@@ -156,5 +169,36 @@ public class CreateManaIndustry {
                 (level, pos, state) -> state.getValue(AllayBurnerBlock.HEAT_LEVEL)
                         == AllayBurnerBlock.HeatLevel.ALLAYHEATED ? 2 : BoilerHeater.NO_HEAT);
         });
+    }
+
+    // ---- fuel rod structure events ------------------------------------------
+
+    /**
+     * Glass (and tank) placement: re-validate any fuel rod whose structure could
+     * contain the placed block. Fuel tanks additionally re-validate through their
+     * own connectivity update; this event mainly catches glass, which has no
+     * block entity of its own.
+     */
+    private static void onBlockPlacedForRod(BlockEvent.EntityPlaceEvent event) {
+        if (!(event.getLevel() instanceof Level level) || level.isClientSide)
+            return;
+        BlockState state = event.getPlacedBlock();
+        if (state.getBlock() instanceof FuelTankBlock || state.is(BlockTags.IMPERMEABLE))
+            FuelRodStructure.validateFor(level, event.getPos());
+    }
+
+    /**
+     * Player break: fires before the block is removed, so the validation is
+     * deferred until the world reflects the break. Non-player removals (pistons,
+     * explosions, contraptions) are healed by the rod controller's lazy self-check.
+     */
+    private static void onBlockBrokenForRod(BlockEvent.BreakEvent event) {
+        if (!(event.getLevel() instanceof Level level) || level.isClientSide)
+            return;
+        BlockState state = event.getState();
+        if (state.getBlock() instanceof FuelTankBlock || state.is(BlockTags.IMPERMEABLE)) {
+            BlockPos pos = event.getPos().immutable();
+            level.getServer().execute(() -> FuelRodStructure.validateFor(level, pos));
+        }
     }
 }

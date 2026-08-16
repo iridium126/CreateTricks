@@ -22,6 +22,8 @@ public final class ClientConfig {
 
     private static ModConfigSpec.DoubleValue MIST_GLOW_STRENGTH;
     private static ModConfigSpec.BooleanValue MIST_DEBUG_SHADOW;
+    private static ModConfigSpec.IntValue FUEL_ROD_BLOOM_COLOR;
+    private static ModConfigSpec.DoubleValue FUEL_ROD_BLOOM_STRENGTH;
 
     static {
         BUILDER.comment("Volumetric mist rendering options.").push("rendering");
@@ -31,6 +33,12 @@ public final class ClientConfig {
         MIST_DEBUG_SHADOW = BUILDER
                 .comment("DEBUG: visualize the Tyndall shadow-map sampling as mist color (green = lit, red = occluded). Temporary diagnostic.")
                 .define("mistDebugShadow", false);
+        FUEL_ROD_BLOOM_COLOR = BUILDER
+                .comment("RGB color (as a decimal integer, e.g. 16744448 = 0xFF8800 molten-salt orange) of the bloom glow emitted by formed Molten Salt Reactor Fuel Rods.")
+                .defineInRange("fuelRodBloomColor", 0xFF8800, 0, 0xFFFFFF);
+        FUEL_ROD_BLOOM_STRENGTH = BUILDER
+                .comment("Global multiplier for the intensity of the fuel rod bloom glow.")
+                .defineInRange("fuelRodBloomStrength", 1.0, 0.0, 100.0);
         BUILDER.pop();
     }
 
@@ -38,6 +46,8 @@ public final class ClientConfig {
 
     public static double mistGlowStrength = 0.5;
     public static boolean mistDebugShadow = false;
+    public static int fuelRodBloomColor = 0xFF8800;
+    public static double fuelRodBloomStrength = 1.0;
 
     private ClientConfig() {}
 
@@ -47,6 +57,8 @@ public final class ClientConfig {
                 && (event instanceof ModConfigEvent.Loading || event instanceof ModConfigEvent.Reloading)) {
             mistGlowStrength = MIST_GLOW_STRENGTH.get();
             mistDebugShadow = MIST_DEBUG_SHADOW.get();
+            fuelRodBloomColor = FUEL_ROD_BLOOM_COLOR.get();
+            fuelRodBloomStrength = FUEL_ROD_BLOOM_STRENGTH.get();
         }
     }
 }

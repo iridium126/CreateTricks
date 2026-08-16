@@ -60,6 +60,16 @@ public class FuelTankBlockEntity extends SmartBlockEntity
 	protected int luminosity;
 
 	/**
+	 * Fuel rod structure data; non-null only on a formed rod's bottom-centre
+	 * tank (see {@link FuelRodStructure}). Synced to clients and persisted in
+	 * NBT; cleared when the structure breaks.
+	 */
+	@Nullable
+	public FuelRodStructure.RodData rodData;
+	/** Whether the next client packet must carry the rod "cleared" marker (the rod itself is always written when present). */
+	private boolean needsRodSync;
+
+	/**
 	 * Basin decomposition + per-basin liquid surfaces. Non-null only on the
 	 * controller (both sides — the server drives it, the client renders from it).
 	 */
@@ -115,6 +125,8 @@ public class FuelTankBlockEntity extends SmartBlockEntity
 		if (level.isClientSide)
 			return;
 		FuelTankConnectivity.updateConnectivity(this);
+		// This tank may have joined, extended or broken a fuel rod structure.
+		FuelRodStructure.validateFor(level, worldPosition);
 	}
 
 	/** Rebuilds the fluid capability and notifies the capability caches. */
@@ -170,6 +182,11 @@ public class FuelTankBlockEntity extends SmartBlockEntity
 		// basins have not been computed yet.
 		if (!level.isClientSide && isController() && (basins == null || hasPendingGroupLoad()))
 			FuelTankConnectivity.updateConnectivity(this);
+		// Self-heal the fuel rod structure: while formed, re-validate on every lazy
+		// tick so glass moved by pistons, explosions and other un-triggered changes
+		// converge (and clear stale data) within one lazy-tick period.
+		if (!level.isClientSide && rodData != null)
+			FuelRodStructure.validateFrom(level, rodData.center);
 	}
 
 	// ---- fluid handler (capability) ------------------------------------------
@@ -509,6 +526,20 @@ public class FuelTankBlockEntity extends SmartBlockEntity
 	}
 
 	/**
+	 * Updates the fuel rod structure state, syncing immediately when the state
+	 * actually changed (forming, extending or breaking a rod).
+	 */
+	public void setRodData(@Nullable FuelRodStructure.RodData rod, boolean syncImmediately) {
+		if (Objects.equals(this.rodData, rod))
+			return;
+		this.rodData = rod;
+		needsRodSync = true;
+		setChanged();
+		if (syncImmediately)
+			sendDataImmediately();
+	}
+
+	/**
 	 * Re-arms comparators next to any part of the group. Mirrors Create's per-part
 	 * {@code updateNeighbourForOutputSignal}; throttled to the sync cadence so a large
 	 * tank does not pay this cost on every pipe fill.
@@ -592,6 +623,22 @@ public class FuelTankBlockEntity extends SmartBlockEntity
 			}
 		}
 
+		// Fuel rod structure (any tank may be a rod's bottom centre, regardless of
+		// fluid-group controller). Client packets carry it only when it changed,
+		// including an explicit "cleared" marker so removals reach the client.
+		if (clientPacket) {
+			FuelRodStructure.RodData prevRod = rodData;
+			if (tag.contains("Rod"))
+				rodData = FuelRodStructure.RodData.readFromNBT(tag.getCompound("Rod"));
+			else if (tag.contains("RodCleared"))
+				rodData = null;
+			// Notify the client-side bloom handler when the rod state changed.
+			if (level != null && level.isClientSide && !Objects.equals(prevRod, rodData))
+				FuelRodSync.notifyClientSync(worldPosition, rodData);
+		} else if (tag.contains("Rod")) {
+			rodData = FuelRodStructure.RodData.readFromNBT(tag.getCompound("Rod"));
+		}
+
 		// On load, re-form the group from the world (blocks may be loading across chunks).
 		if (!clientPacket)
 			updateConnectivity = true;
@@ -645,6 +692,24 @@ public class FuelTankBlockEntity extends SmartBlockEntity
 		}
 		needsBasinSync = false;
 		needsSurfaceSync = false;
+
+		// Fuel rod state: persisted on every full save; client packets always
+		// carry the rod when present so a freshly loaded chunk syncs it with the
+		// initial packet (no setRodData runs between the NBT restore and the
+		// first sendData), and the "RodCleared" marker (gated by needsRodSync)
+		// distinguishes a clear from "unchanged".
+		if (!clientPacket) {
+			if (rodData != null)
+				tag.put("Rod", rodData.writeToNBT());
+		} else {
+			if (rodData != null) {
+				tag.put("Rod", rodData.writeToNBT());
+				needsRodSync = false;
+			} else if (needsRodSync) {
+				needsRodSync = false;
+				tag.putBoolean("RodCleared", true);
+			}
+		}
 
 		if (!clientPacket)
 			return;

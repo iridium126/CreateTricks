@@ -26,7 +26,6 @@ import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtUtils;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -120,6 +119,25 @@ public final class FuelTankConnectivity {
 		return visited;
 	}
 
+	/**
+	 * Whether the BFS in {@link #findGroup} was cut off by the block cap: some
+	 * face-neighbour of the visited set is another loaded fuel tank, so the
+	 * component extends beyond {@code fuelTankMaxBlocks}. Merging such a set would
+	 * silently split the component (see {@link #updateConnectivity}).
+	 */
+	private static boolean isTruncated(Level level, BlockEntityType<?> type, Set<BlockPos> group) {
+		for (BlockPos p : group) {
+			for (Direction d : Direction.values()) {
+				BlockPos n = p.relative(d);
+				if (group.contains(n) || !isFuelTankAt(level, n))
+					continue;
+				if (partAt(type, level, n) != null)
+					return true;
+			}
+		}
+		return false;
+	}
+
 	static BlockPos pickController(Set<BlockPos> group) {
 		BlockPos best = null;
 		for (BlockPos p : group)
@@ -166,6 +184,18 @@ public final class FuelTankConnectivity {
 					return;
 				break;
 			}
+		}
+
+		// The connected component exceeds fuelTankMaxBlocks: the BFS was truncated,
+		// so merging this set would split the component in two — fluid would stay on
+		// the old controller while the new group reads an empty tank, and the parts
+		// would keep an unculled interior wall between them. Keep the newly placed
+		// block as its own group instead and say so once.
+		if (isTruncated(level, type, group)) {
+			CreateManaIndustry.LOGGER.warn(
+					"Fuel tank @ {} not merged: connected component exceeds {} blocks (fuelTankMaxBlocks); extra blocks stay separate",
+					be.getBlockPos(), ServerConfig.fuelTankMaxBlocks);
+			return;
 		}
 
 		// Existing controllers within the group and their fluids.

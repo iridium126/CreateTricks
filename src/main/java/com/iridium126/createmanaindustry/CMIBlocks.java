@@ -164,15 +164,18 @@ public final class CMIBlocks {
             .properties(p -> p.noOcclusion()
                     .isRedstoneConductor((p1, p2, p3) -> true))
             .transform(TagGen.pickaxeOnly())
-            // blockstate is hand-written (4 top/bottom window variants) in src/main/resources
-            .blockstate((c, p) -> {})
+            // Unified six-face model is hand-written; datagen emits the
+            // single-variant blockstate referencing it (mirrors Create's
+            // `simpleBlock` + `getExistingFile` pattern).
+            .blockstate((c, p) -> p.simpleBlock(c.get(), p.models()
+                    .getExistingFile(p.modLoc("block/molten_salt_fuel_tank/block"))))
             .onRegister(CreateRegistrate.blockModel(() -> FuelTankModel::new))
             .transform(mountedFluidStorage(CMIMountedStorageTypes.MOLTEN_SALT_FUEL_TANK))
             .onRegister(movementBehaviour(new FuelTankMovementBehavior()))
-            .addLayer(() -> RenderType::cutoutMipped)
             .item()
-            // item model is hand-written (parents block_single_window)
-            .model(NonNullBiConsumer.noop())
+            // Datagen-generated item model parenting the unified block model.
+            .model((c, p) -> p.withExistingParent(c.getName(),
+                    p.modLoc("block/molten_salt_fuel_tank/block")))
             .build()
             .register();
 

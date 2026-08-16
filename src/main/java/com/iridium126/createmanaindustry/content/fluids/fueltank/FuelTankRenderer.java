@@ -171,6 +171,10 @@ public class FuelTankRenderer extends SafeBlockEntityRenderer<FuelTankBlockEntit
 			if (!FuelTankConnectivity.isSameGroup(be.getLevel(), c, c.below()))
 				yMin = CAP;
 		}
+		// Lid inset: the column's top cell is the group's topmost cell, which always
+		// has a closed lid above it — stop the surface just below it like the main
+		// path's CAP gap (a full tank's fallback surface must not touch the lid).
+		yMax = Math.min(yMax, height - CAP);
 		if (yMax - yMin <= 0)
 			return;
 

@@ -1,6 +1,6 @@
 package com.iridium126.createmanaindustry.content.fluids.fueltank;
 
-import com.iridium126.createmanaindustry.content.fluids.fueltank.FuelTankConnectivity;
+import com.iridium126.createmanaindustry.CMIBlockEntityTypes;
 import com.simibubi.create.content.equipment.wrench.IWrenchable;
 import com.simibubi.create.foundation.block.IBE;
 import com.simibubi.create.foundation.blockEntity.ComparatorUtil;
@@ -103,6 +103,6 @@ public class FuelTankBlock extends Block implements IWrenchable, IBE<FuelTankBlo
 
 	@Override
 	public BlockEntityType<? extends FuelTankBlockEntity> getBlockEntityType() {
-		return com.iridium126.createmanaindustry.CMIBlockEntityTypes.MOLTEN_SALT_FUEL_TANK.get();
+		return CMIBlockEntityTypes.MOLTEN_SALT_FUEL_TANK.get();
 	}
 }

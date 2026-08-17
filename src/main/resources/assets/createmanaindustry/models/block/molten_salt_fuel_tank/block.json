@@ -4,10 +4,10 @@
 	"parent": "block/block",
     "render_type": "minecraft:cutout",
 	"textures": {
-		"0": "create:block/brass_block",
+		"0": "minecraft:block/quartz_block_top",
 		"1": "createmanaindustry:block/molten_salt_fuel_tank/tank_side",
 		"2": "createmanaindustry:block/molten_salt_fuel_tank/tank_top",
-		"particle": "create:block/brass_block"
+		"particle": "minecraft:block/quartz_block_top"
 	},
 	"elements": [
 		{

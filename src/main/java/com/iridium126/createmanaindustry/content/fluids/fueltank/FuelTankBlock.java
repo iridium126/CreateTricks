@@ -9,6 +9,7 @@ import com.simibubi.create.content.decoration.copycat.CopycatBlockEntity;
 import com.simibubi.create.content.equipment.wrench.IWrenchable;
 import com.simibubi.create.content.fluids.transfer.GenericItemEmptying;
 import com.simibubi.create.content.fluids.transfer.GenericItemFilling;
+import com.simibubi.create.content.redstone.RoseQuartzLampBlock;
 import com.simibubi.create.foundation.blockEntity.ComparatorUtil;
 import com.simibubi.create.foundation.blockEntity.SmartBlockEntity;
 import com.simibubi.create.foundation.blockEntity.SmartBlockEntityTicker;
@@ -339,15 +340,59 @@ public class FuelTankBlock extends CopycatBlock {
 		FuelTankBlockEntity tankAt = FuelTankConnectivity.partAt(getBlockEntityType(), world, pos);
 		if (tankAt != null && tankAt.hasLevel()) {
 			FuelTankBlockEntity controllerBE = tankAt.getControllerBE();
-			if (controllerBE != null)
-				light = controllerBE.luminosity;
+			if (controllerBE != null) {
+				int lum = controllerBE.luminosity;
+				if (lum > 0) {
+					// Per-cell brightness mirrors Create's tank: cells at or below the
+					// liquid surface of their basin glow at full luminosity (flipped
+					// for lighter-than-air fluids), cells above it glow faintly at 1,
+					// so a partially filled tank lights only its filled region.
+					light = isCellBright(world, pos) ? lum : 1;
+				}
+			}
 		}
 		// Copycat material luminosity: the shell material adds its own light, so a
 		// cell lit by an emissive material shines even while empty (max of both).
+		// A rose quartz lamp shell mirrors the cell's own brightness: POWERING
+		// follows the per-cell light rule, so a bright cell contributes the
+		// powered lamp's full 15 while a dark cell contributes nothing (mirrors
+		// Create's lamp, where POWERING drives both the texture and the light).
 		BlockEntity be = world.getBlockEntity(pos);
-		if (be instanceof FuelTankBlockEntity tankBE && tankBE.hasCustomMaterial())
-			light = Math.max(light, tankBE.getMaterial().getLightEmission(world, pos));
+		if (be instanceof FuelTankBlockEntity tankBE && tankBE.hasCustomMaterial()) {
+			BlockState material = tankBE.getMaterial();
+			if (material.is(AllBlocks.ROSE_QUARTZ_LAMP.get()))
+				light = Math.max(light, material.setValue(RoseQuartzLampBlock.POWERING, isCellBright(world, pos))
+					.getLightEmission(world, pos));
+			else
+				light = Math.max(light, material.getLightEmission(world, pos));
+		}
 		return light;
+	}
+
+	/**
+	 * Per-cell brightness rule shared by the light emission and the rose quartz
+	 * lamp shell's display state: a cell is "bright" when the liquid surface of
+	 * its basin sits at or above it — exactly the cells that emit full
+	 * luminosity. Returns false for empty tanks, and true (the full-brightness
+	 * fallback) while no basin data is available yet.
+	 */
+	static boolean isCellBright(BlockGetter world, BlockPos pos) {
+		FuelTankBlockEntity tankAt = FuelTankConnectivity.partAt(CMIBlockEntityTypes.MOLTEN_SALT_FUEL_TANK.get(), world,
+			pos);
+		if (tankAt == null || !tankAt.hasLevel())
+			return false;
+		FuelTankBlockEntity controllerBE = tankAt.getControllerBE();
+		if (controllerBE == null || controllerBE.luminosity <= 0)
+			return false;
+		FuelTankConnectivity.BasinData basins = controllerBE.basins;
+		Integer basinId = basins != null ? basins.basinByCell.get(pos) : null;
+		if (basinId == null)
+			return true;
+		float surface = basins.surfaces[basinId];
+		boolean reversed = controllerBE.tankInventory.getFluid()
+			.getFluidType()
+			.isLighterThanAir();
+		return reversed ? pos.getY() >= (int) Math.floor(surface) : pos.getY() <= (int) Math.floor(surface);
 	}
 
 	@Override

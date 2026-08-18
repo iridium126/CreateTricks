@@ -11,6 +11,7 @@ import java.util.function.Predicate;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.content.decoration.copycat.CopycatBlock;
 import com.simibubi.create.content.decoration.copycat.CopycatModel;
+import com.simibubi.create.content.redstone.RoseQuartzLampBlock;
 import com.simibubi.create.foundation.model.BakedModelWrapperWithData;
 
 import net.createmod.catnip.data.Iterate;
@@ -105,8 +106,24 @@ public class FuelTankModel extends BakedModelWrapperWithData {
 		// Per-cell material faces: CT variants depend on the set of connecting
 		// neighbours, so compute from this cell's world (cached by the
 		// connectivity mask — identical masks yield identical results).
-		builder.with(FACES_PROPERTY, facesFor(material, connectivityMask(world, pos, state), world, pos, state));
+		builder.with(FACES_PROPERTY,
+			facesFor(displayMaterial(world, pos, material), connectivityMask(world, pos, state), world, pos, state));
 		return builder;
+	}
+
+	/**
+	 * The state the shell is skinned with: a rose quartz lamp material mirrors
+	 * the cell's own brightness, so POWERING follows the per-cell light rule and
+	 * the shell shows the powered texture exactly where the tank emits full
+	 * light (the light emission couples to the same derived state in
+	 * {@link FuelTankBlock#getLightEmission}). The derived state is part of the
+	 * {@link #FACES_CACHE} key, so lit/unlit faces cache separately; light
+	 * changes rebuild the section mesh and re-derive the state.
+	 */
+	private static BlockState displayMaterial(BlockAndTintGetter world, BlockPos pos, BlockState material) {
+		if (material.is(AllBlocks.ROSE_QUARTZ_LAMP.get()))
+			return material.setValue(RoseQuartzLampBlock.POWERING, FuelTankBlock.isCellBright(world, pos));
+		return material;
 	}
 
 	@Override

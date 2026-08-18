@@ -38,9 +38,11 @@ import net.minecraft.resources.ResourceLocation;
  * {@code 2 * maxRadius} over a 3s cycle while the tube widens
  * {@code 0 -> maxRadius / 10} and the brightness breathes on a sine (rise then
  * decay). Each rod's phase is offset by its position, so nearby rods pulse out
- * of sync. The ring's color ({@code fuelRodBloomRingColor}) and strength are
- * configured independently; the animation clock is injected per frame as
- * {@code RingTime}. The window pane glow was removed.
+ * of sync. The ring's colour is a fixed dual-tone palette (hot pink-white core
+ * cooling to purple-red, cold cyan outer edge — the molten rose quartz vs
+ * liquid soul colour conflict), its strength is configured
+ * ({@code fuelRodBloomRingStrength}); the animation clock is injected per
+ * frame as {@code RingTime}. The window pane glow was removed.
  * <p>
  * The post pipeline is active iff at least one rod is present (fade-outs
  * included) AND the iris gbuffer path is not taking over — see
@@ -256,12 +258,6 @@ public final class FuelRodBloomHandler {
         var ringUniform = shader.getUniform("RingStrength");
         if (ringUniform != null)
             ringUniform.setFloat((float) ClientConfig.fuelRodBloomRingStrength);
-
-        var ringColorUniform = shader.getUniform("RingColor");
-        if (ringColorUniform != null) {
-            int c = ClientConfig.fuelRodBloomRingColor;
-            ringColorUniform.setVector(((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f);
-        }
 
         var ringTimeUniform = shader.getUniform("RingTime");
         if (ringTimeUniform != null)

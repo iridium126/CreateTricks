@@ -8,8 +8,8 @@ import org.jetbrains.annotations.Nullable;
 
 import com.iridium126.createmanaindustry.config.ServerConfig;
 import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
+import com.simibubi.create.content.decoration.copycat.CopycatBlockEntity;
 import com.simibubi.create.foundation.blockEntity.IMultiBlockEntityContainer;
-import com.simibubi.create.foundation.blockEntity.SmartBlockEntity;
 import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour;
 import com.simibubi.create.foundation.fluid.SmartFluidTank;
 
@@ -42,8 +42,12 @@ import net.neoforged.neoforge.fluids.capability.templates.FluidTank;
  * {@code controller} is the lexicographically smallest block (Y, then X, then Z)
  * of the group; the controller alone stores the group's fluid and its basin
  * simulation state. See {@link FuelTankConnectivity}.
+ * <p>
+ * Extends {@code CopycatBlockEntity} so the per-cell copycat material storage,
+ * NBT keys ({@code Material}/{@code Item}), validation, {@code getModelData}
+ * and creative handling strictly mirror Create's implementation.
  */
-public class FuelTankBlockEntity extends SmartBlockEntity
+public class FuelTankBlockEntity extends CopycatBlockEntity
 		implements IHaveGoggleInformation, IMultiBlockEntityContainer.Fluid {
 
 	/** Fluid handler exposed through the capability; re-created on connectivity change. */
@@ -720,6 +724,8 @@ public class FuelTankBlockEntity extends SmartBlockEntity
 
 	@Override
 	public void writeSafe(CompoundTag tag, HolderLookup.Provider registries) {
+		// Copycat material safe-NBT (without data components) + the group count.
+		super.writeSafe(tag, registries);
 		if (isController())
 			tag.putInt("Count", count);
 	}
@@ -740,5 +746,6 @@ public class FuelTankBlockEntity extends SmartBlockEntity
 
 	@Override
 	public void addBehaviours(List<BlockEntityBehaviour> behaviours) {
+		super.addBehaviours(behaviours);
 	}
 }

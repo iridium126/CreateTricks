@@ -5,6 +5,7 @@ import com.iridium126.createmanaindustry.client.render.MistClientHandler;
 import com.iridium126.createmanaindustry.client.render.InlineTrickRenderer;
 import com.iridium126.createmanaindustry.ponder.CMIPonderPlugin;
 import com.samsthenerd.inline.api.client.InlineClientAPI;
+import com.simibubi.create.content.decoration.copycat.CopycatBlock;
 
 import net.createmod.ponder.foundation.PonderIndex;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
@@ -15,6 +16,7 @@ import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
+import net.neoforged.neoforge.client.event.RegisterColorHandlersEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 import net.neoforged.neoforge.event.level.LevelEvent;
@@ -53,6 +55,17 @@ public class CreateManaIndustryClient {
             ItemBlockRenderTypes.setRenderLayer(CMIFluids.COOLANT.getSource(), RenderType.translucent());
         });
     }
+
+    /**
+     * Tints the copycat shell of the fuel tank with the material's biome color
+     * (grass, leaves…): the tank's own shell quads carry the material's tint
+     * index (see {@code FuelTankModel}, which re-textures those quads), and
+     * Create's wrapped block color resolves that index against the material.
+     */
+    @SubscribeEvent
+    private static void onRegisterBlockColors(RegisterColorHandlersEvent.Block event) {
+		event.register(CopycatBlock.wrappedColor(), CMIBlocks.MOLTEN_SALT_FUEL_TANK.get());
+	}
 
     /** Clears client mist sources and fuel rod glows when the client's level/dimension changes. */
     @SubscribeEvent

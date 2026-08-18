@@ -35,6 +35,7 @@ import com.tterrag.registrate.util.entry.BlockEntry;
 import com.tterrag.registrate.util.entry.ItemEntry;
 import com.tterrag.registrate.util.nullness.NonNullBiConsumer;
 
+import net.neoforged.neoforge.client.model.generators.ConfiguredModel;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.item.Items;
@@ -154,28 +155,35 @@ public final class CMIBlocks {
 
     /**
      * Molten Salt Fuel Tank — a multi-block fluid storage that connects in any
-     * shape (no Create box constraint). Mirrors Create's fluid tank visually
-     * (copied window models), with a custom connectivity/basin simulation and
-     * merged liquid rendering. Window is always open; no wrench toggle.
+     * shape (no Create box constraint) and a copycat block (per-cell shell
+     * material, {@code CopycatBlock} mirror). The four hand-written window
+     * variants ({@code top_open} x {@code side_open}) support per-face wrench
+     * toggling; datagen emits the variant blockstate referencing them.
      */
     public static final BlockEntry<FuelTankBlock> MOLTEN_SALT_FUEL_TANK = REGISTRATE
             .block("molten_salt_fuel_tank", FuelTankBlock::new)
-            .initialProperties(SharedProperties::copperMetal)
+            .initialProperties(SharedProperties::softMetal)
             .properties(p -> p.noOcclusion()
                     .isRedstoneConductor((p1, p2, p3) -> true))
             .transform(TagGen.pickaxeOnly())
-            // Unified six-face model is hand-written; datagen emits the
-            // single-variant blockstate referencing it (mirrors Create's
-            // `simpleBlock` + `getExistingFile` pattern).
-            .blockstate((c, p) -> p.simpleBlock(c.get(), p.models()
-                    .getExistingFile(p.modLoc("block/molten_salt_fuel_tank/block"))))
+            .blockstate((c, p) -> p.getVariantBuilder(c.get())
+                    .forAllStatesExcept(state -> {
+                        boolean topOpen = state.getValue(FuelTankBlock.TOP_OPEN);
+                        boolean sideOpen = state.getValue(FuelTankBlock.SIDE_OPEN);
+                        String variant = "block_" + (topOpen ? "top_open" : "top_close")
+                                + "_side_" + (sideOpen ? "open" : "close");
+                        return ConfiguredModel.builder()
+                                .modelFile(p.models()
+                                        .getExistingFile(p.modLoc("block/molten_salt_fuel_tank/" + variant)))
+                                .build();
+                    }))
             .onRegister(CreateRegistrate.blockModel(() -> FuelTankModel::new))
             .transform(mountedFluidStorage(CMIMountedStorageTypes.MOLTEN_SALT_FUEL_TANK))
             .onRegister(movementBehaviour(new FuelTankMovementBehavior()))
             .item()
-            // Datagen-generated item model parenting the unified block model.
+            // Datagen-generated item model parenting the default open-window variant.
             .model((c, p) -> p.withExistingParent(c.getName(),
-                    p.modLoc("block/molten_salt_fuel_tank/block")))
+                    p.modLoc("block/molten_salt_fuel_tank/block_top_open_side_open")))
             .build()
             .register();
 

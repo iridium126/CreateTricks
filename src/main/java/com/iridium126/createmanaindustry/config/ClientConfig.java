@@ -22,8 +22,6 @@ public final class ClientConfig {
 
     private static ModConfigSpec.DoubleValue MIST_GLOW_STRENGTH;
     private static ModConfigSpec.BooleanValue MIST_DEBUG_SHADOW;
-    private static ModConfigSpec.IntValue FUEL_ROD_BLOOM_COLOR;
-    private static ModConfigSpec.DoubleValue FUEL_ROD_BLOOM_STRENGTH;
     private static ModConfigSpec.DoubleValue FUEL_ROD_BLOOM_RING_STRENGTH;
     private static ModConfigSpec.IntValue FUEL_ROD_BLOOM_RING_COLOR;
 
@@ -35,14 +33,8 @@ public final class ClientConfig {
         MIST_DEBUG_SHADOW = BUILDER
                 .comment("DEBUG: visualize the Tyndall shadow-map sampling as mist color (green = lit, red = occluded). Temporary diagnostic.")
                 .define("mistDebugShadow", false);
-        FUEL_ROD_BLOOM_COLOR = BUILDER
-                .comment("RGB color (as a decimal integer, e.g. 16728693 = 0xFF4275) of the bloom glow emitted by formed Molten Salt Reactor Fuel Rods.")
-                .defineInRange("fuelRodBloomColor", 0xFF4275, 0, 0xFFFFFF);
-        FUEL_ROD_BLOOM_STRENGTH = BUILDER
-                .comment("Global multiplier for the intensity of the fuel rod bloom glow.")
-                .defineInRange("fuelRodBloomStrength", 1.0, 0.0, 100.0);
         FUEL_ROD_BLOOM_RING_COLOR = BUILDER
-                .comment("RGB color (as a decimal integer, e.g. 13754608 = 0xD1E0F0) of the pulsing ring above a formed fuel rod. Independent of the window glow color.")
+                .comment("RGB color (as a decimal integer, e.g. 13754608 = 0xD1E0F0) of the pulsing ring above a formed fuel rod.")
                 .defineInRange("fuelRodBloomRingColor", 0xD1E0F0, 0, 0xFFFFFF);                
         FUEL_ROD_BLOOM_RING_STRENGTH = BUILDER
                 .comment("Global multiplier for the glowing ring above a formed fuel rod (ring radius diffuses from maxRadius to 2x maxRadius while pulsing).")
@@ -54,8 +46,6 @@ public final class ClientConfig {
 
     public static double mistGlowStrength = 0.5;
     public static boolean mistDebugShadow = false;
-    public static int fuelRodBloomColor = 0xFF4275;
-    public static double fuelRodBloomStrength = 1.0;
     public static double fuelRodBloomRingStrength = 1.0;
     public static int fuelRodBloomRingColor = 0xD1E0F0;
 
@@ -67,8 +57,6 @@ public final class ClientConfig {
                 && (event instanceof ModConfigEvent.Loading || event instanceof ModConfigEvent.Reloading)) {
             mistGlowStrength = MIST_GLOW_STRENGTH.get();
             mistDebugShadow = MIST_DEBUG_SHADOW.get();
-            fuelRodBloomColor = FUEL_ROD_BLOOM_COLOR.get();
-            fuelRodBloomStrength = FUEL_ROD_BLOOM_STRENGTH.get();
             fuelRodBloomRingStrength = FUEL_ROD_BLOOM_RING_STRENGTH.get();
             fuelRodBloomRingColor = FUEL_ROD_BLOOM_RING_COLOR.get();
         }

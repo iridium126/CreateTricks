@@ -1,0 +1,109 @@
+{
+	"format_version": "1.21.11",
+	"credit": "Unified fuel tank: full-height frame + 8x8 windows, 1-unit top ring with window, 1-unit bottom plate",
+	"parent": "block/block",
+	"render_type": "minecraft:cutout",
+	"textures": {
+		"0": "create:block/copycat_base",
+		"2": "createmanaindustry:block/molten_salt_fuel_tank/window_top",
+		"particle": "create:block/copycat_base"
+	},
+	"elements": [
+		{
+			"name": "TopRingNorth",
+			"from": [0, 15, 0],
+			"to": [16, 16, 2],
+			"faces": {
+				"south": {"uv": [0, 15, 16, 16], "texture": "#0", "cullface": "up"},
+				"up": {"uv": [0, 0, 16, 2], "texture": "#0", "cullface": "up"},
+				"down": {"uv": [0, 0, 16, 2], "texture": "#0", "cullface": "up"}
+			}
+		},
+		{
+			"name": "TopRingSouth",
+			"from": [0, 15, 14],
+			"to": [16, 16, 16],
+			"faces": {
+				"north": {"uv": [0, 0, 16, 1], "texture": "#0", "cullface": "up"},
+				"up": {"uv": [0, 14, 16, 16], "texture": "#0", "cullface": "up"},
+				"down": {"uv": [0, 14, 16, 16], "texture": "#0", "cullface": "up"}
+			}
+		},
+		{
+			"name": "TopRingWest",
+			"from": [0, 15, 2],
+			"to": [2, 16, 14],
+			"faces": {
+				"east": {"uv": [15, 2, 16, 14], "rotation": 90, "texture": "#0", "cullface": "up"},
+				"up": {"uv": [0, 2, 2, 14], "texture": "#0", "cullface": "up"},
+				"down": {"uv": [0, 2, 2, 14], "texture": "#0", "cullface": "up"}
+			}
+		},
+		{
+			"name": "TopRingEast",
+			"from": [14, 15, 2],
+			"to": [16, 16, 14],
+			"faces": {
+				"west": {"uv": [0, 2, 1, 14], "rotation": 90, "texture": "#0", "cullface": "up"},
+				"up": {"uv": [14, 2, 16, 14], "texture": "#0", "cullface": "up"},
+				"down": {"uv": [14, 2, 16, 14], "texture": "#0", "cullface": "up"}
+			}
+		},
+		{
+			"name": "WindowTop",
+			"from": [2, 15.05, 2],
+			"to": [14, 15.05, 14],
+			"faces": {
+				"up": {"uv": [2, 2, 14, 14], "texture": "#2", "cullface": "up"},
+				"down": {"uv": [2, 2, 14, 14], "texture": "#2", "cullface": "up"}
+			}
+		},
+		{
+			"name": "BottomPlate",
+			"from": [0, 0, 0],
+			"to": [16, 1, 16],
+			"faces": {
+				"up": {"uv": [0, 0, 16, 16], "texture": "#0", "cullface": "down"},
+				"down": {"uv": [0, 0, 16, 16], "texture": "#0", "cullface": "down"}
+			}
+		},
+		{
+			"name": "Side",
+			"from": [0, 0, 0],
+			"to": [16, 16, 1],
+			"faces": {
+				"north": {"uv": [0, 0, 16, 16], "texture": "#0", "cullface": "north"},
+				"south": {"uv": [0, 0, 16, 16], "texture": "#0", "cullface": "north"}
+			}
+		},
+		{
+			"name": "Side",
+			"from": [15, 0, 0],
+			"to": [16, 16, 16],
+			"rotation": {"angle": 0, "axis": "y", "origin": [14, 0, 0]},
+			"faces": {
+				"east": {"uv": [0, 0, 16, 16], "texture": "#0", "cullface": "east"},
+				"west": {"uv": [0, 0, 16, 16], "texture": "#0", "cullface": "east"}
+			}
+		},
+		{
+			"name": "Side",
+			"from": [0, 0, 15],
+			"to": [16, 16, 16],
+			"rotation": {"angle": 0, "axis": "y", "origin": [0, 0, 14]},
+			"faces": {
+				"north": {"uv": [0, 0, 16, 16], "texture": "#0", "cullface": "south"},
+				"south": {"uv": [0, 0, 16, 16], "texture": "#0", "cullface": "south"}
+			}
+		},
+		{
+			"name": "Side",
+			"from": [0, 0, 0],
+			"to": [1, 16, 16],
+			"faces": {
+				"east": {"uv": [0, 0, 16, 16], "texture": "#0", "cullface": "west"},
+				"west": {"uv": [0, 0, 16, 16], "texture": "#0", "cullface": "west"}
+			}
+		}
+	]
+}

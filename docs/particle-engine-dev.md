@@ -141,24 +141,8 @@
 
 ## 8. 后续开发方向
 
-### 短期 / 优先（建议顺序）
-1. **Iris 光影包正式路由**：当前 vanilla/无包路径已验证；开包后建议照 `MistIrisHook` 模式新增 `ParticleIrisHook`（经 iris-veil-compat 画入 `colortex0` + 采样 `depthtex`），与雾墙共用同一条验证过的通路
-2. **百万级压测与节流标定**：`/cmip bench 1000000` + `stats` 实测，在 5ms 预算下校准各蓝图 `glow`/颜色，防叠加洗白
-3. **接入现有机器**：`CMIParticleEngine.INSTANCE.spawn/stream(...)` API 已就绪，接动力雾化器 / 悦灵燃烧室 / 冷凝管视觉（原计划的延后项）
-4. **soft-particle**：在 AFTER_LEVEL 采样主目标深度，做近场景软边淡出（深度可用，成本低）
-
-### 中期 / 扩展
-5. **JSON 数据驱动预设**：仿 quasar 的 emitters/modules，让艺术/策划可配（原 Q7 延后项）
-6. **alpha 混合 + GPU 深度排序**：材质槽位已预留；引入 bitonic/基数排序 pass 支持非叠加材质
-7. **速度拉伸 / 尾迹**：vsh 按速度拉伸 billboard（流星/拖尾），或帧反馈 motion trail
-8. **噪声/涡旋力场**：v1 排除的高质感力场，叠加到 update.comp
-9. **块碰撞**：把周边地形烘焙为 3D SDF 纹理供采样（成本高，低优先）
-
-### 长期 / 工程化
-10. 每发射器预算权重（`budgetWeight`）纳入节流分配，按重要度削峰
-11. GL 上下文重建/资源重获取兜底（罕见驱动重置）
-12. 移除/泛化剩余一次性诊断辅助；为发射器上传改按块增量（当前整 32KB 上传，已可接受）
-13. 发布维度：确认无 Veil/低端 GL 时优雅降级（当前具备）；补充 Ponder/文档向玩家说明 `/cmip`
+1. **alpha 混合 + GPU 深度排序**：材质槽位已预留；引入 bitonic/基数排序 pass 支持非叠加材质
+2. **块碰撞**：把周边地形烘焙为 3D SDF 纹理供采样（成本高，低优先）
 
 ---
 

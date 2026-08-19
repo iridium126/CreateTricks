@@ -8,7 +8,7 @@ struct EmitEntry {
 };
 
 layout(std430, binding = 1) buffer ParticleWrite { vec4 data[]; } writeBuf;
-layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd; } indirect;
+layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
 layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; } counter;
 layout(std430, binding = 4) readonly buffer EmitCmdBuf { EmitEntry entries[]; } emitCmd;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
@@ -16,6 +16,7 @@ layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 uniform uint uTotalSpawn;
 uniform uint uEmitCount;
 uniform uint uCapacity;
+uniform uint uSort; // 1 = sorted path: keygen owns the per-material draw counts
 
 float hash1(float p) {
     p = fract(p * 0.1031);
@@ -56,7 +57,7 @@ void main() {
     uint eid = uint(et.b.x);
     float seed = et.b.y + float(inner) * 0.0001;
 
-    uint hb = eid * 16u;
+    uint hb = eid * 20u; // VEC4_PER_EMITTER (must match EmitterSpec.VEC4_PER_EMITTER)
     float shape = emitters.u[hb + 1u].x;
     float speedMin = emitters.u[hb + 1u].y;
     float speedMax = emitters.u[hb + 1u].z;
@@ -112,5 +113,6 @@ void main() {
     writeBuf.data[wb + 1u] = vec4(vel, rot);
     writeBuf.data[wb + 2u] = vec4(1.0, 1.0, 1.0, intensity);
     writeBuf.data[wb + 3u] = vec4(0.0, maxLife, seed, uintBitsToFloat(eid));
-    atomicAdd(indirect.cmd.y, 1u);
+    if (uSort == 0u)
+        atomicAdd(indirect.cmd[0].y, 1u);
 }

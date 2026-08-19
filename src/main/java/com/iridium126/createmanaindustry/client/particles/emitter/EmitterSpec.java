@@ -8,15 +8,85 @@ import net.minecraft.world.phys.Vec3;
 /**
  * Immutable, data-driven description of one particle emitter behaviour.
  * <p>
- * Instances are packed into a 16-vec4 (256 byte) GPU header block per distinct
- * spec (used by the compute update/emit passes and the additive vertex shader),
- * so specs with identical fields collapse to one header. Origin is deliberately
- * NOT part of the spec — the spawn position is supplied per call/command.
+ * Instances are packed into a 20-vec4 (320 byte) GPU header block per distinct
+ * spec (used by the compute update/emit/keygen passes and the render vertex
+ * shaders), so specs with identical fields collapse to one header. Origin is
+ * deliberately NOT part of the spec — the spawn position is supplied per
+ * call/command.
+ * <p>
+ * Header layout (index 0..15 mirrors the original 16-vec4 layout; the new
+ * material/collide/flutter/spin flags ride on the once-reserved vec4 #7 and a
+ * fresh 16..19 block holds the collision bake index and sprite count):
+ * <pre>
+ *   0:  (0,0,0)                         size
+ *   1:  shape, speedMin, speedMax,      radius
+ *   2:  gravity.xyz                     drag
+ *   3:  acceleration.xyz                windStrength
+ *   4:  windDirection.xyz               rotation
+ *   5:  lifeMin, lifeMax, sizeStart,    sizeEnd
+ *   6:  sizeEase, coneTanHalf,          colorCount, glow
+ *   7:  material, collideMode,          flutter, spin
+ *   8..15: colour keyframes RGBA (padded with the last colour)
+ *  16:  bakeIndex(0 if none), spriteCount, 0, 0
+ *  17..19: reserved
+ * </pre>
  */
 public final class EmitterSpec {
 
+    /** Blend / material mode of the emitter. */
+    public enum Material {
+        /** Existing untextured soft-circle, additive blending — order independent. */
+        ADDITIVE(0),
+        /** Textured sprite, normal alpha blending — requires GPU depth sorting. */
+        ALPHA(1);
+
+        final int index;
+
+        Material(int index) {
+            this.index = index;
+        }
+
+        public int index() {
+            return index;
+        }
+
+        public static Material byIndex(int i) {
+            return i == 1 ? ALPHA : ADDITIVE;
+        }
+    }
+
+    /** How a {@link Material#ALPHA} particle interacts with the collision volume. */
+    public enum CollideMode {
+        /** No collision (additive / atmospheric particles). */
+        NONE(0),
+        /** Settle on surfaces: stop sliding along the contacted axis, rest on tops. */
+        REST(1),
+        /** Vanilla cherry-leaf behaviour: touching the ground removes the particle. */
+        DIE_ON_GROUND(2);
+
+        final int index;
+
+        CollideMode(int index) {
+            this.index = index;
+        }
+
+        public int index() {
+            return index;
+        }
+
+        public static CollideMode byIndex(int i) {
+            return switch (i) {
+                case 1 -> REST;
+                case 2 -> DIE_ON_GROUND;
+                default -> NONE;
+            };
+        }
+    }
+
     /** Max keyframe colours carried to the shader (RGBA each). */
     public static final int MAX_COLORS = 8;
+    /** GPU header size in vec4 (see class javadoc). */
+    public static final int VEC4_PER_EMITTER = 20;
 
     public final EmitterShape shape;
     /** Shape parameter: box half-extent, sphere radius, or cone height (blocks). */
@@ -42,6 +112,19 @@ public final class EmitterSpec {
     public final float[] colors;
     /** Global additive glow multiplier for this emitter. */
     public final double glow;
+    /** Blend mode (ADDITIVE | ALPHA). */
+    public final Material material;
+    /** Collision behaviour for ALPHA particles. */
+    public final CollideMode collideMode;
+    /**
+     * Vanilla cherry-leaf style flutter amplitude (blocks at end of life).
+     * 0 = disabled. The wobble grows as {@code age^1.25} over the lifetime.
+     */
+    public final double flutter;
+    /** Vanilla cherry-leaf random billboard spin (random velocity + acceleration derived from seed). */
+    public final boolean spin;
+    /** Number of sprite frames in the atlas (1 = single frame / unsprited). */
+    public final int spriteCount;
 
     private final float[] packed;
 
@@ -67,6 +150,11 @@ public final class EmitterSpec {
                 ? new float[] { 1f, 1f, 1f, 1f }
                 : b.colors.clone();
         this.glow = b.glow;
+        this.material = Objects.requireNonNull(b.material, "material");
+        this.collideMode = Objects.requireNonNull(b.collideMode, "collideMode");
+        this.flutter = b.flutter;
+        this.spin = b.spin;
+        this.spriteCount = Math.max(1, Math.min(64, b.spriteCount));
         this.packed = pack();
     }
 
@@ -74,23 +162,8 @@ public final class EmitterSpec {
         return new Builder();
     }
 
-    /**
-     * Packs this spec into the 16-vec4 (64 float) GPU header layout shared with
-     * the shaders. Origin is kept zero (supplied per call):
-     * <pre>
-     *   0:  (0,0,0)                         size
-     *   1:  shape, speedMin, speedMax,      radius
-     *   2:  gravity.xyz                     drag
-     *   3:  acceleration.xyz                windStrength
-     *   4:  windDirection.xyz               rotation
-     *   5:  lifeMin, lifeMax, sizeStart,    sizeEnd
-     *   6:  sizeEase, coneTanHalf,          colorCount, glow
-     *   7:  reserved
-     *   8..15: colour keyframes RGBA (padded with the last colour)
-     * </pre>
-     */
     private float[] pack() {
-        float[] f = new float[64];
+        float[] f = new float[VEC4_PER_EMITTER * 4];
         f[0 * 4 + 3] = (float) size;
         f[1 * 4 + 0] = shape.index();
         f[1 * 4 + 1] = (float) speedMin;
@@ -118,6 +191,11 @@ public final class EmitterSpec {
         int count = Math.max(2, Math.min(MAX_COLORS, colors.length / 4));
         f[6 * 4 + 2] = count;
         f[6 * 4 + 3] = (float) glow;
+        // 7: material, collideMode, flutter, spin
+        f[7 * 4 + 0] = material.index();
+        f[7 * 4 + 1] = collideMode.index();
+        f[7 * 4 + 2] = (float) flutter;
+        f[7 * 4 + 3] = spin ? 1f : 0f;
         // keyframe colours
         for (int i = 0; i < MAX_COLORS; i++) {
             int src = Math.min(i, count - 1) * 4;
@@ -126,12 +204,28 @@ public final class EmitterSpec {
             f[(8 + i) * 4 + 2] = colors[src + 2];
             f[(8 + i) * 4 + 3] = colors[src + 3];
         }
+        // 16: bakeIndex(lazy; 0 initially), spriteCount, 0, 0
+        f[16 * 4 + 0] = 0f;
+        f[16 * 4 + 1] = spriteCount;
+        f[16 * 4 + 2] = 0f;
+        f[16 * 4 + 3] = 0f;
+        // 17..19 stay zero
         return f;
     }
 
-    /** The packed 16-vec4 GPU header for this spec. */
+    /** The packed 20-vec4 GPU header for this spec. */
     public float[] packed() {
         return packed;
+    }
+
+    /**
+     * Header copy with the collision bake slice (1-based, 0 = none) written into
+     * vec4 #16.x. Used when a colliding emitter is assigned a bake slot.
+     */
+    public float[] packedWithBake(int slice1Based) {
+        float[] f = packed.clone();
+        f[16 * 4] = slice1Based;
+        return f;
     }
 
     @Override
@@ -150,7 +244,8 @@ public final class EmitterSpec {
 
     @Override
     public String toString() {
-        return "EmitterSpec{" + shape + ", size=" + size + ", life=" + lifeMin + ".." + lifeMax + '}';
+        return "EmitterSpec{" + shape + ", size=" + size + ", life=" + lifeMin + ".." + lifeMax
+                + ", mat=" + material + ", collide=" + collideMode + '}';
     }
 
     public static final class Builder {
@@ -173,6 +268,11 @@ public final class EmitterSpec {
         private double coneTanHalf = 0.577f; // ~30 degrees
         private float[] colors = new float[] { 1f, 1f, 1f, 1f };
         private double glow = 1;
+        private Material material = Material.ADDITIVE;
+        private CollideMode collideMode = CollideMode.NONE;
+        private double flutter = 0;
+        private boolean spin = false;
+        private int spriteCount = 1;
 
         public Builder shape(EmitterShape v) { this.shape = v; return this; }
         public Builder size(double v) { this.size = v; return this; }
@@ -213,6 +313,13 @@ public final class EmitterSpec {
             }
             return this;
         }
+
+        public Builder material(Material v) { this.material = v; return this; }
+        public Builder collide(CollideMode v) { this.collideMode = v; return this; }
+        /** Vanilla-style flutter amplitude (blocks at full life); 0 disables. */
+        public Builder flutter(double v) { this.flutter = v; return this; }
+        public Builder spin(boolean v) { this.spin = v; return this; }
+        public Builder spriteCount(int v) { this.spriteCount = v; return this; }
 
         public EmitterSpec build() {
             return new EmitterSpec(this);

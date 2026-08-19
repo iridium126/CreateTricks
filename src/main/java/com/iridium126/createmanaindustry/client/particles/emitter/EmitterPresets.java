@@ -83,6 +83,32 @@ public final class EmitterPresets {
             .color(0.45f, 0.85f, 1.00f, 1f)
             .build();
 
+    /**
+     * Vanilla {@code minecraft:cherry_leaves} particle, faithfully replicated.
+     * <p>
+     * Matches {@code CherryParticle}: lifetime 300 ticks (= 15 s of our real
+     * seconds), gravity 7.5e-4 blocks/tick² (= 0.3 blocks/s²), spawn velocity 0,
+     * random pick of 12 atlas frames, a life-gated spiral flutter (amplitude 2.0
+     * blocks at full life, growing as age^1.25) and a random billboard spin
+     * (velocity ±30°/t, acceleration ±5°/t², both derived per-particle from the
+     * seed). Removed on ground contact just like vanilla (DIE_ON_GROUND).
+     */
+    public static final EmitterSpec CHERRY_LEAVES = EmitterSpec.builder()
+            .shape(EmitterShape.POINT)
+            .speed(0, 0)
+            .life(15.0, 15.0)
+            .sizeOverLife(0.075, 0.075, 1.0)
+            .gravity(0, -0.3, 0)
+            .drag(0)
+            .material(EmitterSpec.Material.ALPHA)
+            .collide(EmitterSpec.CollideMode.DIE_ON_GROUND)
+            .flutter(2.0)
+            .spin(true)
+            .spriteCount(12)
+            .glow(1.0)
+            .color(1f, 1f, 1f, 1f)
+            .build();
+
     /** Dense slow-drifting cloud for capacity benchmarking (ignores motion). */
     public static final EmitterSpec FLOOD = EmitterSpec.builder()
             .shape(EmitterShape.BOX)
@@ -102,6 +128,7 @@ public final class EmitterPresets {
             case "ash" -> ASH;
             case "soul_flame" -> SOUL_FLAME;
             case "mana_burst" -> MANA_BURST;
+            case "cherry_leaves" -> CHERRY_LEAVES;
             case "flood" -> FLOOD;
             default -> null;
         };
@@ -109,6 +136,6 @@ public final class EmitterPresets {
 
     /** Names registered for the command argument suggestions. */
     public static String[] names() {
-        return new String[] { "mana_spark", "ember", "ash", "soul_flame", "mana_burst", "flood" };
+        return new String[] { "mana_spark", "ember", "ash", "soul_flame", "mana_burst", "cherry_leaves", "flood" };
     }
 }

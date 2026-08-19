@@ -1,0 +1,11 @@
+// End-of-frame capture: record this frame's ALPHA particle count (cmd[1].y)
+// into the counter ring slot's spare. The next frame reads it back as the
+// lagged non-blocking alphaCount for dispatch sizing / dual-mode selection.
+layout(local_size_x = 1) in;
+
+layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
+layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; } counter;
+
+void main() {
+    counter.spare = indirect.cmd[1].y;
+}

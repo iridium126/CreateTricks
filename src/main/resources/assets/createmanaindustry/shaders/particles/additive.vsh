@@ -7,9 +7,11 @@ uniform mat4 ProjMat;
 uniform vec3 uCamPos;
 uniform vec3 uCamRight;
 uniform vec3 uCamUp;
+uniform uint uUsePerm;  // 1 = draw through the additive permutation (orderAdd)
 
 layout(std430, binding = 1) readonly buffer ParticleRead { vec4 data[]; } particles;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+layout(std430, binding = 8) readonly buffer OrderAddBuf { uint order[]; } orderAdd;
 
 out vec2 vUv;
 out vec3 vColor;
@@ -28,7 +30,7 @@ vec2 quadCorner(int v) {
 }
 
 void main() {
-    uint inst = gl_InstanceID;
+    uint inst = (uUsePerm == 1u) ? orderAdd.order[gl_InstanceID] : gl_InstanceID;
     uint base = inst * 4u;
     vec4 p0 = particles.data[base + 0u];
     vec4 p1 = particles.data[base + 1u];
@@ -37,7 +39,7 @@ void main() {
 
     float life = clamp(p3.x / max(p3.y, 1e-5), 0.0, 1.0);
     uint eid = floatBitsToUint(p3.w);
-    uint hb = eid * 16u;
+    uint hb = eid * 20u; // VEC4_PER_EMITTER (must match EmitterSpec.VEC4_PER_EMITTER)
 
     // size over lifetime (analytic curve, eased)
     float sizeStart = emitters.u[hb + 5u].z;

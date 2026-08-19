@@ -1,0 +1,46 @@
+// Partition pass for the two permutation buffers:
+//   - additive particles -> orderAdd[] (dense uint permutation, order irrelevant)
+//   - alpha particles    -> sortData[]  (compact uvec2 (depthKey, index), far->near
+//                                        by the view distance, later LSD-radix sorted)
+// The GPU counts (indirect.cmd[0].y / [1].y) are the per-material draw counts, so
+// update/emit must NOT increment them when this partition runs (uSort=1).
+layout(local_size_x = 64) in;
+
+const uint MAXDISTKEY = 16777215u; // 2^24-1
+
+layout(std430, binding = 0) readonly buffer ParticleRead { vec4 data[]; } pool;
+layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
+layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; } counter;
+layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+layout(std430, binding = 7) buffer SortWrite { uvec2 kv[]; } sortOut;
+layout(std430, binding = 8) buffer OrderAddW { uint order[]; } orderAdd;
+
+uniform uint uUpper;      // CPU-side safe upper bound (aliveRead + spawns + margin)
+uniform vec3 uCamPos;
+uniform mat4 uView;
+uniform float uMaxDepth;
+
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g >= uUpper || g >= counter.writeSlot)
+        return;
+
+    uint base = g * 4u;
+    vec4 p0 = pool.data[base + 0u];
+    vec4 p3 = pool.data[base + 3u];
+
+    uint eid = floatBitsToUint(p3.w);
+    uint hb = eid * 20u; // VEC4_PER_EMITTER (must match EmitterSpec.VEC4_PER_EMITTER)
+
+    if (emitters.u[hb + 7u].x < 0.5) {
+        uint pos = atomicAdd(indirect.cmd[0].y, 1u);
+        orderAdd.order[pos] = g;
+    } else {
+        // view-space depth: negative z is in front of the camera
+        vec4 vs = uView * vec4(p0.xyz - uCamPos, 1.0);
+        float depth = clamp(-vs.z, 0.0, uMaxDepth);
+        uint key = uint(depth / uMaxDepth * float(MAXDISTKEY));
+        uint pos = atomicAdd(indirect.cmd[1].y, 1u);
+        sortOut.kv[pos] = uvec2(key, g);
+    }
+}

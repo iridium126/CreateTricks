@@ -1,0 +1,18 @@
+// LSD radix sort — histogram pass over the ALPHA segment only. The number of
+// elements to sort is the GPU-written alpha count (indirect.cmd[1].y).
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
+layout(std430, binding = 6) readonly buffer SortRead { uvec2 kv[]; } sortIn;
+layout(std430, binding = 9) buffer HistBuf { uint h[256]; } hist;
+
+uniform uint uShift;
+
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g >= indirect.cmd[1].y)
+        return;
+    uint k = sortIn.kv[g].x;
+    uint bin = (k >> uShift) & 255u;
+    atomicAdd(hist.h[bin], 1u);
+}

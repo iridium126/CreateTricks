@@ -21,6 +21,11 @@ import org.lwjgl.opengl.GL43;
  * {@code layout(binding=N)} qualifiers are honored directly by GL, and the
  * programs work with or without Veil loaded.
  * <p>
+ * Pipeline: reset -> update -> emit (fast additive path) or
+ * reset -> update -> emit -> keygen -> radix{hist,scan,scatter} x4 (sorted
+ * path with material-major depth sort), then the additive render program and/or
+ * the textured alpha render program.
+ * <p>
  * A {@code #version} header is prepended (raw GL requires one; Veil used to
  * inject it). Programs are rebuilt by {@link #rebuild()} — called lazily on the
  * render thread whenever {@link #needsRebuild()} is true, which the resource
@@ -34,7 +39,13 @@ public final class ParticlePrograms {
     private int reset;
     private int update;
     private int emit;
-    private int render;
+    private int keygen;
+    private int radixHist;
+    private int radixScan;
+    private int radixScatter;
+    private int capture;
+    private int render;        // additive billboards
+    private int alphaRender;   // textured alpha billboards
 
     private volatile boolean dirty = true;
 
@@ -47,26 +58,41 @@ public final class ParticlePrograms {
         return this.dirty;
     }
 
-    /** Compiles/links all four programs from the mod's bundled GLSL. Render-thread only. */
+    /** Compiles/links all programs from the mod's bundled GLSL. Render-thread only. */
     public void rebuild() {
         this.dirty = false;
         this.delete();
         this.reset = compileCompute(GLSL_DIR + "reset.comp");
         this.update = compileCompute(GLSL_DIR + "update.comp");
         this.emit = compileCompute(GLSL_DIR + "emit.comp");
+        this.keygen = compileCompute(GLSL_DIR + "keygen.comp");
+        this.radixHist = compileCompute(GLSL_DIR + "radix_hist.comp");
+        this.radixScan = compileCompute(GLSL_DIR + "radix_scan.comp");
+        this.radixScatter = compileCompute(GLSL_DIR + "radix_scatter.comp");
+        this.capture = compileCompute(GLSL_DIR + "capture.comp");
         this.render = link(GLSL_DIR + "additive.vsh", GLSL_DIR + "additive.fsh");
+        this.alphaRender = link(GLSL_DIR + "alpha.vsh", GLSL_DIR + "alpha.fsh");
         if (!this.ready()) {
-            CreateManaIndustry.LOGGER.error("[CMI particles] program rebuild FAILED: reset={} update={} emit={} render={}",
-                    this.reset, this.update, this.emit, this.render);
+            CreateManaIndustry.LOGGER.error("[CMI particles] program rebuild FAILED: "
+                    + "reset={} update={} emit={} keygen={} hist={} scan={} scatter={} capture={} render={} alpha={}",
+                    this.reset, this.update, this.emit, this.keygen,
+                    this.radixHist, this.radixScan, this.radixScatter, this.capture,
+                    this.render, this.alphaRender);
         } else {
             CreateManaIndustry.LOGGER
-                    .info("[CMI particles] programs compiled: reset={} update={} emit={} render={}",
-                            this.reset, this.update, this.emit, this.render);
+                    .info("[CMI particles] programs compiled: reset={} update={} emit={} keygen={} "
+                            + "hist={} scan={} scatter={} capture={} render={} alpha={}",
+                            this.reset, this.update, this.emit, this.keygen,
+                            this.radixHist, this.radixScan, this.radixScatter, this.capture,
+                            this.render, this.alphaRender);
         }
     }
 
     public boolean ready() {
-        return this.reset != 0 && this.update != 0 && this.emit != 0 && this.render != 0;
+        return this.reset != 0 && this.update != 0 && this.emit != 0 && this.render != 0
+                && this.alphaRender != 0
+                && this.keygen != 0 && this.radixHist != 0 && this.radixScan != 0
+                && this.radixScatter != 0 && this.capture != 0;
     }
 
     public int reset() {
@@ -81,8 +107,32 @@ public final class ParticlePrograms {
         return this.emit;
     }
 
+    public int keygen() {
+        return this.keygen;
+    }
+
+    public int radixHist() {
+        return this.radixHist;
+    }
+
+    public int radixScan() {
+        return this.radixScan;
+    }
+
+    public int radixScatter() {
+        return this.radixScatter;
+    }
+
+    public int capture() {
+        return this.capture;
+    }
+
     public int render() {
         return this.render;
+    }
+
+    public int alphaRender() {
+        return this.alphaRender;
     }
 
     // ------------------------------------------------------------------
@@ -102,7 +152,8 @@ public final class ParticlePrograms {
         GL20.glLinkProgram(prog);
         GL20.glDeleteShader(shader);
         if (GL20.glGetProgrami(prog, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
-            CreateManaIndustry.LOGGER.error("[CMI particles] compute link failed: {}", GL20.glGetProgramInfoLog(prog));
+            CreateManaIndustry.LOGGER.error("[CMI particles] compute link failed ({}): {}", path,
+                    GL20.glGetProgramInfoLog(prog));
             GL20.glDeleteProgram(prog);
             return 0;
         }
@@ -130,7 +181,8 @@ public final class ParticlePrograms {
         GL20.glDeleteShader(vsh);
         GL20.glDeleteShader(fsh);
         if (GL20.glGetProgrami(prog, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
-            CreateManaIndustry.LOGGER.error("[CMI particles] render link failed: {}", GL20.glGetProgramInfoLog(prog));
+            CreateManaIndustry.LOGGER.error("[CMI particles] render link failed ({}): {}", vshPath,
+                    GL20.glGetProgramInfoLog(prog));
             GL20.glDeleteProgram(prog);
             return 0;
         }
@@ -173,10 +225,15 @@ public final class ParticlePrograms {
 
     /** Deletes all program ids. Render-thread only. */
     public void delete() {
-        for (int p : new int[] { this.reset, this.update, this.emit, this.render }) {
+        for (int p : new int[] {
+                this.reset, this.update, this.emit, this.keygen,
+                this.radixHist, this.radixScan, this.radixScatter, this.capture,
+                this.render, this.alphaRender }) {
             if (p != 0)
                 GL20.glDeleteProgram(p);
         }
-        this.reset = this.update = this.emit = this.render = 0;
+        this.reset = this.update = this.emit = this.keygen = 0;
+        this.radixHist = this.radixScan = this.radixScatter = this.capture = 0;
+        this.render = this.alphaRender = 0;
     }
 }

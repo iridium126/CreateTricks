@@ -1,17 +1,38 @@
 // Particle update: integrates live particles (compaction), preserving the dense
-// prefix invariant of the output buffer. Dead particles drop out. The indirect
-// draw's instance count and the write slot counter are advanced atomically.
+// prefix invariant of the output buffer. Dead particles drop out. Adds:
+//   - vanilla cherry-style flutter (life-gated horizontal spiral, header 7.z)
+//   - block collision (occupancy 3D texture, axis-separated resolve, header 7.y)
+//   - the indirect instance count is only incremented in the fast path (uSort=0);
+//     in the sorted path keygen.comp owns the per-material draw counts.
 layout(local_size_x = 64) in;
+
+const int SX = 48;
+const int SY = 32;
+const int SZ = 48;
 
 layout(std430, binding = 0) readonly buffer ParticleRead { vec4 data[]; } readBuf;
 layout(std430, binding = 1) buffer ParticleWrite { vec4 data[]; } writeBuf;
-layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd; } indirect;
+layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
 layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; } counter;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+layout(std430, binding = 11) readonly buffer BakeMetaBuf { vec4 m[]; } bakeMeta;
+
+layout(binding = 0) uniform sampler3D uCollision;
 
 uniform uint uAliveRead;
 uniform uint uCapacity;
 uniform float uDt;
+uniform uint uSort;        // 1 = sorted path (keygen owns counts)
+uniform int  uCollisionOn; // 1 = collision texture/SSBO bound & valid
+
+bool solidAt(vec3 wp, vec3 mOrigin, int slice) {
+    vec3 rel = wp - mOrigin;
+    ivec3 tc = ivec3(floor(rel + vec3(0.0001)));
+    if (tc.x < 0 || tc.x >= SX || tc.y < 0 || tc.y >= SY || tc.z < 0 || tc.z >= SZ)
+        return false;
+    tc.z += slice * SZ;
+    return texelFetch(uCollision, tc, 0).r > 0.5;
+}
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -30,7 +51,7 @@ void main() {
         return; // dead -> drops out of the compacted output
 
     uint eid = floatBitsToUint(p3.w);
-    uint hb = eid * 16u;
+    uint hb = eid * 20u; // VEC4_PER_EMITTER (must match EmitterSpec.VEC4_PER_EMITTER)
     vec3 gravity = emitters.u[hb + 2u].xyz;
     float drag = emitters.u[hb + 2u].w;
     vec3 accel = emitters.u[hb + 3u].xyz;
@@ -44,8 +65,65 @@ void main() {
     vel += accel * uDt;
     vel += windDir * (windStrength * uDt);
     vel *= max(0.0, 1.0 - drag * uDt);
+
+    // Vanilla cherry-style spiral flutter: horizontal accel growing as age^1.25.
+    // Vanilla does xd += cos(seed*60deg) * A * f^1.25 * 0.0025 per tick (A = 2.0,
+    // xd in blocks/tick). Converting to blocks/s: 1 blocks/tick = 20 blocks/s and
+    // 1 tick = 0.05 s, so the equivalent continuous acceleration is
+    // A * f^1.25 * (0.0025 * 20 * 20) = A * f^1.25 * 1.0 blocks/s^2.
+    float flutter = emitters.u[hb + 7u].z;
+    if (flutter > 0.0) {
+        float fr = clamp(age / max(maxLife, 1e-5), 0.0, 1.0);
+        float ang = radians(p3.z * 60.0);
+        float acc = flutter * pow(fr, 1.25);
+        vel.x += cos(ang) * acc * uDt;
+        vel.z += sin(ang) * acc * uDt;
+    }
+
     pos += vel * uDt;
     age += uDt;
+
+    // ---- block collision: axis-separated resolve on the occupancy volume ----
+    float bakeS = emitters.u[hb + 16u].x;
+    float collideMode = emitters.u[hb + 7u].y;
+    if (uCollisionOn == 1 && bakeS > 0.5 && collideMode > 0.5) {
+        int slice = int(bakeS) - 1;
+        vec3 mOrigin = bakeMeta.m[slice].xyz;
+        float presence = bakeMeta.m[slice].w;
+        if (presence > 0.5) {
+            float sx = vel.x * uDt;
+            if (sx != 0.0) {
+                vec3 cand = pos + vec3(sx, 0.0, 0.0);
+                if (solidAt(cand, mOrigin, slice))
+                    vel.x = 0.0;
+                else
+                    pos.x = cand.x;
+            }
+            bool landed = false;
+            float sy = vel.y * uDt;
+            if (sy != 0.0) {
+                vec3 cand = pos + vec3(0.0, sy, 0.0);
+                if (solidAt(cand, mOrigin, slice)) {
+                    vel.y = 0.0;
+                    if (sy < 0.0)
+                        landed = true;
+                } else {
+                    pos.y = cand.y;
+                }
+            }
+            float sz = vel.z * uDt;
+            if (sz != 0.0) {
+                vec3 cand = pos + vec3(0.0, 0.0, sz);
+                if (solidAt(cand, mOrigin, slice))
+                    vel.z = 0.0;
+                else
+                    pos.z = cand.z;
+            }
+            // DIE_ON_GROUND (cherry): draw the landing frame once, gone next tick.
+            if (collideMode > 1.5 && landed)
+                age = maxLife;
+        }
+    }
 
     uint slot = atomicAdd(counter.writeSlot, 1u);
     if (slot >= uCapacity)
@@ -56,5 +134,7 @@ void main() {
     writeBuf.data[wb + 1u] = vec4(vel, p1.w);
     writeBuf.data[wb + 2u] = p2;
     writeBuf.data[wb + 3u] = vec4(age, p3.y, p3.z, p3.w);
-    atomicAdd(indirect.cmd.y, 1u);
+
+    if (uSort == 0u)
+        atomicAdd(indirect.cmd[0].y, 1u);
 }

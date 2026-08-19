@@ -1,5 +1,6 @@
 package com.iridium126.createmanaindustry;
 
+import com.iridium126.createmanaindustry.client.particles.engine.CMIParticleEngine;
 import com.iridium126.createmanaindustry.client.render.FuelRodBloomHandler;
 import com.iridium126.createmanaindustry.client.render.MistClientHandler;
 import com.iridium126.createmanaindustry.client.render.InlineTrickRenderer;
@@ -17,8 +18,10 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.event.RegisterColorHandlersEvent;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
+import net.neoforged.neoforge.event.GameShuttingDownEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
 
 // This class will not load on dedicated servers. Accessing client side code from here is safe.
@@ -40,6 +43,25 @@ public class CreateManaIndustryClient {
 
         if (CreateManaIndustry.HEX_ACTIVE && CreateManaIndustry.TRICKSTER_ACTIVE)
             InlineClientAPI.INSTANCE.addRenderer(InlineTrickRenderer.INSTANCE);
+    }
+
+    /**
+     * GPU particle engine frame hook. Uses the native NeoForge level-stage
+     * event (the same AFTER_LEVEL slot the mod's mist/glow pipelines use, but
+     * served through the platform event so the engine works with or without Veil).
+     */
+    @SubscribeEvent
+    private static void onRenderLevelStage(RenderLevelStageEvent event) {
+        if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_LEVEL) {
+            CMIParticleEngine.INSTANCE.renderFrame(event.getCamera(),
+                    event.getModelViewMatrix(), event.getProjectionMatrix(), event.getPartialTick());
+        }
+    }
+
+    /** Releases the GPU particle engine's resources when the game shuts down. */
+    @SubscribeEvent
+    private static void onGameShuttingDown(GameShuttingDownEvent event) {
+        CMIParticleEngine.INSTANCE.close();
     }
 
     @SubscribeEvent
@@ -67,7 +89,10 @@ public class CreateManaIndustryClient {
 		event.register(CopycatBlock.wrappedColor(), CMIBlocks.MOLTEN_SALT_FUEL_TANK.get());
 	}
 
-    /** Clears client mist sources and fuel rod glows when the client's level/dimension changes. */
+    /**
+     * Clears client mist sources, fuel rod glows and GPU particles when the
+     * client's level/dimension changes.
+     */
     @SubscribeEvent
     private static void onLevelUnload(LevelEvent.Unload event) {
         // In single-player the integrated server posts Unload for its ServerLevels
@@ -76,10 +101,24 @@ public class CreateManaIndustryClient {
         // overworld's effects. Both handlers key their sources by BlockPos only
         // (no dimension), so without a clear on dimension switch they'd linger at
         // the same absolute coordinates in the new dimension.
-        if (event.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel
-                && CreateManaIndustry.VEIL_ACTIVE) {
-            MistClientHandler.clearAll();
-            FuelRodBloomHandler.clearAll();
+        if (event.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel) {
+            if (CreateManaIndustry.VEIL_ACTIVE) {
+                MistClientHandler.clearAll();
+                FuelRodBloomHandler.clearAll();
+            }
+            // The particle engine is self-hosted GL — clear regardless of Veil.
+            CMIParticleEngine.INSTANCE.clear();
+        }
+    }
+
+    /**
+     * Clears GPU particles on world join as well (the engine pool is world
+     * anchored; entering a new world must not keep the previous one's particles).
+     */
+    @SubscribeEvent
+    private static void onLevelLoad(LevelEvent.Load event) {
+        if (event.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel) {
+            CMIParticleEngine.INSTANCE.clear();
         }
     }
 }

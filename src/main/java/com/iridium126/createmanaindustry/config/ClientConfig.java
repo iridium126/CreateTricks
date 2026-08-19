@@ -24,6 +24,13 @@ public final class ClientConfig {
     private static ModConfigSpec.BooleanValue MIST_DEBUG_SHADOW;
     private static ModConfigSpec.DoubleValue FUEL_ROD_BLOOM_RING_STRENGTH;
 
+    // ---- particles -------------------------------------------------------
+
+    private static ModConfigSpec.BooleanValue PARTICLE_ENABLED;
+    private static ModConfigSpec.IntValue PARTICLE_MAX_COUNT;
+    private static ModConfigSpec.DoubleValue PARTICLE_BUDGET_MS;
+    private static ModConfigSpec.BooleanValue PARTICLE_AUTO_THROTTLE;
+
     static {
         BUILDER.comment("Volumetric mist rendering options.").push("rendering");
         MIST_GLOW_STRENGTH = BUILDER
@@ -36,6 +43,22 @@ public final class ClientConfig {
                 .comment("Global multiplier for the glowing ring above a formed fuel rod (ring radius diffuses from maxRadius to 2x maxRadius while pulsing).")
                 .defineInRange("fuelRodBloomRingStrength", 1.0, 0.0, 100.0);
         BUILDER.pop();
+
+        BUILDER.comment("GPU particle engine options.").push("particles");
+        PARTICLE_ENABLED = BUILDER
+                .comment("Master switch for the GPU particle engine (requires Veil).")
+                .define("enabled", true);
+        PARTICLE_MAX_COUNT = BUILDER
+                .comment("Maximum live particles allocated in GPU memory (64 bytes each, double-buffered). "
+                        + "Also capped by the GPU's max shader-storage-block size.")
+                .defineInRange("maxParticles", 2_000_000, 1_000, 4_000_000);
+        PARTICLE_BUDGET_MS = BUILDER
+                .comment("Frame-time budget (ms) for particle update+draw; the engine auto-scales emission to stay under it.")
+                .defineInRange("frameBudgetMs", 16.6, 1.0, 50.0);
+        PARTICLE_AUTO_THROTTLE = BUILDER
+                .comment("Automatically reduce emission rate when the frame budget is exceeded.")
+                .define("autoThrottle", true);
+        BUILDER.pop();
     }
 
     public static final ModConfigSpec SPEC = BUILDER.build();
@@ -43,6 +66,10 @@ public final class ClientConfig {
     public static double mistGlowStrength = 0.5;
     public static boolean mistDebugShadow = false;
     public static double fuelRodBloomRingStrength = 1.0;
+    public static boolean particleEnabled = true;
+    public static int particleMaxCount = 2_000_000;
+    public static double particleBudgetMs = 16.6;
+    public static boolean particleAutoThrottle = true;
 
     private ClientConfig() {}
 
@@ -53,6 +80,10 @@ public final class ClientConfig {
             mistGlowStrength = MIST_GLOW_STRENGTH.get();
             mistDebugShadow = MIST_DEBUG_SHADOW.get();
             fuelRodBloomRingStrength = FUEL_ROD_BLOOM_RING_STRENGTH.get();
+            particleEnabled = PARTICLE_ENABLED.get();
+            particleMaxCount = PARTICLE_MAX_COUNT.get();
+            particleBudgetMs = PARTICLE_BUDGET_MS.get();
+            particleAutoThrottle = PARTICLE_AUTO_THROTTLE.get();
         }
     }
 }

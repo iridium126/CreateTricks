@@ -128,6 +128,10 @@
 ./gradlew build
 ```
 
+## 开发文档
+
+GPU 粒子引擎（`/cmip` 调试命令、自托管着色器与后续路线）见 [docs/particle-engine-dev.md](./docs/particle-engine-dev.md)。
+
 ## 许可
 
 MIT License

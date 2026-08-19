@@ -1,0 +1,60 @@
+// Particle update: integrates live particles (compaction), preserving the dense
+// prefix invariant of the output buffer. Dead particles drop out. The indirect
+// draw's instance count and the write slot counter are advanced atomically.
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer ParticleRead { vec4 data[]; } readBuf;
+layout(std430, binding = 1) buffer ParticleWrite { vec4 data[]; } writeBuf;
+layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd; } indirect;
+layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; } counter;
+layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+
+uniform uint uAliveRead;
+uniform uint uCapacity;
+uniform float uDt;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uAliveRead)
+        return;
+
+    uint base = idx * 4u;
+    vec4 p0 = readBuf.data[base + 0u];
+    vec4 p1 = readBuf.data[base + 1u];
+    vec4 p2 = readBuf.data[base + 2u];
+    vec4 p3 = readBuf.data[base + 3u];
+
+    float age = p3.x;
+    float maxLife = p3.y;
+    if (age >= maxLife)
+        return; // dead -> drops out of the compacted output
+
+    uint eid = floatBitsToUint(p3.w);
+    uint hb = eid * 16u;
+    vec3 gravity = emitters.u[hb + 2u].xyz;
+    float drag = emitters.u[hb + 2u].w;
+    vec3 accel = emitters.u[hb + 3u].xyz;
+    float windStrength = emitters.u[hb + 3u].w;
+    vec3 windDir = emitters.u[hb + 4u].xyz;
+
+    vec3 pos = p0.xyz;
+    vec3 vel = p1.xyz;
+
+    vel += gravity * uDt;
+    vel += accel * uDt;
+    vel += windDir * (windStrength * uDt);
+    vel *= max(0.0, 1.0 - drag * uDt);
+    pos += vel * uDt;
+    age += uDt;
+
+    uint slot = atomicAdd(counter.writeSlot, 1u);
+    if (slot >= uCapacity)
+        return;
+
+    uint wb = slot * 4u;
+    writeBuf.data[wb + 0u] = vec4(pos, p0.w);
+    writeBuf.data[wb + 1u] = vec4(vel, p1.w);
+    writeBuf.data[wb + 2u] = p2;
+    writeBuf.data[wb + 3u] = vec4(age, p3.y, p3.z, p3.w);
+    atomicAdd(indirect.cmd.y, 1u);
+}

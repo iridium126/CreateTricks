@@ -1,15 +1,27 @@
 {
   "variants": {
-    "side_open=false,top_open=false": {
+    "lit=false,side_open=false,top_open=false": {
       "model": "createmanaindustry:block/molten_salt_fuel_tank/block_top_close_side_close"
     },
-    "side_open=false,top_open=true": {
+    "lit=false,side_open=false,top_open=true": {
       "model": "createmanaindustry:block/molten_salt_fuel_tank/block_top_open_side_close"
     },
-    "side_open=true,top_open=false": {
+    "lit=false,side_open=true,top_open=false": {
       "model": "createmanaindustry:block/molten_salt_fuel_tank/block_top_close_side_open"
     },
-    "side_open=true,top_open=true": {
+    "lit=false,side_open=true,top_open=true": {
+      "model": "createmanaindustry:block/molten_salt_fuel_tank/block_top_open_side_open"
+    },
+    "lit=true,side_open=false,top_open=false": {
+      "model": "createmanaindustry:block/molten_salt_fuel_tank/block_top_close_side_close"
+    },
+    "lit=true,side_open=false,top_open=true": {
+      "model": "createmanaindustry:block/molten_salt_fuel_tank/block_top_open_side_close"
+    },
+    "lit=true,side_open=true,top_open=false": {
+      "model": "createmanaindustry:block/molten_salt_fuel_tank/block_top_close_side_open"
+    },
+    "lit=true,side_open=true,top_open=true": {
       "model": "createmanaindustry:block/molten_salt_fuel_tank/block_top_open_side_open"
     }
   }

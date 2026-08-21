@@ -133,6 +133,17 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 		FuelTankConnectivity.updateConnectivity(this);
 		// This tank may have joined, extended or broken a fuel rod structure.
 		FuelRodStructure.validateFor(level, worldPosition);
+		// Regrouping changes which basin/surface each cell compares against, so
+		// LIT verdicts can flip WITHOUT any fluid stack event; refresh this
+		// group's cells now instead of waiting for the lazy-tick self-heal.
+		if (level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+			FuelTankBlockEntity controllerBE = getControllerBE();
+			Set<BlockPos> cells = controllerBE != null && controllerBE.basins != null
+				? controllerBE.basins.basinByCell.keySet()
+				: Set.of(worldPosition);
+			for (BlockPos p : cells)
+				FuelTankBlock.refreshLitState(serverLevel, p);
+		}
 	}
 
 	/** Rebuilds the fluid capability and notifies the capability caches. */
@@ -188,6 +199,15 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 		// basins have not been computed yet.
 		if (!level.isClientSide && isController() && (basins == null || hasPendingGroupLoad()))
 			FuelTankConnectivity.updateConnectivity(this);
+		// Self-heal the shader-facing LIT flag: converges paths that bypass
+		// onFluidStackChanged (connectivity rebuilds, chunk loads with stale
+		// blockstates, deferred surface recomputes) within one lazy-tick period.
+		if (!level.isClientSide && isController() && level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+			if (basins != null)
+				basins.basinByCell.keySet().forEach(p -> FuelTankBlock.refreshLitState(serverLevel, p));
+			else
+				FuelTankBlock.refreshLitState(serverLevel, worldPosition);
+		}
 		// Self-heal the fuel rod structure: while formed, re-validate on every lazy
 		// tick so glass moved by pistons, explosions and other un-triggered changes
 		// converge (and clear stale data) within one lazy-tick period.
@@ -290,6 +310,15 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 					for (BlockPos p : cells)
 						level.getChunkSource().getLightEngine().checkBlock(p);
 				}
+			}
+			// Keep the shader-facing LIT flag in step with the fluid surface even
+			// when the luminosity itself is unchanged: surface movement changes
+			// WHICH cells are bright without changing the fluid type or its light.
+			if (!level.isClientSide && level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+				if (basins != null)
+					basins.basinByCell.keySet().forEach(p -> FuelTankBlock.refreshLitState(serverLevel, p));
+				else
+					FuelTankBlock.refreshLitState(serverLevel, worldPosition);
 			}
 			markSurfacesDirty();
 			setChanged();

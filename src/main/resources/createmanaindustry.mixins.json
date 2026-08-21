@@ -53,7 +53,9 @@
     "basin.TrainTrapdoorBlockSkipRenderingMixin",
     "jei.BasinCategoryMixin",
     "jei.CreateHeatedBasinCategoryMixin",
-    "iris.ShadowRendererAccessor"
+    "iris.ShadowRendererAccessor",
+    "iris.IrisIdMapMixin",
+    "iris.IncludeGraphMixin"
   ],
   "injectors": {
     "defaultRequire": 1

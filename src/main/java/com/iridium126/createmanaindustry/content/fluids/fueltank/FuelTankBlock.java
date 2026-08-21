@@ -91,10 +91,25 @@ public class FuelTankBlock extends CopycatBlock {
 
 	public static final BooleanProperty TOP_OPEN = BooleanProperty.create("top_open");
 	public static final BooleanProperty SIDE_OPEN = BooleanProperty.create("side_open");
+	/**
+	 * The per-cell brightness rule ({@link #isCellBright}) materialized as a
+	 * blockstate, and the single source of truth for everything that depends
+	 * on it: {@link #getLightEmission} (fluid part), the rose quartz lamp
+	 * shell's POWERING skin ({@code FuelTankModel#displayMaterial}) and
+	 * shader-side colored lights (Photon seeds its LPV from block IDs alone
+	 * and never consults the vanilla light level, so an unstored flag would
+	 * let a drained cell keep glowing pink).
+	 * <p>
+	 * Refreshed on fluid changes and after connectivity regrouping, self-healed
+	 * by controller lazy ticks; eventually consistent within one lazy-tick
+	 * period for paths that bypass both.
+	 */
+	public static final BooleanProperty LIT = BooleanProperty.create("lit");
 
 	public FuelTankBlock(Properties properties) {
 		super(properties);
-		registerDefaultState(defaultBlockState().setValue(TOP_OPEN, true).setValue(SIDE_OPEN, true));
+		registerDefaultState(defaultBlockState().setValue(TOP_OPEN, true).setValue(SIDE_OPEN, true)
+			.setValue(LIT, false));
 	}
 
 	public static boolean isFuelTank(BlockState state) {
@@ -103,7 +118,7 @@ public class FuelTankBlock extends CopycatBlock {
 
 	@Override
 	protected void createBlockStateDefinition(Builder<Block, BlockState> builder) {
-		builder.add(TOP_OPEN, SIDE_OPEN);
+		builder.add(TOP_OPEN, SIDE_OPEN, LIT);
 	}
 
 	@Override
@@ -336,6 +351,10 @@ public class FuelTankBlock extends CopycatBlock {
 	@Override
 	public int getLightEmission(BlockState state, BlockGetter world, BlockPos pos) {
 		int light = 0;
+		// The brightness verdict is shared through LIT: vanilla light, the lamp
+		// shell skin and the shader colored-light flag all read one value rather
+		// than re-deriving it per consumer.
+		boolean lit = state.getValue(LIT);
 		// Fluid luminosity, propagated from the controller (mirrors the original tank).
 		FuelTankBlockEntity tankAt = FuelTankConnectivity.partAt(getBlockEntityType(), world, pos);
 		if (tankAt != null && tankAt.hasLevel()) {
@@ -343,11 +362,11 @@ public class FuelTankBlock extends CopycatBlock {
 			if (controllerBE != null) {
 				int lum = controllerBE.luminosity;
 				if (lum > 0) {
-					// Per-cell brightness mirrors Create's tank: cells at or below the
-					// liquid surface of their basin glow at full luminosity (flipped
-					// for lighter-than-air fluids), cells above it glow faintly at 1,
-					// so a partially filled tank lights only its filled region.
-					light = isCellBright(world, pos) ? lum : 1;
+					// Bright cells (at or below the liquid surface of their basin,
+					// flipped for lighter-than-air fluids) glow at full luminosity,
+					// cells above it glow faintly at 1, so a partially filled tank
+					// lights only its filled region.
+					light = lit ? lum : 1;
 				}
 			}
 		}
@@ -361,7 +380,7 @@ public class FuelTankBlock extends CopycatBlock {
 		if (be instanceof FuelTankBlockEntity tankBE && tankBE.hasCustomMaterial()) {
 			BlockState material = tankBE.getMaterial();
 			if (material.is(AllBlocks.ROSE_QUARTZ_LAMP.get()))
-				light = Math.max(light, material.setValue(RoseQuartzLampBlock.POWERING, isCellBright(world, pos))
+				light = Math.max(light, material.setValue(RoseQuartzLampBlock.POWERING, lit)
 					.getLightEmission(world, pos));
 			else
 				light = Math.max(light, material.getLightEmission(world, pos));
@@ -393,6 +412,21 @@ public class FuelTankBlock extends CopycatBlock {
 			.getFluidType()
 			.isLighterThanAir();
 		return reversed ? pos.getY() >= (int) Math.floor(surface) : pos.getY() <= (int) Math.floor(surface);
+	}
+
+	/**
+	 * Server-side refresh of one cell's {@link #LIT} flag to match the current
+	 * brightness rule. Compare-first, so repeated calls during fluid churn are
+	 * cheap; {@code UPDATE_CLIENTS} only, since neighbours are irrelevant to
+	 * this purely informational flag.
+	 */
+	static void refreshLitState(net.minecraft.server.level.ServerLevel level, BlockPos pos) {
+		BlockState state = level.getBlockState(pos);
+		if (!isFuelTank(state))
+			return;
+		boolean lit = isCellBright(level, pos);
+		if (state.getValue(LIT) != lit)
+			level.setBlock(pos, state.setValue(LIT, lit), UPDATE_CLIENTS);
 	}
 
 	@Override

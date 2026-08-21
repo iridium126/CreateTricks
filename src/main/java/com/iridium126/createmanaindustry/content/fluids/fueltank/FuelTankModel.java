@@ -113,16 +113,17 @@ public class FuelTankModel extends BakedModelWrapperWithData {
 
 	/**
 	 * The state the shell is skinned with: a rose quartz lamp material mirrors
-	 * the cell's own brightness, so POWERING follows the per-cell light rule and
-	 * the shell shows the powered texture exactly where the tank emits full
-	 * light (the light emission couples to the same derived state in
-	 * {@link FuelTankBlock#getLightEmission}). The derived state is part of the
-	 * {@link #FACES_CACHE} key, so lit/unlit faces cache separately; light
-	 * changes rebuild the section mesh and re-derive the state.
+	 * the cell's own brightness, so POWERING mirrors the shared {@code LIT}
+	 * blockstate verdict and the shell shows the powered texture exactly where
+	 * the tank emits full light ({@link FuelTankBlock#getLightEmission} reads
+	 * the same flag). The derived state is part of the {@link #FACES_CACHE}
+	 * key, so lit/unlit faces cache separately; light changes rebuild the
+	 * section mesh and re-derive the state.
 	 */
 	private static BlockState displayMaterial(BlockAndTintGetter world, BlockPos pos, BlockState material) {
 		if (material.is(AllBlocks.ROSE_QUARTZ_LAMP.get()))
-			return material.setValue(RoseQuartzLampBlock.POWERING, FuelTankBlock.isCellBright(world, pos));
+			return material.setValue(RoseQuartzLampBlock.POWERING,
+				world.getBlockState(pos).getOptionalValue(FuelTankBlock.LIT).orElse(false));
 		return material;
 	}
 

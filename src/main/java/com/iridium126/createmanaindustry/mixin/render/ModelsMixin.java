@@ -7,7 +7,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-import com.iridium126.createmanaindustry.content.kinetics.TemporaryStressVisualModels;
+import com.iridium126.createmanaindustry.content.kinetics.temporarykinetics.TemporaryKineticsVisualModels;
 import com.mojang.blaze3d.vertex.PoseStack;
 
 import dev.engine_room.flywheel.api.model.Model;
@@ -19,20 +19,20 @@ import net.minecraft.core.Direction;
 public class ModelsMixin {
     @Inject(method = "partial(Ldev/engine_room/flywheel/lib/model/baked/PartialModel;)Ldev/engine_room/flywheel/api/model/Model;", at = @At("RETURN"))
     private static void createmanaindustry$trackPartial(PartialModel partial, CallbackInfoReturnable<Model> cir) {
-        TemporaryStressVisualModels.track(partial, cir.getReturnValue());
+        TemporaryKineticsVisualModels.track(partial, cir.getReturnValue());
     }
 
     @Inject(method = "partial(Ldev/engine_room/flywheel/lib/model/baked/PartialModel;Lnet/minecraft/core/Direction;)Ldev/engine_room/flywheel/api/model/Model;", at = @At("RETURN"))
     private static void createmanaindustry$trackFacingPartial(PartialModel partial, Direction direction,
             CallbackInfoReturnable<Model> cir) {
-        TemporaryStressVisualModels.track(partial, cir.getReturnValue(),
+        TemporaryKineticsVisualModels.track(partial, cir.getReturnValue(),
                 replacement -> Models.partial(replacement, direction));
     }
 
     @Inject(method = "partial(Ldev/engine_room/flywheel/lib/model/baked/PartialModel;Ljava/lang/Object;Ljava/util/function/BiConsumer;)Ldev/engine_room/flywheel/api/model/Model;", at = @At("RETURN"))
     private static <T> void createmanaindustry$trackTransformedPartial(PartialModel partial, T data,
             BiConsumer<T, PoseStack> transformer, CallbackInfoReturnable<Model> cir) {
-        TemporaryStressVisualModels.track(partial, cir.getReturnValue(),
+        TemporaryKineticsVisualModels.track(partial, cir.getReturnValue(),
                 replacement -> Models.partial(replacement, data, transformer));
     }
 }

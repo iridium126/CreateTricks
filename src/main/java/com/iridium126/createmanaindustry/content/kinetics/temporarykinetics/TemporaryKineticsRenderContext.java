@@ -1,12 +1,12 @@
-package com.iridium126.createmanaindustry.content.kinetics;
+package com.iridium126.createmanaindustry.content.kinetics.temporarykinetics;
 
 import dev.engine_room.flywheel.lib.model.baked.PartialModel;
 import net.minecraft.world.level.block.entity.BlockEntity;
 
-public final class TemporaryStressRenderContext {
+public final class TemporaryKineticsRenderContext {
     private static final ThreadLocal<BlockEntity> RENDERED_BLOCK_ENTITY = new ThreadLocal<>();
 
-    private TemporaryStressRenderContext() {}
+    private TemporaryKineticsRenderContext() {}
 
     public static void set(BlockEntity be) {
         RENDERED_BLOCK_ENTITY.set(be);
@@ -25,6 +25,6 @@ public final class TemporaryStressRenderContext {
         BlockEntity be = RENDERED_BLOCK_ENTITY.get();
         if (be == null)
             return partial;
-        return TemporaryStressModel.replacementOrSelf(be, partial);
+        return TemporaryKineticsModel.replacementOrSelf(be, partial);
     }
 }

@@ -3,7 +3,7 @@ package com.iridium126.createmanaindustry.mixin.kinetics;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 
-import com.iridium126.createmanaindustry.content.kinetics.TemporaryStressInstancerProvider;
+import com.iridium126.createmanaindustry.content.kinetics.temporarykinetics.TemporaryKineticsInstancerProvider;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntityVisual;
 
@@ -23,7 +23,7 @@ public abstract class KineticBlockEntityVisualMixin<T extends KineticBlockEntity
     @Override
     protected InstancerProvider instancerProvider() {
         if (createmanaindustry$instancerProvider == null)
-            createmanaindustry$instancerProvider = new TemporaryStressInstancerProvider(visualizationContext.instancerProvider(),
+            createmanaindustry$instancerProvider = new TemporaryKineticsInstancerProvider(visualizationContext.instancerProvider(),
                     blockEntity);
         return createmanaindustry$instancerProvider;
     }

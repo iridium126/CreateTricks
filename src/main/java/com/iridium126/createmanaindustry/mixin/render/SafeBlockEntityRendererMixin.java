@@ -5,7 +5,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import com.iridium126.createmanaindustry.content.kinetics.TemporaryStressRenderContext;
+import com.iridium126.createmanaindustry.content.kinetics.temporarykinetics.TemporaryKineticsRenderContext;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.foundation.blockEntity.renderer.SafeBlockEntityRenderer;
@@ -20,13 +20,13 @@ public class SafeBlockEntityRendererMixin<T extends BlockEntity> {
     private void createmanaindustry$setRenderedKineticBlockEntity(T be, float partialTicks, PoseStack ms,
             MultiBufferSource buffer, int light, int overlay, CallbackInfo ci) {
         if (be instanceof KineticBlockEntity)
-            TemporaryStressRenderContext.set(be);
+            TemporaryKineticsRenderContext.set(be);
     }
 
     @Inject(method = "render", at = @At("RETURN"))
     private void createmanaindustry$clearRenderedKineticBlockEntity(T be, float partialTicks, PoseStack ms,
             MultiBufferSource buffer, int light, int overlay, CallbackInfo ci) {
         if (be instanceof KineticBlockEntity)
-            TemporaryStressRenderContext.clear(be);
+            TemporaryKineticsRenderContext.clear(be);
     }
 }

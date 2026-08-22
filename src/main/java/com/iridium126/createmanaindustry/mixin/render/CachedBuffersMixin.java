@@ -6,9 +6,9 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-import com.iridium126.createmanaindustry.content.kinetics.TemporaryStress;
-import com.iridium126.createmanaindustry.content.kinetics.TemporaryStressModel;
-import com.iridium126.createmanaindustry.content.kinetics.TemporaryStressRenderContext;
+import com.iridium126.createmanaindustry.content.kinetics.temporarykinetics.TemporaryKinetics;
+import com.iridium126.createmanaindustry.content.kinetics.temporarykinetics.TemporaryKineticsModel;
+import com.iridium126.createmanaindustry.content.kinetics.temporarykinetics.TemporaryKineticsRenderContext;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.content.kinetics.base.IRotate;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
@@ -28,43 +28,43 @@ public class CachedBuffersMixin {
 
     @ModifyVariable(method = "partial(Ldev/engine_room/flywheel/lib/model/baked/PartialModel;Lnet/minecraft/world/level/block/state/BlockState;)Lnet/createmod/catnip/render/SuperByteBuffer;", at = @At("HEAD"), argsOnly = true, ordinal = 0)
     private static PartialModel createmanaindustry$replacePartial(PartialModel partial) {
-        return TemporaryStressRenderContext.replace(partial);
+        return TemporaryKineticsRenderContext.replace(partial);
     }
 
     @ModifyVariable(method = "partial(Ldev/engine_room/flywheel/lib/model/baked/PartialModel;Lnet/minecraft/world/level/block/state/BlockState;Ljava/util/function/Supplier;)Lnet/createmod/catnip/render/SuperByteBuffer;", at = @At("HEAD"), argsOnly = true, ordinal = 0)
     private static PartialModel createmanaindustry$replaceTransformedPartial(PartialModel partial) {
-        return TemporaryStressRenderContext.replace(partial);
+        return TemporaryKineticsRenderContext.replace(partial);
     }
 
     @ModifyVariable(method = "partialFacing(Ldev/engine_room/flywheel/lib/model/baked/PartialModel;Lnet/minecraft/world/level/block/state/BlockState;)Lnet/createmod/catnip/render/SuperByteBuffer;", at = @At("HEAD"), argsOnly = true, ordinal = 0)
     private static PartialModel createmanaindustry$replaceFacingPartial(PartialModel partial) {
-        return TemporaryStressRenderContext.replace(partial);
+        return TemporaryKineticsRenderContext.replace(partial);
     }
 
     @ModifyVariable(method = "partialFacing(Ldev/engine_room/flywheel/lib/model/baked/PartialModel;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/core/Direction;)Lnet/createmod/catnip/render/SuperByteBuffer;", at = @At("HEAD"), argsOnly = true, ordinal = 0)
     private static PartialModel createmanaindustry$replaceDirectedFacingPartial(PartialModel partial) {
-        return TemporaryStressRenderContext.replace(partial);
+        return TemporaryKineticsRenderContext.replace(partial);
     }
 
     @ModifyVariable(method = "partialFacingVertical(Ldev/engine_room/flywheel/lib/model/baked/PartialModel;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/core/Direction;)Lnet/createmod/catnip/render/SuperByteBuffer;", at = @At("HEAD"), argsOnly = true, ordinal = 0)
     private static PartialModel createmanaindustry$replaceVerticalFacingPartial(PartialModel partial) {
-        return TemporaryStressRenderContext.replace(partial);
+        return TemporaryKineticsRenderContext.replace(partial);
     }
 
     @ModifyVariable(method = "partialDirectional(Ldev/engine_room/flywheel/lib/model/baked/PartialModel;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/core/Direction;Ljava/util/function/Supplier;)Lnet/createmod/catnip/render/SuperByteBuffer;", at = @At("HEAD"), argsOnly = true, ordinal = 0)
     private static PartialModel createmanaindustry$replaceDirectionalPartial(PartialModel partial) {
-        return TemporaryStressRenderContext.replace(partial);
+        return TemporaryKineticsRenderContext.replace(partial);
     }
 
     @Inject(method = "block(Lnet/createmod/catnip/render/SuperByteBufferCache$Compartment;Lnet/minecraft/world/level/block/state/BlockState;)Lnet/createmod/catnip/render/SuperByteBuffer;", at = @At("HEAD"), cancellable = true)
     private static void createmanaindustry$replaceBlockBuffer(SuperByteBufferCache.Compartment<BlockState> compartment,
             BlockState toRender, CallbackInfoReturnable<SuperByteBuffer> cir) {
-        BlockEntity be = TemporaryStressRenderContext.get();
-        if (!(be instanceof KineticBlockEntity kinetic) || !TemporaryStress.isActive(kinetic))
+        BlockEntity be = TemporaryKineticsRenderContext.get();
+        if (!(be instanceof KineticBlockEntity kinetic) || !TemporaryKinetics.isActive(kinetic))
             return;
-        PartialModel model = TemporaryStressModel.rotatingBlockModel(kinetic);
+        PartialModel model = TemporaryKineticsModel.rotatingBlockModel(kinetic);
         if (model == null && AllBlocks.SHAFT.has(toRender))
-            model = TemporaryStressModel.shaft(kinetic);
+            model = TemporaryKineticsModel.shaft(kinetic);
         if (model == null)
             return;
         Axis axis = ((IRotate) kinetic.getBlockState().getBlock()).getRotationAxis(kinetic.getBlockState());

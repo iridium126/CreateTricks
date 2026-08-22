@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.content.kinetics;
+package com.iridium126.createmanaindustry.content.kinetics.temporarykinetics;
 
 import org.jetbrains.annotations.Nullable;
 
@@ -12,11 +12,11 @@ import dev.engine_room.flywheel.lib.model.baked.PartialModel;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 
-public final class TemporaryStressModel {
-    private TemporaryStressModel() {}
+public final class TemporaryKineticsModel {
+    private TemporaryKineticsModel() {}
 
     public static PartialModel select(BlockEntity be, PartialModel normal, PartialModel stressed) {
-        return TemporaryStress.isActive(be) ? stressed : normal;
+        return TemporaryKinetics.isActive(be) ? stressed : normal;
     }
 
     public static PartialModel innerKineticManaGenerator(BlockEntity be) {

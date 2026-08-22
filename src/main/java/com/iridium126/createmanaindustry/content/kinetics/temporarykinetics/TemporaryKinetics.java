@@ -1,11 +1,9 @@
-package com.iridium126.createmanaindustry.content.kinetics;
+package com.iridium126.createmanaindustry.content.kinetics.temporarykinetics;
 
-import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
 
+import com.iridium126.createmanaindustry.CMIAttachments;
+import com.iridium126.createmanaindustry.content.kinetics.temporarykinetics.TemporaryKineticsStore.StressState;
 import com.iridium126.createmanaindustry.mixin.kinetics.KineticBlockEntityAccessor;
 import com.simibubi.create.content.kinetics.KineticNetwork;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
@@ -17,60 +15,51 @@ import com.simibubi.create.foundation.utility.CreateLang;
 import dev.engine_room.flywheel.api.visualization.VisualManager;
 import dev.engine_room.flywheel.api.visualization.VisualizationManager;
 import net.minecraft.ChatFormatting;
-import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 
-public final class TemporaryStress {
-    public static final String NBT_KEY = "CMITemporaryStress";
+/**
+ * Temporary kinetics: externally applied speed / stress capacity on any
+ * {@link KineticBlockEntity} for a bounded number of ticks — the attachment-backed
+ * successor of Create's own {@code GeneratingKineticBlockEntity} pattern,
+ * generalised to arbitrary kinetic blocks.
+ * <p>
+ * State lives in a per-level {@link TemporaryKineticsStore} data attachment
+ * ({@code CMIAttachments#TEMPORARY_KINETICS}) rather than static maps: it is
+ * scoped to the level instance server- and client-side alike, persists across
+ * saves through the store serializer, and can never leak between worlds.
+ * <p>
+ * Client sync rides Create's existing BE payload ({@code write}/{@code read}
+ * with {@code clientPacket=true}); the {@link #NBT_KEY} tag is transient by
+ * design and never reaches disk.
+ */
+public final class TemporaryKinetics {
+    public static final String NBT_KEY = "CMITemporaryKinetics";
 
-    private static final Map<StressKey, StressState> SERVER_STATES = new ConcurrentHashMap<>();
-    private static final Map<StressKey, StressState> CLIENT_STATES = new ConcurrentHashMap<>();
-
-    private TemporaryStress() {}
+    private TemporaryKinetics() {}
 
     public static void apply(KineticBlockEntity be, float stress, float speed, int durationTicks) {
         Level level = be.getLevel();
-        if (level == null || level.isClientSide || durationTicks <= 0)
+        if (!(level instanceof ServerLevel serverLevel) || durationTicks <= 0)
             return;
 
         StressState state = new StressState(stress, speed, durationTicks);
-        SERVER_STATES.put(StressKey.of(level, be.getBlockPos()), state);
+        store(serverLevel).put(be.getBlockPos(), state);
         updateGeneratedRotation(be);
     }
 
     public static void tick(ServerLevel level) {
-        Iterator<Map.Entry<StressKey, StressState>> iterator = SERVER_STATES.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Map.Entry<StressKey, StressState> entry = iterator.next();
-            if (!entry.getKey().is(level))
-                continue;
-
-            StressState state = entry.getValue();
-            state.ticksRemaining--;
-            if (state.ticksRemaining > 0)
-                continue;
-
-            iterator.remove();
-            BlockEntity be = level.getBlockEntity(entry.getKey().pos);
-            if (be instanceof KineticBlockEntity kinetic) {
-                updateGeneratedRotation(kinetic);
-                syncBlock(kinetic);
-            }
-        }
+        store(level).tick(level);
     }
 
     public static float getStress(KineticBlockEntity be) {
         StressState state = getState(be);
-        if (state == null)
-            return 0;
-        return state.stressCapacity();
+        return state == null ? 0 : state.stressCapacity();
     }
 
     public static float getSpeed(KineticBlockEntity be) {
@@ -86,7 +75,10 @@ public final class TemporaryStress {
     }
 
     public static void writeClient(KineticBlockEntity be, CompoundTag tag) {
-        StressState state = getServerState(be);
+        Level level = be.getLevel();
+        if (level == null || level.isClientSide)
+            return;
+        StressState state = getState(be);
         if (state == null || state.ticksRemaining <= 0)
             return;
 
@@ -99,20 +91,19 @@ public final class TemporaryStress {
 
     public static void readClient(KineticBlockEntity be, CompoundTag tag) {
         Level level = be.getLevel();
-        if (level == null)
+        if (level == null || !level.isClientSide)
             return;
-        StressKey key = StressKey.of(level, be.getBlockPos());
         boolean wasActive = isActive(be);
         if (tag.contains(NBT_KEY)) {
             CompoundTag stressTag = tag.getCompound(NBT_KEY);
-            CLIENT_STATES.put(key,
+            store(level).put(be.getBlockPos(),
                     new StressState(stressTag.getFloat("Stress"), stressTag.getFloat("Speed"), stressTag.getInt("Ticks")));
             if (!wasActive)
                 rebuildVisual(be);
             return;
         }
 
-        CLIENT_STATES.remove(key);
+        store(level).remove(be.getBlockPos());
         if (wasActive)
             rebuildVisual(be);
     }
@@ -137,14 +128,17 @@ public final class TemporaryStress {
         Level level = be.getLevel();
         if (level == null || level.isClientSide)
             return;
-        StressState state = getServerState(be);
+        StressState state = getState(be);
         if (state == null || !be.hasSource())
             return;
         state.reActivateSource = true;
     }
 
     public static void setSource(KineticBlockEntity be, BlockEntity source) {
-        StressState state = getServerState(be);
+        Level level = be.getLevel();
+        if (level == null || level.isClientSide)
+            return;
+        StressState state = getState(be);
         if (state == null || !(source instanceof KineticBlockEntity sourceBE))
             return;
         if (state.reActivateSource && Math.abs(sourceBE.getSpeed()) >= Math.abs(state.speed))
@@ -155,7 +149,7 @@ public final class TemporaryStress {
         Level level = be.getLevel();
         if (level == null || level.isClientSide)
             return;
-        StressState state = getServerState(be);
+        StressState state = getState(be);
         if (state == null || !state.reActivateSource)
             return;
         updateGeneratedRotation(be);
@@ -193,26 +187,28 @@ public final class TemporaryStress {
         return true;
     }
 
+    // ---- internals -----------------------------------------------------------
+
+    /**
+     * Side-correct store access: a {@link ServerLevel} resolves to the server's
+     * live data, a client level to its mirrored copy — both through the same
+     * attachment type, mirroring the mist-field pattern.
+     */
+    private static TemporaryKineticsStore store(Level level) {
+        return level.getData(CMIAttachments.TEMPORARY_KINETICS.get());
+    }
+
     private static StressState getState(KineticBlockEntity be) {
         Level level = be.getLevel();
-        if (level == null)
-            return null;
-        return (level.isClientSide ? CLIENT_STATES : SERVER_STATES).get(StressKey.of(level, be.getBlockPos()));
+        return level == null ? null : store(level).get(be.getBlockPos());
     }
 
-    private static StressState getServerState(KineticBlockEntity be) {
-        Level level = be.getLevel();
-        if (level == null)
-            return null;
-        return SERVER_STATES.get(StressKey.of(level, be.getBlockPos()));
-    }
-
-    private static void updateGeneratedRotation(KineticBlockEntity be) {
+    static void updateGeneratedRotation(KineticBlockEntity be) {
         Level level = be.getLevel();
         if (level == null || level.isClientSide)
             return;
 
-        StressState state = getServerState(be);
+        StressState state = getState(be);
         float speed = state == null ? 0 : state.speed;
         float prevSpeed = be.getTheoreticalSpeed();
         KineticNetwork previousNetwork = be.hasNetwork() ? be.getOrCreateNetwork() : null;
@@ -294,7 +290,7 @@ public final class TemporaryStress {
         syncBlock(be);
     }
 
-    private static void syncBlock(KineticBlockEntity be) {
+    static void syncBlock(KineticBlockEntity be) {
         be.setChanged();
         if (be instanceof SyncedBlockEntity synced)
             synced.sendData();
@@ -302,38 +298,6 @@ public final class TemporaryStress {
         if (level != null && !level.isClientSide) {
             BlockState state = be.getBlockState();
             level.sendBlockUpdated(be.getBlockPos(), state, state, 2);
-        }
-    }
-
-    private record StressKey(ResourceKey<Level> dimension, BlockPos pos) {
-        private StressKey {
-            pos = pos.immutable();
-        }
-
-        private static StressKey of(Level level, BlockPos pos) {
-            return new StressKey(level.dimension(), pos);
-        }
-
-        private boolean is(Level level) {
-            return Objects.equals(dimension, level.dimension());
-        }
-    }
-
-    private static final class StressState {
-        private final float stress;
-        private final float speed;
-        private int ticksRemaining;
-        private boolean reActivateSource;
-
-        private StressState(float stress, float speed, int ticksRemaining) {
-            this.stress = stress;
-            this.speed = speed;
-            this.ticksRemaining = ticksRemaining;
-        }
-
-        private float stressCapacity() {
-            float absSpeed = Math.abs(speed);
-            return absSpeed == 0 ? 0 : Math.abs(stress) / absSpeed;
         }
     }
 }

@@ -8,7 +8,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-import com.iridium126.createmanaindustry.content.kinetics.TemporaryStress;
+import com.iridium126.createmanaindustry.content.kinetics.temporarykinetics.TemporaryKinetics;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 
 import net.minecraft.core.BlockPos;
@@ -18,10 +18,10 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.world.level.block.entity.BlockEntity;
 
 /**
- * Temporary stress (kinetic spell) support for kinetic block entities:
+ * Temporary kinetics support for kinetic block entities:
  * <ul>
  *   <li>Adds temporary speed / stress capacity and source tracking.</li>
- *   <li>Syncs temporary stress state in client packets (write/read).</li>
+ *   <li>Syncs temporary kinetics state in client packets (write/read).</li>
  * </ul>
  * <p>
  * Field accessors live in {@link KineticBlockEntityAccessor} — applied mixin
@@ -34,28 +34,28 @@ public class KineticBlockEntityMixin {
     @Inject(method = "getGeneratedSpeed", at = @At("RETURN"), cancellable = true)
     private void createmanaindustry$addTemporaryGeneratedSpeed(CallbackInfoReturnable<Float> cir) {
         KineticBlockEntity be = (KineticBlockEntity) (Object) this;
-        float speed = TemporaryStress.getSpeed(be);
+        float speed = TemporaryKinetics.getSpeed(be);
         if (speed != 0)
             cir.setReturnValue(speed);
     }
 
     @Inject(method = "calculateAddedStressCapacity", at = @At("RETURN"), cancellable = true)
-    private void createmanaindustry$addTemporaryStressCapacity(CallbackInfoReturnable<Float> cir) {
+    private void createmanaindustry$addTemporaryKineticsCapacity(CallbackInfoReturnable<Float> cir) {
         KineticBlockEntity be = (KineticBlockEntity) (Object) this;
-        cir.setReturnValue(cir.getReturnValueF() + TemporaryStress.getStress(be));
+        cir.setReturnValue(cir.getReturnValueF() + TemporaryKinetics.getStress(be));
     }
 
     @Inject(method = "isSource", at = @At("RETURN"), cancellable = true)
     private void createmanaindustry$useTemporarySource(CallbackInfoReturnable<Boolean> cir) {
         KineticBlockEntity be = (KineticBlockEntity) (Object) this;
-        if (TemporaryStress.isSource(be))
+        if (TemporaryKinetics.isSource(be))
             cir.setReturnValue(true);
     }
 
     @Inject(method = "removeSource", at = @At("HEAD"))
     private void createmanaindustry$rememberTemporarySource(CallbackInfo ci) {
         KineticBlockEntity be = (KineticBlockEntity) (Object) this;
-        TemporaryStress.removeSource(be);
+        TemporaryKinetics.removeSource(be);
     }
 
     @Inject(method = "setSource", at = @At("RETURN"))
@@ -65,33 +65,33 @@ public class KineticBlockEntityMixin {
             return;
         BlockEntity sourceBE = be.getLevel()
             .getBlockEntity(source);
-        TemporaryStress.setSource(be, sourceBE);
+        TemporaryKinetics.setSource(be, sourceBE);
     }
 
     @Inject(method = "tick", at = @At("RETURN"))
     private void createmanaindustry$tickTemporarySource(CallbackInfo ci) {
-        TemporaryStress.tickBlockEntity((KineticBlockEntity) (Object) this);
+        TemporaryKinetics.tickBlockEntity((KineticBlockEntity) (Object) this);
     }
 
     @Inject(method = "addToGoggleTooltip", at = @At("RETURN"), cancellable = true)
     private void createmanaindustry$addTemporaryGeneratorStats(List<Component> tooltip, boolean isPlayerSneaking,
             CallbackInfoReturnable<Boolean> cir) {
         KineticBlockEntity be = (KineticBlockEntity) (Object) this;
-        if (TemporaryStress.addToGoggleTooltip(be, tooltip))
+        if (TemporaryKinetics.addToGoggleTooltip(be, tooltip))
             cir.setReturnValue(true);
     }
 
     @Inject(method = "write", at = @At("RETURN"))
-    private void createmanaindustry$writeTemporaryStress(CompoundTag compound, HolderLookup.Provider registries,
+    private void createmanaindustry$writeTemporaryKinetics(CompoundTag compound, HolderLookup.Provider registries,
             boolean clientPacket, CallbackInfo ci) {
         if (clientPacket)
-            TemporaryStress.writeClient((KineticBlockEntity) (Object) this, compound);
+            TemporaryKinetics.writeClient((KineticBlockEntity) (Object) this, compound);
     }
 
     @Inject(method = "read", at = @At("RETURN"))
-    private void createmanaindustry$readTemporaryStress(CompoundTag compound, HolderLookup.Provider registries,
+    private void createmanaindustry$readTemporaryKinetics(CompoundTag compound, HolderLookup.Provider registries,
             boolean clientPacket, CallbackInfo ci) {
         if (clientPacket)
-            TemporaryStress.readClient((KineticBlockEntity) (Object) this, compound);
+            TemporaryKinetics.readClient((KineticBlockEntity) (Object) this, compound);
     }
 }

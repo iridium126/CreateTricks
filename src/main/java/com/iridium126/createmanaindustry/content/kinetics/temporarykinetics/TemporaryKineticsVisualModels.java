@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.content.kinetics;
+package com.iridium126.createmanaindustry.content.kinetics.temporarykinetics;
 
 import java.util.Collections;
 import java.util.Map;
@@ -10,17 +10,17 @@ import dev.engine_room.flywheel.lib.model.Models;
 import dev.engine_room.flywheel.lib.model.baked.PartialModel;
 import net.minecraft.world.level.block.entity.BlockEntity;
 
-public final class TemporaryStressVisualModels {
+public final class TemporaryKineticsVisualModels {
     private static final Map<Model, Resolver> MODELS = Collections.synchronizedMap(new WeakHashMap<>());
 
-    private TemporaryStressVisualModels() {}
+    private TemporaryKineticsVisualModels() {}
 
     public static void track(PartialModel partial, Model model) {
         track(partial, model, Models::partial);
     }
 
     public static void track(PartialModel partial, Model model, Function<PartialModel, Model> modelFactory) {
-        if (TemporaryStressModel.hasReplacement(partial))
+        if (TemporaryKineticsModel.hasReplacement(partial))
             MODELS.put(model, new Resolver(partial, modelFactory));
     }
 
@@ -29,7 +29,7 @@ public final class TemporaryStressVisualModels {
         if (resolver == null)
             return model;
 
-        PartialModel replacement = TemporaryStressModel.replacement(be, resolver.partial);
+        PartialModel replacement = TemporaryKineticsModel.replacement(be, resolver.partial);
         if (replacement == null || replacement == resolver.partial)
             return model;
         return resolver.modelFactory.apply(replacement);

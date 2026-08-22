@@ -7,7 +7,7 @@ import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.content.kinetics.base.KineticEffectHandler;
 
 /**
- * Exposes {@link KineticBlockEntity} internals to the {@code TemporaryStress}
+ * Exposes {@link KineticBlockEntity} internals to the temporary kinetics
  * system. Must stay an interface: applied mixin classes are marked invalid by
  * the Mixin framework and cannot be loaded as regular classes at runtime, so
  * external code has to access generated methods through the interface.

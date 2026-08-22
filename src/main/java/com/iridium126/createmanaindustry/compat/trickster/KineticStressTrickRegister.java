@@ -4,7 +4,7 @@ import java.util.List;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.config.ServerConfig;
-import com.iridium126.createmanaindustry.content.kinetics.TemporaryStress;
+import com.iridium126.createmanaindustry.content.kinetics.temporarykinetics.TemporaryKinetics;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 
 import dev.enjarai.trickster.spell.EvaluationResult;
@@ -99,7 +99,7 @@ public final class KineticStressTrickRegister {
             TricksterManaAccess.useTraditionalMana(ctx, trick, manaCost);
 
             float speed = (float) speedInput;
-            TemporaryStress.apply(kinetic, speed < 0 ? -stressMagnitude : stressMagnitude, speed, durationTicks);
+            TemporaryKinetics.apply(kinetic, speed < 0 ? -stressMagnitude : stressMagnitude, speed, durationTicks);
             return vectorFragment;
         }
 

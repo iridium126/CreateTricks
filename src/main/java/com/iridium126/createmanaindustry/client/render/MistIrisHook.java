@@ -6,7 +6,9 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import foundry.veil.api.client.render.VeilRenderSystem;
 import foundry.veil.api.client.render.shader.program.ShaderProgram;
+import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.shadows.ShadowRenderer;
+import top.leonx.irisveil.accessors.IrisRenderingPipelineAccessor;
 import net.minecraft.client.Minecraft;
 import top.leonx.irisveil.IrisVeilCompat;
 import top.leonx.irisveil.compat.veil.VeilCompatRegistry;
@@ -49,9 +51,17 @@ import java.nio.IntBuffer;
  */
 public final class MistIrisHook {
 
-    private static final String HOOK_ID = "createmanaindustry:mist";
-    /** Draw into colortex0, like the simulated end-sea compat hook. */
-    private static final int[] DRAW_BUFFERS = {0};
+    private static final String HOOK_ID_SCENE = "createmanaindustry:mist";
+    private static final String HOOK_ID_TRANSLUCENT = "createmanaindustry:mist_translucent";
+    /** Scene-colour packs: draw into colortex0, like the simulated end-sea compat hook. */
+    private static final int[] DRAW_BUFFERS_SCENE = {0};
+    /**
+     * Bliss-family packs: draw into colortex2, the translucent colour layer their
+     * composite chain merges into the frame. Their colortex0 is a clouds/effects
+     * buffer that a composite pass rewrites before any reader could pick the
+     * scene-colour draw up.
+     */
+    private static final int[] DRAW_BUFFERS_TRANSLUCENT = {2};
 
     private static boolean registered;
 
@@ -67,9 +77,18 @@ public final class MistIrisHook {
             return;
         registered = true;
         VeilCompatRegistry.registerWorldRenderHook(
-                HOOK_ID, DRAW_BUFFERS,
-                MistIrisHook::shouldRender,
-                MistIrisHook::render);
+                HOOK_ID_SCENE, DRAW_BUFFERS_SCENE,
+                MistIrisHook::shouldRenderScene,
+                (camera, gameRenderer) -> render(camera, gameRenderer,
+                        MistInjectionProfiles.Profile.SCENE_COLOR));
+        // Two hooks share one registration site because the compat registry pins
+        // the draw buffers per hook; each hook self-gates on the active profile.
+        // Only the scene hook ticks the mist — exactly one hook runs per frame.
+        VeilCompatRegistry.registerWorldRenderHook(
+                HOOK_ID_TRANSLUCENT, DRAW_BUFFERS_TRANSLUCENT,
+                MistIrisHook::shouldRenderTranslucent,
+                (camera, gameRenderer) -> render(camera, gameRenderer,
+                        MistInjectionProfiles.Profile.TRANSLUCENT_LAYER));
     }
 
     /**
@@ -87,14 +106,21 @@ public final class MistIrisHook {
     }
 
     /**
-     * Called every frame by iris-veil-compat before the framebuffer is bound.
-     * Ticks the mist animations (the iris path is the only tick point while a
-     * shader pack is active) and reconciles the vanilla post pipeline.
+     * Scene-colour hook gate. Ticks the mist animations (the iris path is the
+     * only tick point while a shader pack is active — this hook runs every frame
+     * regardless of which profile wins) and reconciles the vanilla post pipeline.
      */
-    private static boolean shouldRender() {
+    private static boolean shouldRenderScene() {
         MistClientHandler.tickMist();
         MistClientHandler.syncMistPipeline();
-        return isActivePath();
+        return isActivePath()
+                && MistInjectionProfiles.activeProfile() == MistInjectionProfiles.Profile.SCENE_COLOR;
+    }
+
+    /** Translucent-layer hook gate — no ticking (the scene hook owns that). */
+    private static boolean shouldRenderTranslucent() {
+        return isActivePath()
+                && MistInjectionProfiles.activeProfile() == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER;
     }
 
     /**
@@ -102,11 +128,25 @@ public final class MistIrisHook {
      * (writing to colortex0) is already bound by iris-veil-compat; the main
      * render target is restored by the framework afterwards.
      */
-    private static boolean render(Object camera, Object gameRenderer) {
+    private static boolean render(Object camera, Object gameRenderer,
+            MistInjectionProfiles.Profile profile) {
         try {
             ShaderProgram shader = getProgram();
             if (shader == null)
                 return false;
+
+            // Translucent-layer mode: locate the pack's colortex4 (its auto-exposure
+            // scalar source). The acquisition binds its own query framebuffer and
+            // restores the vanilla main target, so the draw framebuffer must be
+            // re-bound through the compat accessor afterwards.
+            int exposureTextureId = -1;
+            if (profile == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER) {
+                exposureTextureId = MistExposureSource.acquireExposureTexture();
+                if (Iris.getPipelineManager().getPipelineNullable()
+                        instanceof IrisRenderingPipelineAccessor pipelineAccessor)
+                    pipelineAccessor.irisveil$bindCompatGbufferFramebuffer(
+                            DRAW_BUFFERS_TRANSLUCENT);
+            }
 
             // colortex0's current texture is attached to the bound framebuffer.
             // Querying it avoids the flipped-after-translucent ambiguity of
@@ -175,6 +215,19 @@ public final class MistIrisHook {
             if (shadowResUniform >= 0)
                 GL30.glUniform1f(shadowResUniform, shadowMapResolution);
 
+            // Exposure-compensation sampler (translucent mode): unit 3 carries the
+            // pack's colortex4 whose texel (10,37).r holds the auto-exposure scalar.
+            if (profile == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER) {
+                var exposureUniform = shader.getUniformLocation("ExposureSampler");
+                RenderSystem.activeTexture(GL13.GL_TEXTURE3);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, Math.max(exposureTextureId, 0));
+                if (exposureUniform >= 0)
+                    GL30.glUniform1i(exposureUniform, 3);
+                var exposureBoundUniform = shader.getUniform("ExposureBound");
+                if (exposureBoundUniform != null)
+                    exposureBoundUniform.setInt(exposureTextureId >= 0 ? 1 : 0);
+            }
+
             MistClientHandler.applyMistUniforms(shader);
 
             // Tyndall shadow matrices — the current frame's shadow pass state
@@ -202,6 +255,19 @@ public final class MistIrisHook {
             var debugShadowUniform = shader.getUniform("DebugShadowVisualization");
             if (debugShadowUniform != null)
                 debugShadowUniform.setInt(ClientConfig.mistDebugShadow ? 1 : 0);
+
+            // Injection target: 0 = composite over the sampled scene colour, 1 =
+            // premultiplied under-operator into the pack's translucent layer
+            // (Bliss-family colortex2).
+            var targetUniform = shader.getUniform("MistTargetMode");
+            if (targetUniform != null)
+                targetUniform.setInt(
+                        profile == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER ? 1 : 0);
+            // Logarithmic distortion curve (mode 3): x=k, y=a, z=b, w=z scale.
+            var logUniform = shader.getUniform("ShadowLogParams");
+            if (logUniform != null)
+                logUniform.setVector(distortion.logK(), distortion.logA(), distortion.logB(),
+                        distortion.depthScale());
 
             shader.setDefaultUniforms(VertexFormat.Mode.TRIANGLE_STRIP);
             VeilRenderSystem.drawScreenQuad();

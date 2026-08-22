@@ -54,6 +54,7 @@
     "jei.BasinCategoryMixin",
     "jei.CreateHeatedBasinCategoryMixin",
     "iris.ShadowRendererAccessor",
+    "iris.IrisRenderingPipelineTargetsAccessor",
     "iris.IrisIdMapMixin",
     "iris.IncludeGraphMixin"
   ],

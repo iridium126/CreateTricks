@@ -37,8 +37,19 @@ uniform float ShadowMapResolution;   // actual shadow texture width (texels)
 uniform float ShadowDistortion;
 uniform float ShadowDepthScale;
 // 0 = no distortion (identity), 1 = quartic (Photon SHADOW_DISTORTION),
-// 2 = euclidean (Complementary shadowMapBias).
+// 2 = euclidean (Complementary shadowMapBias), 3 = logarithmic
+// (Bliss BiasShadowProjection — curve parameters in ShadowLogParams).
 uniform int ShadowDistortionMode;
+uniform vec4 ShadowLogParams; // mode 3 only: x = k, y = a, z = b, w = z scale
+
+// Output composition target: 0 = composite over the sampled scene colour
+// (scene-colour packs' colortex0), 1 = premultiplied under-operator into the
+// translucent layer (Bliss-family colortex2, stored at 0.1x with coverage alpha).
+uniform int MistTargetMode;
+// Translucent mode only: the pack's colortex4, whose texel (10,37).r carries the
+// auto-exposure scalar its final composite multiplies the frame by.
+uniform sampler2D ExposureSampler;
+uniform int ExposureBound; // 1 when ExposureSampler is bound to the pack's colortex4
 
 // DEBUG: when 1, mist is colored by the shadow sample (green = lit, red =
 // occluded) so the Tyndall occlusion can be verified visually.
@@ -122,10 +133,11 @@ float quartic_length(vec2 v) {
 /**
  * Remaps undistorted shadow clip coords into the shaderpack's distorted shadow
  * space, mirroring the pack's own distortion (Photon uses quartic_length with
- * SHADOW_DISTORTION, Complementary uses euclidean length with shadowMapBias).
- * The pack renders its shadow map with this remap baked into gl_Position, so
- * skipping it samples the wrong texels (everything reads as lit). Mode 0 is the
- * identity (pack without distortion).
+ * SHADOW_DISTORTION, Complementary uses euclidean length with shadowMapBias,
+ * Bliss uses a logarithmic length compression with its own k/a/b curve and a
+ * z scale of 1/6). The pack renders its shadow map with this remap baked into
+ * gl_Position, so skipping it samples the wrong texels (everything reads as
+ * lit). Mode 0 is the identity (pack without distortion).
  * <p>
  * Extension point: to adapt a new pack's radial-length function, add a
  * {@code ShadowDistortionMode == N} branch here (matching the glslMode returned
@@ -134,6 +146,13 @@ float quartic_length(vec2 v) {
 vec3 distort_shadow_space(vec3 shadowClipPos) {
     if (ShadowDistortionMode == 0)
         return shadowClipPos;
+    if (ShadowDistortionMode == 3) {
+        // Bliss: distortFactor = log(len * b + a) * k; xy /= distortFactor;
+        // depth is compressed separately by gl_Position.z /= 6.
+        float logFactor = log(length(shadowClipPos.xy) * ShadowLogParams.z + ShadowLogParams.y)
+                * ShadowLogParams.x;
+        return vec3(shadowClipPos.xy / logFactor, shadowClipPos.z * ShadowLogParams.w);
+    }
     float l = ShadowDistortionMode == 2
             ? length(shadowClipPos.xy)
             : quartic_length(shadowClipPos.xy);
@@ -369,6 +388,37 @@ void main() {
         }
 
         t += stepSize;
+    }
+
+    if (MistTargetMode == 1) {
+        // Translucent-layer RMW (Bliss colortex2): the pack stores lit translucent
+        // colour at 0.1x scale with a coverage alpha and merges it via
+        // color*(1-a) + rgb*10. Compose the mist as an extra layer UNDER the
+        // existing translucent content (premultiplied under-operator), keeping
+        // the pack's storage scale:
+        //   rgb_out = dst.rgb + mistPremult * 0.1 * (1 - dst.a)
+        //   a_out   = dst.a   + mistA * (1 - dst.a)
+        float covA = clamp(sceneColor.a, 0.0, 1.0);
+        float mistA = clamp(accumulatedMist.a, 0.0, 1.0);
+        // Bliss-family auto-exposure compensation: the pack's final composite
+        // multiplies the frame by an exposure scalar (~0.02 at high noon,
+        // approaching ~1 at night) read from colortex4 texel (10,37). Our mist
+        // radiance is calibrated for the non-exposed pipelines of the other
+        // packs, so pre-multiplying by the inverse cancels the exposure pass and
+        // keeps the on-screen mist identical across all of them — automatically
+        // tracking day/night, rain and caves through the pack's own metric.
+        float sceneScale = 1.0;
+        if (ExposureBound == 1) {
+            float exposure = texelFetch(ExposureSampler, ivec2(10, 37), 0).r;
+            if (exposure > 0.001)
+                sceneScale = clamp(1.0 / exposure, 0.125, 32.0);
+        }
+        // Only the radiance scales — the alpha stays a geometric coverage and
+        // must not grow with scene brightness.
+        vec3 outRGB = sceneColor.rgb + accumulatedMist.rgb * sceneScale * 0.1 * (1.0 - covA);
+        fragColor = vec4(outRGB, covA + mistA * (1.0 - covA));
+        gl_FragDepth = sceneDepth;
+        return;
     }
 
     fragColor = sceneColor * transmittance + accumulatedMist;

@@ -37,7 +37,7 @@ final class EuclideanShadowDistortion implements ShadowDistortionConvention {
             if (expr == null)
                 continue;
             Float bias = evaluateBias(expr);
-            return new PackShadowParams(glslMode(), bias != null ? bias : 1.0F, 0.2F);
+            return PackShadowParams.radial(glslMode(), bias != null ? bias : 1.0F, 0.2F);
         }
         return null;
     }

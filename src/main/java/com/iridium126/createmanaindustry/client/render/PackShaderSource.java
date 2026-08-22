@@ -33,11 +33,15 @@ public interface PackShaderSource {
             this.packDir = packDir;
         }
 
+        private static final String[] CANDIDATES = {
+                "shaders/settings.glsl", "shaders/shaders.properties", "shaders.properties",
+                // Bliss-style packs keep their distortion math in dedicated lib files.
+                "shaders/lib/Shadow_Params.glsl", "shaders/lib/Shadows.glsl" };
+
         @Override
         public List<String> candidateTexts() {
             List<String> texts = new ArrayList<>();
-            for (String c : new String[] {
-                    "shaders/settings.glsl", "shaders/shaders.properties", "shaders.properties" }) {
+            for (String c : CANDIDATES) {
                 Path file = packDir.resolve(c);
                 if (Files.isRegularFile(file)) {
                     try {
@@ -71,17 +75,21 @@ public interface PackShaderSource {
                     String n = entries.nextElement().getName();
                     if (!n.startsWith("shaders/"))
                         continue;
-                    if (n.endsWith(".properties") || n.endsWith("settings.glsl") || n.endsWith("settings.vsh")
-                            || n.endsWith("common.glsl")) {
+                    String lower = n.toLowerCase(java.util.Locale.ROOT);
+                    boolean settingsLike = n.endsWith(".properties") || n.endsWith("settings.glsl")
+                            || n.endsWith("settings.vsh") || n.endsWith("common.glsl");
+                    // Distortion math often lives in dedicated lib files (Bliss:
+                    // lib/Shadows.glsl, lib/Shadow_Params.glsl).
+                    boolean shadowGlsl = lower.endsWith(".glsl") && lower.contains("shadow");
+                    if (settingsLike || shadowGlsl) {
                         names.add(n);
                         if (names.size() >= 32)
                             break;
                     }
                 }
-                // settings.glsl / common.glsl first (where packs define these).
-                names.sort((a, b) -> Boolean.compare(
-                        b.endsWith("settings.glsl") || b.endsWith("common.glsl"),
-                        a.endsWith("settings.glsl") || a.endsWith("common.glsl")));
+                // settings.glsl / common.glsl first, then shadow-named glsl, then rest —
+                // earlier texts win in the convention matchers.
+                names.sort((a, b) -> Integer.compare(priority(b), priority(a)));
                 for (String n : names) {
                     ZipEntry e = zip.getEntry(n);
                     if (e == null)
@@ -96,6 +104,14 @@ public interface PackShaderSource {
                 // fall through with whatever was collected
             }
             return texts;
+        }
+
+        private static int priority(String name) {
+            if (name.endsWith("settings.glsl") || name.endsWith("common.glsl"))
+                return 2;
+            if (name.toLowerCase(java.util.Locale.ROOT).contains("shadow"))
+                return 1;
+            return 0;
         }
     }
 }

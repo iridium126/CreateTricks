@@ -33,7 +33,7 @@ final class QuarticShadowDistortion implements ShadowDistortionConvention {
             if (bias == null)
                 continue;
             Float depth = valueOf(DEPTH, text);
-            return new PackShadowParams(glslMode(), bias, depth != null ? depth : 0.2F);
+            return PackShadowParams.radial(glslMode(), bias, depth != null ? depth : 0.2F);
         }
         return null;
     }

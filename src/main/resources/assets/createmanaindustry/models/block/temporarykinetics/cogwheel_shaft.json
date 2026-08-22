@@ -1,9 +1,0 @@
-{
-    "credit": "Geometry inherited from the parent Create model — only the stressed textures are swapped.",
-    "parent": "create:block/cogwheel_shaft",
-    "textures": {
-        "0": "createmanaindustry:block/temporarykinetics/axis_top",
-        "1": "createmanaindustry:block/temporarykinetics/cogwheel_axis",
-        "particle": "createmanaindustry:block/temporarykinetics/axis_top"
-    }
-}

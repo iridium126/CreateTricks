@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.client.shadercompat;
+package com.iridium126.createmanaindustry.client.render.shaderpack;
 
 import it.unimi.dsi.fastutil.ints.Int2ObjectLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;

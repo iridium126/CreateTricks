@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.client.shadercompat;
+package com.iridium126.createmanaindustry.client.render.shaderpack;
 
 import java.util.List;
 import java.util.Map;

@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.client.render;
+package com.iridium126.createmanaindustry.client.render.shaderpack;
 
 import java.io.IOException;
 import java.io.InputStream;

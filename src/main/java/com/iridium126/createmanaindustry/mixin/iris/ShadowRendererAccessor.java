@@ -6,7 +6,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import com.iridium126.createmanaindustry.client.render.IrisShadowTextures;
+import com.iridium126.createmanaindustry.client.render.shaderpack.IrisShadowTextures;
 
 import net.irisshaders.iris.shadows.ShadowRenderer;
 import net.irisshaders.iris.shadows.ShadowRenderTargets;

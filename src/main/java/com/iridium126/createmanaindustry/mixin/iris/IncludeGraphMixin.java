@@ -7,8 +7,8 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-import com.iridium126.createmanaindustry.client.shadercompat.ShaderColoredLightAdapter;
-import com.iridium126.createmanaindustry.client.shadercompat.ShaderColoredLightAdapters;
+import com.iridium126.createmanaindustry.client.render.shaderpack.ShaderColoredLightAdapter;
+import com.iridium126.createmanaindustry.client.render.shaderpack.ShaderColoredLightAdapters;
 
 import net.irisshaders.iris.shaderpack.include.IncludeGraph;
 

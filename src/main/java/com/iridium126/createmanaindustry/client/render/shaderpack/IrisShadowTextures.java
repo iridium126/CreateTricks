@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.client.render;
+package com.iridium126.createmanaindustry.client.render.shaderpack;
 
 /**
  * Bridges iris-side shadow values captured by the {@code ShadowRendererAccessor}

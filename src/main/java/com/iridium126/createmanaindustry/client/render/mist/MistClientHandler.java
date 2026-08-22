@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.client.render;
+package com.iridium126.createmanaindustry.client.render.mist;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -31,6 +31,7 @@ import net.neoforged.neoforge.fluids.FluidStack;
 
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
+import com.iridium126.createmanaindustry.client.render.shaderpack.IrisShadowTextures;
 
 /**
  * Client-side handler that collects active Kinetic Atomizer positions and

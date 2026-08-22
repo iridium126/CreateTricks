@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.client.render;
+package com.iridium126.createmanaindustry.client.render.mist;
 
 import com.google.common.collect.ImmutableSet;
 

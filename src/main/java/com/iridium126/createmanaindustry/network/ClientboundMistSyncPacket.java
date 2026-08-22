@@ -1,7 +1,7 @@
 package com.iridium126.createmanaindustry.network;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.client.render.MistClientHandler;
+import com.iridium126.createmanaindustry.client.render.mist.MistClientHandler;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;

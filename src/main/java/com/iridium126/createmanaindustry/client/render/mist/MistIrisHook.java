@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.client.render;
+package com.iridium126.createmanaindustry.client.render.mist;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.config.ClientConfig;
@@ -19,6 +19,9 @@ import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL30;
 
 import java.nio.IntBuffer;
+import com.iridium126.createmanaindustry.client.render.shaderpack.IrisShadowTextures;
+import com.iridium126.createmanaindustry.client.render.shaderpack.PackShadowParams;
+import com.iridium126.createmanaindustry.client.render.shaderpack.ShadowDistortionRegistry;
 
 /**
  * Renders the mist volumetric shader inside the Iris gbuffer while a shader

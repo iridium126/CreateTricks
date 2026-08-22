@@ -11,9 +11,9 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import com.iridium126.createmanaindustry.client.shadercompat.BlockIdMapContext;
-import com.iridium126.createmanaindustry.client.shadercompat.ShaderColoredLightAdapter;
-import com.iridium126.createmanaindustry.client.shadercompat.ShaderColoredLightAdapters;
+import com.iridium126.createmanaindustry.client.render.shaderpack.BlockIdMapContext;
+import com.iridium126.createmanaindustry.client.render.shaderpack.ShaderColoredLightAdapter;
+import com.iridium126.createmanaindustry.client.render.shaderpack.ShaderColoredLightAdapters;
 
 import it.unimi.dsi.fastutil.ints.Int2ObjectLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;

@@ -1,8 +1,8 @@
 package com.iridium126.createmanaindustry;
 
 import com.iridium126.createmanaindustry.client.particles.engine.CMIParticleEngine;
-import com.iridium126.createmanaindustry.client.render.FuelRodBloomHandler;
-import com.iridium126.createmanaindustry.client.render.MistClientHandler;
+import com.iridium126.createmanaindustry.client.render.fuelrod.FuelRodBloomHandler;
+import com.iridium126.createmanaindustry.client.render.mist.MistClientHandler;
 import com.iridium126.createmanaindustry.client.render.InlineTrickRenderer;
 import com.iridium126.createmanaindustry.ponder.CMIPonderPlugin;
 import com.samsthenerd.inline.api.client.InlineClientAPI;

@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.client.render;
+package com.iridium126.createmanaindustry.client.render.shaderpack;
 
 /**
  * Resolved shadow-map distortion parameters for the active shaderpack, uploaded

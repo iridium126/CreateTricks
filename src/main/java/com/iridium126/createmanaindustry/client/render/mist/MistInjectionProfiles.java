@@ -1,9 +1,9 @@
-package com.iridium126.createmanaindustry.client.render;
+package com.iridium126.createmanaindustry.client.render.mist;
 
 import java.util.Locale;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.client.shadercompat.ShaderColoredLightAdapters;
+import com.iridium126.createmanaindustry.client.render.shaderpack.ShaderColoredLightAdapters;
 
 /**
  * Per-shaderpack mist injection profile. Packs disagree about which colour

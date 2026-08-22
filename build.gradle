@@ -226,8 +226,8 @@ dependencies {
     localRuntime "curse.maven:geckolib-388172:8350073"
     //localRuntime "curse.maven:accessories-compat-layer-1315611:7585673"
 
-    implementation "maven.modrinth:T8bvmqVZ:zNDKNuBZ" // Create: Bits 'n' Bobs
-    implementation "curse.maven:azimuth-api-1466331:8317127"
+    implementation "maven.modrinth:T8bvmqVZ:ufzJ4rp9" // Create: Bits 'n' Bobs
+    implementation "curse.maven:azimuth-api-1466331:8661574"
     localRuntime "curse.maven:strut-your-stuff-1486746:8301563"
 
     localRuntime "curse.maven:accessories-938917:7583320"

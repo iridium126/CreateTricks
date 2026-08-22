@@ -13,12 +13,12 @@ public final class CMIPartialModels {
     public static final PartialModel ALLAY_BURNER_RODS_LARGE = block("allay_burner/allayheated_rods_large");
 
     public static final PartialModel STRESSED_KINETIC_MANA_GENERATOR_INNER = block("kinetic_mana_generator/inner_stressed");
-    public static final PartialModel STRESSED_SHAFTLESS_COGWHEEL = block("temporary_stress/cogwheel_shaftless");
-    public static final PartialModel STRESSED_SHAFTLESS_LARGE_COGWHEEL = block("temporary_stress/large_cogwheel_shaftless");
-    public static final PartialModel STRESSED_COGWHEEL_SHAFT = block("temporary_stress/cogwheel_shaft");
-    public static final PartialModel STRESSED_SHAFT_HALF = block("temporary_stress/shaft_half");
-    public static final PartialModel STRESSED_SHAFT = block("temporary_stress/shaft");
-    public static final PartialModel STRESSED_COGWHEEL = block("temporary_stress/cogwheel");
+    public static final PartialModel STRESSED_SHAFTLESS_COGWHEEL = block("temporarykinetics/cogwheel_shaftless");
+    public static final PartialModel STRESSED_SHAFTLESS_LARGE_COGWHEEL = block("temporarykinetics/large_cogwheel_shaftless");
+    public static final PartialModel STRESSED_COGWHEEL_SHAFT = block("temporarykinetics/cogwheel_shaft");
+    public static final PartialModel STRESSED_SHAFT_HALF = block("temporarykinetics/shaft_half");
+    public static final PartialModel STRESSED_SHAFT = block("temporarykinetics/shaft");
+    public static final PartialModel STRESSED_COGWHEEL = block("temporarykinetics/cogwheel");
     public static final PartialModel MANA_COGWHEEL = block("mana_cogwheel");
     public static final PartialModel MANA_COGWHEEL_SHAFTLESS = block("mana_cogwheel_shaftless");
 

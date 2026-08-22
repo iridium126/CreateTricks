@@ -1,0 +1,8 @@
+{
+    "credit": "Geometry inherited from the parent Create model — only the stressed textures are swapped.",
+    "parent": "create:block/cogwheel_shaftless",
+    "textures": {
+        "1_2": "createmanaindustry:block/temporarykinetics/cogwheel",
+        "particle": "block/stripped_spruce_log_top"
+    }
+}

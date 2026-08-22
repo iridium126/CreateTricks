@@ -2,16 +2,21 @@ package com.iridium126.createmanaindustry.content.kinetics.temporarykinetics;
 
 import java.util.Iterator;
 
+import org.jetbrains.annotations.Nullable;
+
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongIterator;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.neoforged.neoforge.attachment.IAttachmentHolder;
 import net.neoforged.neoforge.attachment.IAttachmentSerializer;
@@ -37,6 +42,17 @@ public final class TemporaryKineticsStore {
 
     final Long2ObjectOpenHashMap<StressState> states = new Long2ObjectOpenHashMap<>();
 
+    /**
+     * Packed positions whose countdown already reached zero while their chunk
+     * was unloaded. They leave {@link #states} immediately — no further
+     * per-tick decrement, map iteration or loaded-probing on the hot map — and
+     * are finalized by the chunk-load event ({@link #drainPending}), with the
+     * level tick as an allocation-free fallback sweep. Never persisted: a
+     * save+reload drops them, and vanilla's kinetic validation heals the
+     * reloaded block's stale speed instead.
+     */
+    final LongOpenHashSet pendingExpiry = new LongOpenHashSet();
+
     public StressState get(BlockPos pos) {
         return states.get(pos.asLong());
     }
@@ -52,11 +68,16 @@ public final class TemporaryKineticsStore {
     /**
      * Counts down every active state of this level and finalizes expired ones.
      * <p>
-     * An expired state whose chunk is currently unloaded stays in the map (with
-     * a non-positive countdown, invisible to queries) until its chunk loads —
-     * expiry must never force a synchronous chunk load just to reset a block.
+     * Expiry must never force a synchronous chunk load just to reset a block:
+     * an expired state whose chunk is unloaded parks in {@link #pendingExpiry}
+     * and is resolved by the chunk-load event. The per-tick fallback sweep
+     * below only runs while positions are actually parked, and probes chunk
+     * presence straight off the packed position — no countdown work, no
+     * {@code BlockPos} allocation.
      */
     public void tick(ServerLevel level) {
+        if (!pendingExpiry.isEmpty())
+            drainPending(level, null);
         if (states.isEmpty())
             return;
 
@@ -68,15 +89,52 @@ public final class TemporaryKineticsStore {
             if (state.ticksRemaining > 0)
                 continue;
 
-            BlockPos pos = BlockPos.of(entry.getLongKey());
-            if (!level.isLoaded(pos))
-                continue; // retry once the chunk is loaded
+            long packed = entry.getLongKey();
+            iterator.remove();
+            if (isChunkLoaded(level, packed))
+                finalizeExpiry(level, packed);
+            else
+                pendingExpiry.add(packed); // retry when the chunk loads
+        }
+    }
+
+    /**
+     * Finalizes deferred expiries whose chunk is now loaded. Called from the
+     * chunk-load event with the freshly loaded chunk — its block entities are
+     * registered by then ({@code ChunkStatusTasks#full} posts the event right
+     * after {@code registerAllBlockEntitiesAfterLevelLoad}) — and from
+     * {@link #tick} as the fallback sweep with {@code loadedChunk == null},
+     * which also guarantees a parked position always terminates: once its
+     * chunk is loaded it either finalizes or is dropped.
+     */
+    void drainPending(ServerLevel level, @Nullable ChunkPos loadedChunk) {
+        if (pendingExpiry.isEmpty())
+            return;
+
+        LongIterator iterator = pendingExpiry.iterator();
+        while (iterator.hasNext()) {
+            long packed = iterator.nextLong();
+            if (loadedChunk != null) {
+                if (BlockPos.getX(packed) >> 4 != loadedChunk.x || BlockPos.getZ(packed) >> 4 != loadedChunk.z)
+                    continue;
+            } else if (!isChunkLoaded(level, packed))
+                continue;
 
             iterator.remove();
-            if (level.getBlockEntity(pos) instanceof KineticBlockEntity kinetic) {
-                TemporaryKinetics.updateGeneratedRotation(kinetic);
-                TemporaryKinetics.syncBlock(kinetic);
-            }
+            finalizeExpiry(level, packed);
+        }
+    }
+
+    /** Allocation-free chunk-loaded probe straight off the packed position. */
+    private static boolean isChunkLoaded(ServerLevel level, long packed) {
+        return level.getChunkSource()
+            .hasChunk(BlockPos.getX(packed) >> 4, BlockPos.getZ(packed) >> 4);
+    }
+
+    private static void finalizeExpiry(ServerLevel level, long packed) {
+        if (level.getBlockEntity(BlockPos.of(packed)) instanceof KineticBlockEntity kinetic) {
+            TemporaryKinetics.updateGeneratedRotation(kinetic);
+            TemporaryKinetics.syncBlock(kinetic);
         }
     }
 

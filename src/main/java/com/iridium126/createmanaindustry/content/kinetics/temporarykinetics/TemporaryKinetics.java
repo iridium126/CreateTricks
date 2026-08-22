@@ -108,6 +108,20 @@ public final class TemporaryKinetics {
             rebuildVisual(be);
     }
 
+    /**
+     * Drops the client-mirrored state for a block entity being removed. The
+     * server keeps its own entry until expiry (a harmless countdown against a
+     * dead position), but the client mirror has no countdown of its own and
+     * would otherwise linger until the position happens to be re-synced or the
+     * dimension changes.
+     */
+    public static void clearClient(KineticBlockEntity be) {
+        Level level = be.getLevel();
+        if (level == null || !level.isClientSide)
+            return;
+        store(level).remove(be.getBlockPos());
+    }
+
     private static void rebuildVisual(KineticBlockEntity be) {
         Level level = be.getLevel();
         if (level == null)
@@ -118,10 +132,6 @@ public final class TemporaryKinetics {
         VisualManager<BlockEntity> visuals = manager.blockEntities();
         visuals.queueRemove(be);
         visuals.queueAdd(be);
-    }
-
-    public static boolean isSource(KineticBlockEntity be) {
-        return getSpeed(be) != 0;
     }
 
     public static void removeSource(KineticBlockEntity be) {
@@ -209,7 +219,15 @@ public final class TemporaryKinetics {
             return;
 
         StressState state = getState(be);
-        float speed = state == null ? 0 : state.speed;
+        // No active override left (the expiry path): fall back to whatever the
+        // block still generates natively instead of forcing a stop. Forcing
+        // speed 0 on a native generator (water wheel, steam engine...) detached
+        // it while its own generation survived — and since an idle root never
+        // re-runs propagation, it stayed dormant until a chunk reload. Reading
+        // the now-unmasked generated speed lets applyNewSpeed re-establish it
+        // as a source; plain machinery still resolves to 0 here and stops as
+        // before.
+        float speed = state == null ? be.getGeneratedSpeed() : state.speed;
         float prevSpeed = be.getTheoreticalSpeed();
         KineticNetwork previousNetwork = be.hasNetwork() ? be.getOrCreateNetwork() : null;
         if (!Mth.equal(prevSpeed, speed)) {

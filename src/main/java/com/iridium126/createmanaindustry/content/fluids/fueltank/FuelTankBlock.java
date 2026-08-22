@@ -1,5 +1,8 @@
 package com.iridium126.createmanaindustry.content.fluids.fueltank;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import org.jetbrains.annotations.Nullable;
 
 import com.iridium126.createmanaindustry.CMIBlockEntityTypes;
@@ -92,7 +95,7 @@ public class FuelTankBlock extends CopycatBlock {
 	public static final BooleanProperty TOP_OPEN = BooleanProperty.create("top_open");
 	public static final BooleanProperty SIDE_OPEN = BooleanProperty.create("side_open");
 	/**
-	 * The per-cell brightness rule ({@link #isCellBright}) materialized as a
+	 * The per-cell brightness rule ({@link #refreshLitStates}) materialized as a
 	 * blockstate, and the single source of truth for everything that depends
 	 * on it: {@link #getLightEmission} (fluid part), the rose quartz lamp
 	 * shell's POWERING skin ({@code FuelTankModel#displayMaterial}) and
@@ -389,44 +392,102 @@ public class FuelTankBlock extends CopycatBlock {
 	}
 
 	/**
-	 * Per-cell brightness rule shared by the light emission and the rose quartz
-	 * lamp shell's display state: a cell is "bright" when the liquid surface of
-	 * its basin sits at or above it — exactly the cells that emit full
-	 * luminosity. Returns false for empty tanks, and true (the full-brightness
-	 * fallback) while no basin data is available yet.
+	 * Brightness of a cell under the group that governs it (the drifted-cell
+	 * path of {@link #refreshLitStates}): bright when the liquid surface of its
+	 * basin sits at or above it, dark on an empty/dangling controller, and the
+	 * full-brightness fallback while no basin data is available yet.
 	 */
-	static boolean isCellBright(BlockGetter world, BlockPos pos) {
-		FuelTankBlockEntity tankAt = FuelTankConnectivity.partAt(CMIBlockEntityTypes.MOLTEN_SALT_FUEL_TANK.get(), world,
-			pos);
-		if (tankAt == null || !tankAt.hasLevel())
+	private static boolean brightnessUnder(FuelTankBlockEntity controller, BlockPos pos) {
+		if (controller == null || controller.luminosity <= 0)
 			return false;
-		FuelTankBlockEntity controllerBE = tankAt.getControllerBE();
-		if (controllerBE == null || controllerBE.luminosity <= 0)
-			return false;
-		FuelTankConnectivity.BasinData basins = controllerBE.basins;
+		FuelTankConnectivity.BasinData basins = controller.basins;
 		Integer basinId = basins != null ? basins.basinByCell.get(pos) : null;
 		if (basinId == null)
 			return true;
 		float surface = basins.surfaces[basinId];
-		boolean reversed = controllerBE.tankInventory.getFluid()
+		boolean reversed = controller.tankInventory.getFluid()
 			.getFluidType()
 			.isLighterThanAir();
 		return reversed ? pos.getY() >= (int) Math.floor(surface) : pos.getY() <= (int) Math.floor(surface);
 	}
 
-	/**
-	 * Server-side refresh of one cell's {@link #LIT} flag to match the current
-	 * brightness rule. Compare-first, so repeated calls during fluid churn are
-	 * cheap; {@code UPDATE_CLIENTS} only, since neighbours are irrelevant to
-	 * this purely informational flag.
-	 */
-	static void refreshLitState(net.minecraft.server.level.ServerLevel level, BlockPos pos) {
-		BlockState state = level.getBlockState(pos);
-		if (!isFuelTank(state))
-			return;
-		boolean lit = isCellBright(level, pos);
+	/** Writes {@code lit} into one cell's {@link #LIT} flag when it changed. */
+	private static void setLit(net.minecraft.server.level.ServerLevel level, BlockPos pos, BlockState state,
+		boolean lit) {
 		if (state.getValue(LIT) != lit)
 			level.setBlock(pos, state.setValue(LIT, lit), UPDATE_CLIENTS);
+	}
+
+	/**
+	 * Server-side refresh of the {@link #LIT} flag over one group's cells.
+	 * Per position the verdict is identical to resolving the cell's <i>own</i>
+	 * controller and applying its brightness rule, but our group's inputs
+	 * &mdash; luminosity, fluid orientation, basin surfaces &mdash; are resolved
+	 * once instead of per cell, membership is confirmed from the cell's stored
+	 * controller position instead of a second block-entity lookup, and cells
+	 * that drifted to another group (possible while a deferred split leaves
+	 * stale basin data behind) are judged from that group's data &mdash; never
+	 * from ours &mdash; with each distinct foreign controller resolved only
+	 * once per sweep. Compare-first throughout, so steady-state sweeps only
+	 * read; {@code UPDATE_CLIENTS} only, since neighbours are irrelevant to
+	 * this purely informational flag.
+	 */
+	static void refreshLitStates(net.minecraft.server.level.ServerLevel level, Iterable<BlockPos> cells,
+		FuelTankBlockEntity controller) {
+		var type = CMIBlockEntityTypes.MOLTEN_SALT_FUEL_TANK.get();
+		BlockPos controllerPos = controller.getBlockPos();
+		int luminosity = controller.luminosity;
+		boolean reversed = luminosity > 0
+			&& controller.tankInventory.getFluid()
+				.getFluidType()
+				.isLighterThanAir();
+		FuelTankConnectivity.BasinData basins = controller.basins;
+		// Drifted-cell bookkeeping: distinct foreign controllers resolved once.
+		Map<BlockPos, FuelTankBlockEntity> driftControllers = null;
+		for (BlockPos pos : cells) {
+			BlockState state = level.getBlockState(pos);
+			if (!isFuelTank(state))
+				continue;
+			BlockEntity be = level.getBlockEntity(pos);
+			if (!(be instanceof FuelTankBlockEntity tank) || tank.isRemoved() || !tank.hasLevel()
+				|| tank.getType() != type) {
+				setLit(level, pos, state, false);
+				continue;
+			}
+			BlockPos cellControllerPos = tank.getController();
+			boolean lit;
+			if (controllerPos.equals(cellControllerPos)) {
+				// Ours — everything precomputed, no further lookups.
+				if (luminosity <= 0)
+					lit = false;
+				else {
+					Integer basinId = basins != null ? basins.basinByCell.get(pos) : null;
+					if (basinId == null)
+						lit = true;
+					else {
+						float surface = basins.surfaces[basinId];
+						lit = reversed ? pos.getY() >= (int) Math.floor(surface)
+							: pos.getY() <= (int) Math.floor(surface);
+					}
+				}
+			} else {
+				// Drifted to another group (or a dangling pointer): judge from THAT
+				// group exactly as the old per-cell resolution did. getControllerBE
+				// may legitimately return null; the map stores it so a repeated
+				// dangling target is not re-resolved either.
+				if (driftControllers == null)
+					driftControllers = new HashMap<>();
+				FuelTankBlockEntity driftController;
+				if (driftControllers.containsKey(cellControllerPos))
+					driftController = driftControllers.get(cellControllerPos);
+				else {
+					driftController = tank.getControllerBE();
+					driftControllers.put(cellControllerPos, driftController);
+				}
+				lit = brightnessUnder(driftController, pos);
+			}
+			setLit(level, pos, state, lit);
+		}
 	}
 
 	@Override

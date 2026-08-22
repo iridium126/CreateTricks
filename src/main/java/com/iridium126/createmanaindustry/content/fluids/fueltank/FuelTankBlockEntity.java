@@ -60,6 +60,14 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 	protected BlockPos controller;
 	/** Number of blocks in the group (controller only). */
 	protected int count = 1;
+	/**
+	 * Position this BE was last ticked at (mirrors Create's tank). A mismatch on
+	 * tick means something moved the block entity: the group membership is
+	 * dropped and re-formed from the new position instead of silently bridging
+	 * two locations.
+	 */
+	@Nullable
+	protected BlockPos lastKnownPos;
 	protected boolean updateConnectivity;
 	protected boolean updateCapability;
 	/** Emitted light, propagated per-block from the fluid (mirrors Create). */
@@ -99,6 +107,15 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 	/** Horizontal footprint of the saved group, for the renderer fallback (group-wide box). */
 	transient BlockPos savedMin;
 	transient BlockPos savedMax;
+	/**
+	 * Armed on every part of a group whose split was deferred over unloaded
+	 * chunks ({@link FuelTankConnectivity#split}); the controller re-runs the
+	 * deferred distribution from its lazy tick once the former group's
+	 * neighbourhood is fully loaded. Never persisted — a save/load in between
+	 * re-runs plain connectivity on load, which converges the same stale state
+	 * (with the documented capacity-clamp semantics).
+	 */
+	transient boolean needsDeferredSplitHeal;
 
 	/** Animation helper for the whole-tank fill level (used by contraptions). */
 	private LerpedFloat fluidLevel;
@@ -141,8 +158,8 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 			Set<BlockPos> cells = controllerBE != null && controllerBE.basins != null
 				? controllerBE.basins.basinByCell.keySet()
 				: Set.of(worldPosition);
-			for (BlockPos p : cells)
-				FuelTankBlock.refreshLitState(serverLevel, p);
+			FuelTankBlock.refreshLitStates(serverLevel, cells,
+				controllerBE != null ? controllerBE : this);
 		}
 	}
 
@@ -179,6 +196,13 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 				sendData();
 		}
 
+		if (lastKnownPos == null)
+			lastKnownPos = getBlockPos();
+		else if (!lastKnownPos.equals(worldPosition) && worldPosition != null) {
+			onPositionChanged();
+			return;
+		}
+
 		if (fluidLevel != null)
 			fluidLevel.tickChaser();
 		if (level.isClientSide && basins != null)
@@ -192,21 +216,30 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 			updateConnectivity();
 	}
 
+	/** Drops the group membership after a position change and re-forms from the new spot. */
+	private void onPositionChanged() {
+		removeController(true);
+		lastKnownPos = worldPosition;
+	}
+
 	@Override
 	public void lazyTick() {
 		super.lazyTick();
 		// Keep retrying while a cross-chunk group is still loading (pending) or the
-		// basins have not been computed yet.
-		if (!level.isClientSide && isController() && (basins == null || hasPendingGroupLoad()))
-			FuelTankConnectivity.updateConnectivity(this);
+		// basins have not been computed yet; afterwards resolve a split that was
+		// deferred over unloaded chunks once the former group is fully observable.
+		if (!level.isClientSide && isController()) {
+			if (basins == null || hasPendingGroupLoad())
+				FuelTankConnectivity.updateConnectivity(this);
+			else if (needsDeferredSplitHeal)
+				FuelTankConnectivity.healDeferredSplit(this);
+		}
 		// Self-heal the shader-facing LIT flag: converges paths that bypass
 		// onFluidStackChanged (connectivity rebuilds, chunk loads with stale
 		// blockstates, deferred surface recomputes) within one lazy-tick period.
 		if (!level.isClientSide && isController() && level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
-			if (basins != null)
-				basins.basinByCell.keySet().forEach(p -> FuelTankBlock.refreshLitState(serverLevel, p));
-			else
-				FuelTankBlock.refreshLitState(serverLevel, worldPosition);
+			FuelTankBlock.refreshLitStates(serverLevel,
+				basins != null ? basins.basinByCell.keySet() : List.of(worldPosition), this);
 		}
 		// Self-heal the fuel rod structure: while formed, re-validate on every lazy
 		// tick so glass moved by pistons, explosions and other un-triggered changes
@@ -315,10 +348,8 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 			// when the luminosity itself is unchanged: surface movement changes
 			// WHICH cells are bright without changing the fluid type or its light.
 			if (!level.isClientSide && level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
-				if (basins != null)
-					basins.basinByCell.keySet().forEach(p -> FuelTankBlock.refreshLitState(serverLevel, p));
-				else
-					FuelTankBlock.refreshLitState(serverLevel, worldPosition);
+				FuelTankBlock.refreshLitStates(serverLevel,
+					basins != null ? basins.basinByCell.keySet() : List.of(worldPosition), this);
 			}
 			markSurfacesDirty();
 			setChanged();
@@ -396,7 +427,7 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 
 	@Override
 	public BlockPos getLastKnownPos() {
-		return worldPosition;
+		return lastKnownPos;
 	}
 
 	@Override
@@ -479,6 +510,9 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 		tankInventory.setCapacity(capacity);
 		if (tankInventory.getFluidAmount() > capacity)
 			tankInventory.drain(tankInventory.getFluidAmount() - capacity, FluidAction.EXECUTE);
+		// A capacity change invalidates the fill fraction's animation baseline
+		// (mirrors Create): the client re-anchors instead of easing across it.
+		forceFluidLevelUpdate = true;
 	}
 
 	public FluidTank getTankInventory() {
@@ -589,7 +623,9 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 		}
 	}
 
-	/** Marks that the next client packet must carry the full basin geometry. */
+	/** Marks that the next client packet must carry the full basin geometry. A
+	 * geometry change also invalidates the whole-tank level's animation baseline,
+	 * so the client re-anchors it instead of easing from a stale shape. */
 	public void markBasinsDirty() {
 		needsBasinSync = true;
 		needsSurfaceSync = true;
@@ -597,10 +633,12 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 		needsNeighborRefresh = true;
 	}
 
-	/** Marks that the next client packet must carry the per-basin surfaces. */
+	/** Marks that the next client packet must carry the per-basin surfaces. Deliberately
+	 * does NOT touch {@code forceFluidLevelUpdate}: a plain amount change must keep the
+	 * whole-tank level chaser animating (the anchor flag means "re-snap"), otherwise
+	 * every throttled sync would teleport the level instead of easing toward it. */
 	public void markSurfacesDirty() {
 		needsSurfaceSync = true;
-		forceFluidLevelUpdate = true;
 		needsNeighborRefresh = true;
 	}
 
@@ -621,6 +659,10 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 		BlockPos controllerBefore = controller;
 		int prevLum = luminosity;
 		luminosity = tag.getInt("Luminosity");
+
+		lastKnownPos = null;
+		if (tag.contains("LastKnownPos"))
+			lastKnownPos = NBTHelper.readBlockPos(tag, "LastKnownPos");
 
 		controller = null;
 		if (tag.contains("Controller"))
@@ -737,6 +779,10 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 		if (tag.contains("ForceFluidLevel") || fluidLevel == null)
 			fluidLevel = LerpedFloat.linear().startWithValue(getFillState());
 		fluidLevel.chase(getFillState(), 0.5f, Chaser.EXP);
+		// Coalesced sync: keep easing gently toward the same target instead of
+		// moving at full speed between 8-tick packet boundaries.
+		if (tag.contains("LazySync"))
+			fluidLevel.chase(fluidLevel.getChaseTarget(), 0.125f, Chaser.EXP);
 
 		// A controller change means the block model's face-culling data (which reads the
 		// controller) must be rebuilt. The placement block update renders the block before
@@ -753,6 +799,8 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 		super.write(tag, registries, clientPacket);
 
 		tag.putInt("Luminosity", luminosity);
+		if (lastKnownPos != null)
+			tag.put("LastKnownPos", NbtUtils.writeBlockPos(lastKnownPos));
 		if (!isController())
 			tag.put("Controller", NbtUtils.writeBlockPos(controller));
 		if (isController()) {
@@ -793,6 +841,11 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 			return;
 		if (forceFluidLevelUpdate)
 			tag.putBoolean("ForceFluidLevel", true);
+		if (queuedSync)
+			// Coalesced (delayed) sync: tell the client to ease slowly toward the
+			// target so the packet cadence does not lurch the animation (mirrors
+			// Create's LazySync).
+			tag.putBoolean("LazySync", true);
 		forceFluidLevelUpdate = false;
 	}
 

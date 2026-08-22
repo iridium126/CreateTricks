@@ -262,11 +262,20 @@ public class FuelTankRenderer extends SafeBlockEntityRenderer<FuelTankBlockEntit
 		if (!data.basinByCell.containsKey(lidCell.above()))
 			yMax = Math.min(yMax, topCell + 1 - CAP);
 
-		// a little liquid hidden by the floor gap still shows a thin puddle (Create-like).
-		// Not on saddle basins: the saddle and the legs it absorbed rise as one flat
-		// surface, and forcing a minimum layer there makes it stick above the level.
-		if (!saddle && yMax - yMin < PUDDLE && yMax > box.y1)
+		// A little liquid hidden by the floor gap still shows a thin puddle
+		// (Create-like) — but only at the very bottom of the structure. Elevated
+		// basins (the top saddle of a door/lattice shape included) must not grow a
+		// puddle: a few stray mB mapped there by a split/regroup would otherwise
+		// render as a permanently floating film. Sub-puddle residue on an elevated
+		// basin therefore renders nothing at all; real depth (>= PUDDLE) still
+		// draws at its true height. Saddles are never boosted regardless: the
+		// saddle and the legs it absorbed rise as one flat surface, and forcing a
+		// minimum layer there makes it stick above the level.
+		boolean atBottom = data.minCell != null && Mth.floor(box.y1) == data.minCell.getY();
+		if (atBottom && !saddle && yMax - yMin < PUDDLE && yMax > box.y1)
 			yMax = yMin + PUDDLE;
+		else if (!atBottom && yMax - yMin < PUDDLE)
+			return;
 		if (yMax - yMin <= 0)
 			return;
 

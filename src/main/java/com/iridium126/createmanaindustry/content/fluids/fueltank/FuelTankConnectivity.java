@@ -31,7 +31,6 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.material.Fluid;
 
 import net.neoforged.neoforge.fluids.FluidStack;
 
@@ -206,12 +205,25 @@ public final class FuelTankConnectivity {
 				controllerFluids.put(p.immutable(), part.tankInventory.getFluid());
 		}
 
-		// Distinct non-empty fluids — incompatible groups must not merge.
-		Set<Fluid> distinct = new HashSet<>();
-		for (FluidStack f : controllerFluids.values())
-			if (!f.isEmpty())
-				distinct.add(f.getFluid());
-		if (distinct.size() > 1) {
+		// Distinct non-empty fluids — incompatible groups must not merge. Variants
+		// are compared by fluid AND data components: a tank holds a single stack,
+		// so two component variants of one fluid must not share a group (merging
+		// them would make assignGroup discard the second variant's contents).
+		List<FluidStack> variants = new ArrayList<>();
+		for (FluidStack f : controllerFluids.values()) {
+			if (f.isEmpty())
+				continue;
+			boolean known = false;
+			for (FluidStack v : variants) {
+				if (FluidStack.isSameFluidSameComponents(v, f)) {
+					known = true;
+					break;
+				}
+			}
+			if (!known)
+				variants.add(f);
+		}
+		if (variants.size() > 1) {
 			// Incompatible fluids in one connected component. Component-level
 			// assignment: every fluid-bearing group stays intact and untouched;
 			// every empty block (solo block or member of an empty group) joins the
@@ -240,12 +252,18 @@ public final class FuelTankConnectivity {
 			Set<BlockPos> free = new HashSet<>(group);
 			free.removeAll(fluidCells);
 
-			// Resolve each face-connected piece of free cells to one fluid group:
-			// BFS from the piece's lexicographically smallest cell, first fluid
-			// neighbour in Direction order wins for the whole piece (deterministic).
+			// Resolve each face-connected piece of free cells to one fluid group.
+			// Free is scanned in sorted order so each piece's BFS start really is its
+			// lexicographically smallest cell, and the first fluid neighbour in
+			// Direction order wins for the whole piece (deterministic). The BFS
+			// always collects the COMPLETE piece: exiting on the first fluid hit
+			// would strand cells already queued (marked seen but never polled into
+			// any piece and skipped as starts), leaving them outside every group.
+			List<BlockPos> orderedFree = new ArrayList<>(free);
+			orderedFree.sort((a, b) -> comparePos(a, b));
 			Map<BlockPos, List<BlockPos>> freeByTarget = new HashMap<>();
 			Set<BlockPos> seen = new HashSet<>();
-			for (BlockPos start : free) {
+			for (BlockPos start : orderedFree) {
 				if (!seen.add(start))
 					continue;
 				Deque<BlockPos> queue = new ArrayDeque<>();
@@ -257,18 +275,14 @@ public final class FuelTankConnectivity {
 					piece.add(cur);
 					for (Direction d : Direction.values()) {
 						BlockPos n = cur.relative(d);
-						if (fluidCells.contains(n)) {
+						if (target == null && fluidCells.contains(n)) {
 							FuelTankBlockEntity nPart = partAt(type, level, n);
-							if (nPart != null) {
+							if (nPart != null)
 								target = nPart.getController();
-								break;
-							}
 						}
 						if (free.contains(n) && seen.add(n))
 							queue.add(n);
 					}
-					if (target != null)
-						break;
 				}
 				if (target == null)
 					target = start; // unreachable in a connected component; safe fallback
@@ -344,6 +358,13 @@ public final class FuelTankConnectivity {
 					merged = f.copy();
 				else if (FluidStack.isSameFluidSameComponents(merged, f))
 					merged.grow(f.getAmount());
+				else
+					// Defensive: updateConnectivity routes component-variant groups
+					// through the separate-assignment branch, so this must not
+					// happen; log instead of discarding silently if it ever does.
+					CreateManaIndustry.LOGGER.warn(
+							"Fuel tank merge @ {} discarded {} mB of {} with mismatched components",
+							controllerPos, f.getAmount(), f.getFluid());
 				part.tankInventory.setFluid(FluidStack.EMPTY);
 			}
 			part.tankInventory.setCapacity(FuelTankBlockEntity.getCapacityPerBlock());
@@ -351,7 +372,8 @@ public final class FuelTankConnectivity {
 		if (!merged.isEmpty())
 			controllerBE.tankInventory.setFluid(merged);
 
-		// Assign controller + count to every part.
+		// Assign controller + count to every part. Grouping resolved: any armed
+		// deferred-split heal on these parts is obsolete now.
 		int size = 0;
 		for (BlockPos p : group) {
 			FuelTankBlockEntity part = partAt(type, level, p);
@@ -359,6 +381,7 @@ public final class FuelTankConnectivity {
 				continue;
 			part.preventConnectivityUpdate();
 			part.setController(controllerPos);
+			part.needsDeferredSplitHeal = false;
 			size++;
 		}
 		for (BlockPos p : group) {
@@ -433,14 +456,14 @@ public final class FuelTankConnectivity {
 		// Cross-chunk split: the per-cell mapping can only cover loaded parts, so
 		// splitting while the group may still grow would silently destroy the fluid
 		// stored in the unloaded parts. Defer when the removed block was not the
-		// controller (the fluid and its per-basin distribution stay on the old
-		// controller; the parts re-form via updateConnectivity once their chunks
-		// load — the removed cell's share is conserved too and spreads over the
-		// group on the later settle). When the removed block WAS the controller
-		// the fluid must leave the dying block entity now, so fall back to the
-		// settled distribution: every loaded component gets as much as it can hold
-		// from the full amount, and only the overflow beyond their total capacity
-		// is lost.
+		// controller (the fluid and its per-basin distribution stay untouched on
+		// the old controller; the deferred-split heal re-runs this distribution
+		// from the controller's lazy tick once every chunk around the former group
+		// has loaded — see healDeferredSplit). When the removed block WAS the
+		// controller the fluid must leave the dying block entity now, so fall back
+		// to the settled distribution: every loaded component gets as much as it
+		// can hold from the full amount, and only the overflow beyond their total
+		// capacity is lost.
 		Set<BlockPos> allComponents = new HashSet<>();
 		for (Set<BlockPos> comp : components)
 			allComponents.addAll(comp);
@@ -448,16 +471,34 @@ public final class FuelTankConnectivity {
 			if (canGroupStillGrow(level, allComponents))
 				cellAmounts = Map.of(); // force the settled fallback below
 		} else if (canGroupStillGrow(level, allComponents)) {
-			// Defer the split entirely: refresh the top/bottom states around the
-			// hole now, keep the fluid on the controller, re-form on later loads.
+			// Defer the split entirely: refresh the blockstates around the hole
+			// now, keep the fluid on the controller, and arm the heal on every
+			// surviving part (only the controller acts on it).
 			for (BlockPos p : allComponents) {
 				FuelTankBlockEntity part = partAt(type, level, p);
-				if (part != null)
+				if (part != null) {
+					part.needsDeferredSplitHeal = true;
 					part.notifyMultiUpdated();
+				}
 			}
 			return;
 		}
 
+		distributeToComponents(level, type, components, fluid, cellAmounts);
+	}
+
+	/**
+	 * Assigns each component its own controller and distributes the old group's
+	 * fluid across them. With per-cell {@code cellAmounts} (derived from the old
+	 * basin surfaces) every component receives exactly its cells' mapped share;
+	 * shares of cells missing from the map (removed, unloaded, or already
+	 * re-grouped elsewhere) die with the split, and a component's share is
+	 * clamped to its capacity — the same loss semantics as Create's split.
+	 * Without amounts, the settled distribution is used (lowest basins first).
+	 */
+	private static void distributeToComponents(Level level, BlockEntityType<?> type,
+			List<Set<BlockPos>> components, FluidStack fluid, Map<BlockPos, Long> cellAmounts) {
+		int perBlock = FuelTankBlockEntity.getCapacityPerBlock();
 		// Distribute per component, in deterministic order (by controller pos).
 		components.sort((a, b) -> comparePos(pickController(a), pickController(b)));
 		long remaining = fluid.getAmount();
@@ -486,9 +527,14 @@ public final class FuelTankConnectivity {
 			cBE.basins = data;
 
 			if (!cellAmounts.isEmpty()) {
-				// Map each surviving cell's amount into its new basin; surfaces derive from
-				// the mapped totals so inventory amount == sum of basin volumes exactly.
-				long amount = 0;
+				// Map each surviving cell's amount into its new basin, clamped to that
+				// basin's own capacity; surfaces derive from the clamped totals so the
+				// stored amount always equals the rendered volume (summing unclamped
+				// amounts would strand the excess above a shrunken basin's surface).
+				// Amount overflowing its basin — a tall column mapped into a shorter
+				// component — spills through the normal cascade into whatever room the
+				// rest of the component still has, keeping the split lossless whenever
+				// the component as a whole can hold its share.
 				long[] basinAmounts = new long[data.basins.size()];
 				for (BlockPos p : comp) {
 					Long a = cellAmounts.get(p);
@@ -497,16 +543,32 @@ public final class FuelTankConnectivity {
 					Integer b = data.basinByCell.get(p);
 					if (b != null)
 						basinAmounts[b] += a;
-					amount += a;
 				}
-				amount = Math.min(amount, (long) compSize * perBlock);
-				if (amount > 0)
-					cBE.tankInventory.setFluid(fluid.copyWithAmount((int) amount));
+				long raw = 0;
+				long placed = 0;
 				for (int b = 0; b < basinAmounts.length; b++) {
 					Basin basin = data.basins.get(b);
 					long cap = basin.cellCount * perBlock;
-					data.surfaces[b] = surfaceForVolume(basin, Math.min(basinAmounts[b], cap), perBlock);
+					raw += basinAmounts[b];
+					basinAmounts[b] = Math.min(basinAmounts[b], cap);
+					data.surfaces[b] = surfaceForVolume(basin, basinAmounts[b], perBlock);
+					placed += basinAmounts[b];
 				}
+				// Per-basin overflow pours into remaining room (zero in the common case).
+				long leftover = raw - placed;
+				if (leftover > 0) {
+					long undelivered = fillCascade(data, data.lowestBasin(), leftover);
+					if (undelivered > 0)
+						CreateManaIndustry.LOGGER.warn(
+								"Fuel tank split @ {} lost {} mB: every basin of the component is full",
+								cPos, undelivered);
+				}
+				// Inventory exactly matches the surfaces the cascade settled on.
+				long amount = 0;
+				for (int b = 0; b < data.basins.size(); b++)
+					amount += basinVolume(data.basins.get(b), data.surfaces[b], perBlock);
+				if (amount > 0)
+					cBE.tankInventory.setFluid(fluid.copyWithAmount((int) amount));
 			} else {
 				// Old basin data unavailable — settled distribution (lowest basins first).
 				long share = Math.min(remaining, (long) compSize * perBlock);
@@ -524,6 +586,54 @@ public final class FuelTankConnectivity {
 			cBE.markBasinsDirty();
 			cBE.sendDataImmediately();
 		}
+	}
+
+	/**
+	 * Resolves a split that was deferred over unloaded chunks (see {@link #split}):
+	 * runs from the old controller's lazy tick once every chunk around the former
+	 * group is loaded, re-finds the connected components among the cells still
+	 * assigned to this controller and applies the normal per-basin distribution
+	 * over them. Cells that re-grouped elsewhere in the meantime fail the
+	 * controller check and are excluded; their shares follow the clamp semantics
+	 * of {@link #distributeToComponents}. No-op (retried on the next lazy tick)
+	 * while any neighbour chunk of the former group is still unloaded.
+	 */
+	public static void healDeferredSplit(FuelTankBlockEntity controller) {
+		Level level = controller.getLevel();
+		if (level == null || level.isClientSide || !controller.isController())
+			return;
+		BasinData stale = controller.basins;
+		if (stale == null) {
+			controller.needsDeferredSplitHeal = false;
+			return;
+		}
+		Set<BlockPos> former = stale.basinByCell.keySet();
+		// Wait until the world around the former group is fully observable, so the
+		// components below are final and no further parts can still load in.
+		if (canGroupStillGrow(level, former))
+			return;
+		controller.needsDeferredSplitHeal = false;
+
+		BlockEntityType<?> type = controller.getType();
+		BlockPos controllerPos = controller.getBlockPos();
+		List<Set<BlockPos>> components = new ArrayList<>();
+		Set<BlockPos> visited = new HashSet<>();
+		for (BlockPos seed : former) {
+			if (visited.contains(seed))
+				continue;
+			FuelTankBlockEntity seedBE = partAt(type, level, seed);
+			if (seedBE == null || !controllerPos.equals(seedBE.getController()))
+				continue;
+			Set<BlockPos> comp = new HashSet<>();
+			findGroupSameController(level, seed, controllerPos, type, comp);
+			visited.addAll(comp);
+			components.add(comp);
+		}
+		if (components.isEmpty())
+			return;
+		FluidStack fluid = controller.tankInventory.getFluid().copy();
+		Map<BlockPos, Long> amounts = cellAmounts(stale, FuelTankBlockEntity.getCapacityPerBlock());
+		distributeToComponents(level, type, components, fluid, amounts);
 	}
 
 	/**
@@ -820,7 +930,7 @@ public final class FuelTankConnectivity {
 		in[seedBasin] = true;
 		// Basins already connected through a saddle both sides currently cover share the
 		// level (pre-existing connected liquid).
-		expandRegion(data, in, -1);
+		expandRegion(data, in, Float.NEGATIVE_INFINITY);
 		// Raise the whole region to the highest surface already present (top-up).
 		float level = maxSurface(data, in);
 		long need = raiseNeed(data, in, level, perBlock);
@@ -836,7 +946,9 @@ public final class FuelTankConnectivity {
 			// Submerge new neighbours whose saddle the reached level now covers. A basin
 			// joins only once the source basin's own surface has submerged the saddle, so
 			// the fill spreads basin by basin instead of flooding the whole shape at once.
-			expandRegion(data, in, (int) level);
+			// The level stays a float: int truncation would round a negative-Y level
+			// toward zero and submerge saddles up to one block too early.
+			expandRegion(data, in, level);
 			// Newly joined basins sit at the current level — top them up to it before
 			// looking for the next event, else a full basin's surplus would be left over
 			// (e.g. a full crossbar spilling into legs already at the level).
@@ -888,7 +1000,7 @@ public final class FuelTankConnectivity {
 		int perBlock = FuelTankBlockEntity.getCapacityPerBlock();
 		boolean[] in = new boolean[data.basins.size()];
 		in[seedBasin] = true;
-		expandRegion(data, in, -1);   // connected through saddles both sides cover
+		expandRegion(data, in, Float.NEGATIVE_INFINITY);   // connected through saddles both sides cover
 		float level = maxSurface(data, in);
 		// Bring everything above the shared level down to it first.
 		long drain = drainNeed(data, in, level, perBlock);
@@ -929,7 +1041,7 @@ public final class FuelTankConnectivity {
 			// exposed saddle joins and supplies the extraction point.
 			in = new boolean[data.basins.size()];
 			in[seedBasin] = true;
-			expandRegion(data, in, -1);
+			expandRegion(data, in, Float.NEGATIVE_INFINITY);
 		}
 		// The seed's connected region is empty, but fluid may remain in basins whose level
 		// sits below a saddle (a siphon limit on the connected region). The tank must be
@@ -961,10 +1073,12 @@ public final class FuelTankConnectivity {
 	}
 
 	/** Adds to {@code in} every basin reachable from a member via a saddle the source basin's
-	 * own surface has submerged (at {@code level}, or both current surfaces when {@code level < 0}).
-	 * During a fill, an empty basin (surface on its own floor) does not submerge a saddle yet —
-	 * it has no liquid to cross — so it does not propagate. */
-	private static void expandRegion(BasinData data, boolean[] in, int level) {
+	 * own surface has submerged (at {@code level}, or both current surfaces when {@code level}
+	 * is {@link Float#NEGATIVE_INFINITY}). During a fill, an empty basin (surface on its own
+	 * floor) does not submerge a saddle yet — it has no liquid to cross — so it does not
+	 * propagate. The level is carried as a float end to end so negative-Y builds compare
+	 * their true heights, and the sentinel is a value no real level can take. */
+	private static void expandRegion(BasinData data, boolean[] in, float level) {
 		boolean changed = true;
 		while (changed) {
 			changed = false;

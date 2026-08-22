@@ -1,9 +1,12 @@
 package com.iridium126.createmanaindustry.content.kinetics.bnb;
 
+import java.util.List;
+
 import org.joml.Vector3f;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.content.items.KineticsSpellCoreItem;
+import com.kipti.bnb.content.kinetics.cogwheel_chain.graph.PlacingCogwheelNode;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -21,9 +24,21 @@ public final class BnBKineticsCoreNodes {
     public static final double BNB_SMALL_COGWHEEL_RADIUS = 0.5;
     public static final double KINETICS_CORE_RADIUS = 0.14;
 
-    public static final ThreadLocal<Boolean> lastNodeIsSpell = new ThreadLocal<>();
-
     private BnBKineticsCoreNodes() {}
+
+    /**
+     * Whether any node of the placing chain targets a modular spell construct.
+     * Spell constructs join chains through the regular candidate/predicate
+     * paths, so placement itself is the only place that still needs to
+     * special-case them (they receive no chain behaviour).
+     */
+    public static boolean containsSpellNode(Level level, List<PlacingCogwheelNode> nodes) {
+        for (PlacingCogwheelNode node : nodes) {
+            if (isModularSpellConstruct(level, node.pos()))
+                return true;
+        }
+        return false;
+    }
 
     public static boolean isModularSpellConstruct(Level level, BlockPos pos) {
         return isModularSpellConstructBlock(level.getBlockState(pos).getBlock());

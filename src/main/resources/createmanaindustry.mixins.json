@@ -31,7 +31,7 @@
     "hextrick.ConstructBlockEntityMediaMixin",
     "bnb.CogwheelChainMixin",
     "bnb.CogwheelChainCandidateMixin",
-    "bnb.PlacingCogwheelChainMixin",
+    "bnb.CogwheelChainTypeMixin",
     "bnb.PlaceCogwheelChainPacketMixin",
     "bnb.KineticBlockEntityChainStressMixin",
     "vanilla.BaseSpawnerAccessor",

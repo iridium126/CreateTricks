@@ -9,65 +9,78 @@ import net.minecraft.world.level.Level;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.Redirect;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.iridium126.createmanaindustry.content.kinetics.bnb.BnBKineticsCoreNodes;
-import com.kipti.bnb.content.kinetics.cogwheel_chain.graph.CogwheelChainPathfinder;
 import com.kipti.bnb.content.kinetics.cogwheel_chain.graph.PathedCogwheelNode;
 import com.kipti.bnb.content.kinetics.cogwheel_chain.graph.PlacingCogwheelChain;
 import com.kipti.bnb.content.kinetics.cogwheel_chain.graph.PlacingCogwheelNode;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.llamalad7.mixinextras.sugar.Local;
 
 @Mixin(targets = "com.kipti.bnb.network.packets.from_client.PlaceCogwheelChainPacket", remap = false)
 public abstract class PlaceCogwheelChainPacketMixin {
 
-    private static final ThreadLocal<ServerPlayer> CAPTURED_PLAYER = new ThreadLocal<>();
-
-    @Inject(method = "handle", at = @At("HEAD"), remap = false)
-    private void createmanaindustry$capturePlayer(ServerPlayer player, CallbackInfo ci) {
-        CAPTURED_PLAYER.set(player);
-    }
-
-    @Inject(method = "handle", at = @At("RETURN"), remap = false)
-    private void createmanaindustry$cleanupPlayer(CallbackInfo ci) {
-        CAPTURED_PLAYER.remove();
-    }
-
-    @Redirect(method = "handle",
-        at = @At(value = "INVOKE", target = "Lcom/kipti/bnb/content/kinetics/cogwheel_chain/graph/CogwheelChainPathfinder;buildChainPath(Lcom/kipti/bnb/content/kinetics/cogwheel_chain/graph/PlacingCogwheelChain;)Ljava/util/List;"),
+    /**
+     * Server-side path building with a spell-construct fallback. The native
+     * geometry walker cannot traverse spell nodes, so when it fails and the
+     * chain actually contains one, the path is rebuilt manually — straight
+     * node-to-node segments around the loop. Offsets are rooted at the first
+     * non-spell node so they match the controller position used by
+     * {@code CogwheelChainMixin#placeInLevel} ("controller == origin").
+     * <p>
+     * Wrapped as a {@link WrapOperation} instead of a redirect: it composes
+     * with other addons hooking the same call, and the player arrives via
+     * {@code @Local} instead of a thread-local that could leak across packets
+     * when {@code handle} throws.
+     */
+    @WrapOperation(method = "handle",
+        at = @At(value = "INVOKE",
+            target = "Lcom/kipti/bnb/content/kinetics/cogwheel_chain/graph/CogwheelChainPathfinder;buildChainPath(Lcom/kipti/bnb/content/kinetics/cogwheel_chain/graph/PlacingCogwheelChain;)Ljava/util/List;"),
         remap = false)
-    private List<PathedCogwheelNode> createmanaindustry$overrideBuildPath(PlacingCogwheelChain placingChain) {
-        List<PathedCogwheelNode> result;
+    private List<PathedCogwheelNode> createmanaindustry$buildChainPathWithSpellFallback(
+            PlacingCogwheelChain placingChain,
+            Operation<List<PathedCogwheelNode>> original,
+            @Local(argsOnly = true) ServerPlayer player) {
+        List<PathedCogwheelNode> result = null;
         try {
-                result = CogwheelChainPathfinder.buildChainPath(placingChain);
-            } catch (com.kipti.bnb.content.kinetics.cogwheel_chain.placement.ChainInteractionFailedException e) {
-                result = null;
-            }
-            if (result != null)
-                return result;
+            result = original.call(placingChain);
+        } catch (Exception e) {
+            // Native failure — normally ChainInteractionFailedException, which
+            // the surrounding upstream handler would log and swallow anyway.
+            // Returning null below reproduces exactly that abort path.
+            result = null;
+        }
+        if (result != null)
+            return result;
 
-            ServerPlayer player = CAPTURED_PLAYER.get();
-            if (player == null)
-                return null;
+        Level level = player.level();
+        if (!BnBKineticsCoreNodes.containsSpellNode(level, placingChain.getVisitedNodes()))
+            return null; // genuine native failure — abort like upstream
 
-            Level level = player.level();
-            boolean hasSpellConstruct = false;
-            for (PlacingCogwheelNode node : placingChain.getVisitedNodes()) {
-                if (BnBKineticsCoreNodes.isModularSpellConstruct(level, node.pos())) {
-                    hasSpellConstruct = true;
-                    break;
-                }
-            }
-            if (!hasSpellConstruct)
-                return null;
-
-            return manualBuildChainPath(placingChain);
+        return createmanaindustry$manualBuildChainPath(level, placingChain);
     }
 
-    private static List<PathedCogwheelNode> manualBuildChainPath(PlacingCogwheelChain chain) {
+    /**
+     * Straight-segment fallback path. Sides simply alternate (+1/-1); this is
+     * an approximation of the native geometric side assignment, only used for
+     * chains the native pathfinder cannot walk.
+     */
+    private static List<PathedCogwheelNode> createmanaindustry$manualBuildChainPath(
+            Level level, PlacingCogwheelChain chain) {
         List<PlacingCogwheelNode> visitedNodes = chain.getVisitedNodes();
-        BlockPos controllerPos = chain.getFirstNode().pos();
+
+        // First non-spell node is the controller/origin, matching the custom
+        // placement in CogwheelChainMixin. (All-spell chains never reach this
+        // point — both completion guards reject them earlier.)
+        BlockPos controllerPos = visitedNodes.getFirst().pos();
+        for (PlacingCogwheelNode node : visitedNodes) {
+            if (!BnBKineticsCoreNodes.isModularSpellConstruct(level, node.pos())) {
+                controllerPos = node.pos();
+                break;
+            }
+        }
+
         List<PathedCogwheelNode> pathNodes = new ArrayList<>();
         int side = 1;
         for (PlacingCogwheelNode node : visitedNodes) {

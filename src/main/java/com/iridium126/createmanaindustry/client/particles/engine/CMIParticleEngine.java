@@ -17,6 +17,7 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.joml.Vector3f;
 import org.lwjgl.BufferUtils;
@@ -40,16 +41,18 @@ import org.lwjgl.system.MemoryStack;
  * <p>
  * Two draw paths:
  * <ul>
- *   <li><b>Fast</b> (no ALPHA emitters ever used): matches the original engine —
- *       particles drawn by {@code gl_InstanceID} straight from the write pool.</li>
- *   <li><b>Sorted</b> (any ALPHA emitter): after update/emit, {@code keygen}
- *       writes (key,index) pairs into the sort buffer — an inverted 8-bit
- *       view-depth band so far particles get small keys; a single-pass GPU
- *       counting sort (histogram/scan/scatter) orders the permutation
- *       back-to-front; the pool is then drawn in two ranges (additive first,
- *       alpha back-to-front) through the permutation. ALPHA particles sample a
- *       sprite atlas; colliding emitters also resolve against a 3D occupancy
- *       bake in the update pass.</li>
+ *   <li><b>Fast</b> (no ALPHA particles alive): {@code keygen} still runs
+ *       every frame as the cull pass — GPU frustum culling plus the additive
+ *       permutation — but the counting sort and the textured alpha draw are
+ *       skipped.</li>
+ *   <li><b>Sorted</b> (any ALPHA particles): {@code keygen} also writes
+ *       (key,index) pairs into the sort buffer — inverted, logarithmically
+ *       quantized view-depth bands (constant relative resolution, far drawn
+ *       first) — and a single-pass GPU counting sort (histogram/scan/scatter)
+ *       orders the alpha permutation back-to-front. The pool is drawn in two
+ *       frustum-culled ranges (additive first, then alpha). ALPHA particles
+ *       sample a sprite atlas; colliding emitters also resolve against a 3D
+ *       occupancy bake in the update pass.</li>
  * </ul>
  * All GL programs are created from the mod's bundled GLSL with raw LWJGL
  * ({@link ParticlePrograms}) — no dependency on Veil's shader manager.
@@ -60,14 +63,12 @@ public final class CMIParticleEngine {
 
     private static final int MAX_EMITTERS = 128;
     private static final int SAFETY_MARGIN = 2048;
-    private static final float DEFAULT_FADE_DIST = 40.0f;
     /**
-     * Depth range of the alpha sort key. Particles are fully faded at
-     * DEFAULT_FADE_DIST + 24 = 64 blocks, so the 256 counting-sort bands are
-     * 0.25 blocks wide — beyond this range finer ordering is invisible.
+     * Width of the distance fade ramp past the configured fade distance
+     * (blocks); must match the literal in additive.fsh / alpha.fsh.
      */
-    private static final float SORT_MAX_DEPTH = 64.0f;
-    /** Counting-sort passes over the 8-bit band key. */
+    private static final float FADE_RAMP_BLOCKS = 24.0f;
+    /** Counting-sort passes over the 8-bit depth-band key (one, by design). */
     private static final int RADIX_SHIFTS[] = { 0 };
     /** GL_TIME_ELAPSED query ring — reads a 3-frame-old sample, never blocking. */
     private static final int TIMER_RING = 4;
@@ -126,7 +127,12 @@ public final class CMIParticleEngine {
     private boolean disabled = false;
     /** ALPHA spawns requested during THIS frame (drives the dual-mode decision). */
     private boolean alphaSpawnedThisFrame = false;
-    /** Last frame's ALPHA particle count (read back lagged from the counter ring). */
+    /**
+     * Last frame's UNculled alpha census (lagged readback from the counter
+     * ring) — every live alpha particle counts, even off-screen ones, so the
+     * dual-mode decision and the radix dispatch sizing can never undersize
+     * when the camera swings to reveal hidden alpha particles.
+     */
     private int prevAlpha = 0;
     private int aliveRead = 0;
     private volatile int liveDisplay = 0;
@@ -141,6 +147,9 @@ public final class CMIParticleEngine {
     private boolean timerReady = false;
     /** Last completed GPU-side frame cost (ms), 3 frames lagged; 0 = none yet. */
     private double lastGpuMs = 0;
+    /** Scratch Proj*View and its 6 normalized frustum planes (keygen cull test). */
+    private final Matrix4f projView = new Matrix4f();
+    private final float[] frustumPlanes = new float[24];
 
     private CMIParticleEngine() {
     }
@@ -351,7 +360,8 @@ public final class CMIParticleEngine {
 
         int cap = this.gpu.capacity();
         if (!doClear) {
-            // {writeSlot, spare} = {last frame's live count, last frame's alpha count}
+            // {writeSlot, spare} = {last frame's live count, last frame's
+            // UNculled alpha census}
             int[] counts = this.gpu.readbackCounts(readSlot);
             this.aliveRead = counts[0];
             this.prevAlpha = counts[1];
@@ -445,10 +455,11 @@ public final class CMIParticleEngine {
             this.gpu.uploadEmits(ringId, this.emitFront);
         }
 
-        // Dual mode: sorted only when alpha particles exist (lagged) or were just
-        // requested; otherwise the pool holds only additive and we draw by identity.
+        // Dual mode: the radix sort + alpha draw run only when alpha particles
+        // exist (lagged UNculled census) or were just requested. keygen itself
+        // runs in both paths — it is the fast path's frustum-cull pass and owns
+        // the draw counts in both.
         boolean sorted = (this.prevAlpha > 0) || this.alphaSpawnedThisFrame;
-        int sortUInt = sorted ? 1 : 0;
 
         // 5. Compute passes: reset -> update -> emit. The elapsed-time query
         //    brackets all GPU work (dispatches + draws) of this frame.
@@ -466,7 +477,6 @@ public final class CMIParticleEngine {
         GL20.glUseProgram(this.programs.update());
         this.gpu.bindParticleRead(0);
         this.gpu.bindParticleWrite(1);
-        this.gpu.bindIndirect(2);
         this.gpu.bindCounter(3, slot);
         this.gpu.bindEmitters(5);
         if (this.collisionBake.ready()) {
@@ -479,7 +489,6 @@ public final class CMIParticleEngine {
         }
         setUIntUniform(this.programs.update(), "uAliveRead", this.aliveRead);
         setUIntUniform(this.programs.update(), "uCapacity", cap);
-        setUIntUniform(this.programs.update(), "uSort", sortUInt);
         setFloatUniform(this.programs.update(), "uDt", dt);
         GL43.glDispatchCompute(Math.max(1, (this.aliveRead + 63) / 64), 1, 1);
         GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
@@ -487,43 +496,51 @@ public final class CMIParticleEngine {
         if (entryCount > 0) {
             GL20.glUseProgram(this.programs.emit());
             this.gpu.bindParticleWrite(1);
-            this.gpu.bindIndirect(2);
             this.gpu.bindCounter(3, slot);
             this.gpu.bindEmitBuffer(4, ringId);
             this.gpu.bindEmitters(5);
             setUIntUniform(this.programs.emit(), "uTotalSpawn", totalSpawn);
             setUIntUniform(this.programs.emit(), "uEmitCount", entryCount);
             setUIntUniform(this.programs.emit(), "uCapacity", cap);
-            setUIntUniform(this.programs.emit(), "uSort", sortUInt);
             GL43.glDispatchCompute(Math.max(1, (totalSpawn + 63) / 64), 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
         }
 
-        // 6. Sort path: partition (keygen) + LSD radix over the ALPHA segment only.
+        // 6. keygen: GPU frustum cull + partition of both permutations. Runs in
+        //    BOTH paths (it is the fast path's cull pass); it owns the draw
+        //    counts, so update/emit never touch the indirect buffer.
         int finalPerm = -1;
-        boolean doRadix = false;
-        if (sorted) {
+        if (this.aliveRead > 0 || entryCount > 0) {
             int sortUpper = Math.min(cap, Math.max(0, this.aliveRead + totalSpawn + 64));
-            int alphaUpper = Math.min(cap, Math.max(0, this.prevAlpha + totalSpawn + 64));
-            doRadix = alphaUpper > 0;
 
             // keygen: additive -> orderAdd[binding 8], alpha -> compact sortData[binding 7]
-            GL20.glUseProgram(this.programs.keygen());
+            int kg = this.programs.keygen();
+            GL20.glUseProgram(kg);
             this.gpu.bindParticleWrite(0);
             this.gpu.bindIndirect(2);
             this.gpu.bindCounter(3, slot);
             this.gpu.bindEmitters(5);
             this.gpu.bindOrderAdd();
             this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, this.gpu.sortBuffer(0));
-            setUIntUniform(this.programs.keygen(), "uUpper", sortUpper);
-            setFloatUniform(this.programs.keygen(), "uCamPos", (float) camera.getPosition().x,
-                    (float) camera.getPosition().y, (float) camera.getPosition().z);
-            setFloatUniform(this.programs.keygen(), "uMaxDepth", SORT_MAX_DEPTH);
-            setMat4Uniform(this.programs.keygen(), "uView", view);
+            setUIntUniform(kg, "uUpper", sortUpper);
+            Vec3 camPos = camera.getPosition();
+            setFloatUniform(kg, "uCamPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
+            setFloatUniform(kg, "uMaxDepth", sortFarBlocks());
+            setMat4Uniform(kg, "uView", view);
+            extractFrustum(projectionMatrix, view);
+            int frustumLoc = loc(kg, "uFrustum");
+            if (frustumLoc >= 0)
+                GL20.glUniform4fv(frustumLoc, this.frustumPlanes);
             GL43.glDispatchCompute(Math.max(1, (sortUpper + 63) / 64), 1, 1);
-            GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
+            GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT
+                    | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT
+                    | GL42.GL_COMMAND_BARRIER_BIT);
 
-            if (doRadix) {
+            if (sorted) {
+                // single-pass counting sort over the alpha segment; dispatch
+                // sized by the lagged UNculled census (visible <= alive, so
+                // this bound can never undersize the kernels)
+                int alphaUpper = Math.min(cap, Math.max(0, this.prevAlpha + totalSpawn + 64));
                 int readId = this.gpu.sortBuffer(0);
                 int writeId = this.gpu.sortBuffer(1);
                 for (int pass = 0; pass < ParticleBuffers.RADIX_PASSES; pass++) {
@@ -560,31 +577,28 @@ public final class CMIParticleEngine {
                     writeId = t;
                 }
                 finalPerm = readId; // last written buffer
-            }
 
-            GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT
-                    | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT
-                    | GL42.GL_COMMAND_BARRIER_BIT);
+                GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT
+                        | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT
+                        | GL42.GL_COMMAND_BARRIER_BIT);
+            }
         }
 
-        // 7. Draw (two dense standalone permutations, no base-offset readback).
+        // 7. Draw (two dense culled permutations; additive always through
+        //    orderAdd, alpha additionally back-to-front via the sort).
         if (this.aliveRead > 0 || entryCount > 0) {
+            this.gpu.bindOrderAdd();
+            drawPass(false, view, projectionMatrix, camera);
             if (sorted) {
-                this.gpu.bindOrderAdd();
-                drawPass(false, 1, view, projectionMatrix, camera);
-                if (doRadix) {
-                    this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, finalPerm);
-                    drawPass(true, 1, view, projectionMatrix, camera);
-                }
-            } else {
-                drawPass(false, 0, view, projectionMatrix, camera);
+                this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, finalPerm);
+                drawPass(true, view, projectionMatrix, camera);
             }
         }
 
-        // 8. Capture this frame's alpha count (cmd[1].y) into the counter ring
-        //    spare for next frame's lagged readback (non-blocking dual-mode feed).
+        // 8. Capture this frame's UNculled alpha census (counter.alphaAlive,
+        //    maintained by keygen before the frustum test) into the counter
+        //    ring spare for next frame's lagged readback (non-blocking).
         GL20.glUseProgram(this.programs.capture());
-        this.gpu.bindIndirect(2);
         this.gpu.bindCounter(3, slot);
         GL43.glDispatchCompute(1, 1, 1);
         GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
@@ -613,7 +627,7 @@ public final class CMIParticleEngine {
     }
 
     /** Draws one half of the pool (additive or alpha) through its permutation. */
-    private void drawPass(boolean alpha, int usePerm,
+    private void drawPass(boolean alpha,
             Matrix4fc view, Matrix4fc projectionMatrix, Camera camera) {
         int prog = alpha ? this.programs.alphaRender() : this.programs.render();
         if (prog == 0)
@@ -633,7 +647,6 @@ public final class CMIParticleEngine {
         setFloatUniform(prog, "uCamPos", (float) pos.x, (float) pos.y, (float) pos.z);
         setFloatUniform(prog, "uCamRight", -left.x, -left.y, -left.z);
         setFloatUniform(prog, "uCamUp", up.x, up.y, up.z);
-        setUIntUniform(prog, "uUsePerm", usePerm);
 
         if (alpha) {
             this.cherryAtlas.bind(1);
@@ -643,7 +656,7 @@ public final class CMIParticleEngine {
         } else {
             setFloatUniform(prog, "uGlow", 1.0f);
         }
-        setFloatUniform(prog, "uFadeDist", DEFAULT_FADE_DIST);
+        setFloatUniform(prog, "uFadeDist", (float) ClientConfig.particleFadeDistance);
 
         RenderSystem.enableBlend();
         if (alpha) {
@@ -675,6 +688,43 @@ public final class CMIParticleEngine {
     private static float clampDelta(DeltaTracker deltaTracker) {
         float ticks = deltaTracker.getRealtimeDeltaTicks();
         return Math.max(0.001f, Math.min(0.25f, ticks * 0.05f));
+    }
+
+    /**
+     * Power-of-two sort far bound covering the configured fade end (>= 64).
+     * The 256 logarithmic depth bands then carry ~constant relative
+     * resolution: 2^(log2(far)/256) per band, e.g. ~1.9% at 128 blocks.
+     */
+    private static float sortFarBlocks() {
+        int far = (int) Math.ceil(ClientConfig.particleFadeDistance + FADE_RAMP_BLOCKS);
+        return Math.max(64f, Integer.highestOneBit(Math.max(1, far - 1)) << 1);
+    }
+
+    /**
+     * Extracts the six normalized Gribb–Hartmann frustum planes of Proj*View
+     * into {@link #frustumPlanes} for keygen's per-particle sphere test. The
+     * view matrix is the camera rotation, so plane distances are measured
+     * against camera-relative positions — matching the shader convention
+     * {@code uView * vec4(worldPos - uCamPos, 1)}.
+     */
+    private void extractFrustum(Matrix4fc projectionMatrix, Matrix4fc view) {
+        Matrix4f m = this.projView.set(projectionMatrix).mul(view);
+        plane(0, m.m30() + m.m00(), m.m31() + m.m01(), m.m32() + m.m02(), m.m33() + m.m03()); // left
+        plane(1, m.m30() - m.m00(), m.m31() - m.m01(), m.m32() - m.m02(), m.m33() - m.m03()); // right
+        plane(2, m.m30() + m.m10(), m.m31() + m.m11(), m.m32() + m.m12(), m.m33() + m.m13()); // bottom
+        plane(3, m.m30() - m.m10(), m.m31() - m.m11(), m.m32() - m.m12(), m.m33() - m.m13()); // top
+        plane(4, m.m30() + m.m20(), m.m31() + m.m21(), m.m32() + m.m22(), m.m33() + m.m23()); // near
+        plane(5, m.m30() - m.m20(), m.m31() - m.m21(), m.m32() - m.m22(), m.m33() - m.m23()); // far
+    }
+
+    /** Normalizes one plane (a,b,c,d) into its flat uniform-array slot. */
+    private void plane(int i, float a, float b, float c, float d) {
+        float inv = 1f / (float) Math.sqrt(a * a + b * b + c * c);
+        int o = i * 4;
+        this.frustumPlanes[o] = a * inv;
+        this.frustumPlanes[o + 1] = b * inv;
+        this.frustumPlanes[o + 2] = c * inv;
+        this.frustumPlanes[o + 3] = d * inv;
     }
 
     /** Allocates (or returns) the GPU emitter header id for a spec, cached by equals. */

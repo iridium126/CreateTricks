@@ -38,7 +38,7 @@
 | `client/particles/command/CMIParticleCommand.java` | `/cmip spawn|stream|bench|clear|stats|budget`（NeoForge 客户端命令） |
 
 接线（`CreateManiaIndustryClient.java`）：原生 `RenderLevelStageEvent.AFTER_LEVEL` 帧钩子、进出世界/跨维清池、`GameShuttingDownEvent` 释放资源。
-配置（`config/ClientConfig.java` — `particles` 段）：`enabled`（总开关，关闭即清池）、`maxParticles`(2_000_000)、`frameBudgetMs`(16.6)、`autoThrottle`(true)。
+配置（`config/ClientConfig.java` — `particles` 段）：`enabled`（总开关，关闭即清池）、`maxParticles`(2_000_000)、`frameBudgetMs`(16.6)、`autoThrottle`(true)、`fadeDistance`(96，可见到 +24 格)。
 
 ### 着色器 — `src/main/resources/assets/createmanaindustry/shaders/particles/`
 
@@ -47,9 +47,9 @@
 | `reset.comp` | 1 线程：计数器归零 + 两条间接绘制实例数归零 |
 | `update.comp` | 物理积分（重力/恒加速度/风/阻力/`flutter` 飘摇）、寿命、致密化回收、**块碰撞（占用纹理，积分前轴分离 sweep）**、原子追加 |
 | `emit.comp` | 读 CPU 发射命令（按 b.z 前缀偏移二分定位），按形状/随机初始化新粒子 |
-| `keygen.comp` | 生成 `(key,index)` 排序对：`key = 255 − 8-bit 视图深度带`（远带小 key → 升序即远→近），并按材质原子累计两条间接命令实例数 |
+| `keygen.comp` | **每帧运行**（兼作快路径的剔除 pass）：先做 **GPU 视锥剔除**（粒子球 vs CPU 从 Proj×View 提取的 6 归一化平面），再生成 `(key,index)` 排序对：`key = 255 − 对数深度带`（[1, far] 上 ~2%/带相对分辨率，远带小 key → 升序即远→近），并按材质原子累计两条间接命令实例数 + 未剔除 alpha 计数（`counter.alphaAlive`） |
 | `radix_hist.comp` / `radix_scan.comp` / `radix_scatter.comp` | **单趟 8-bit 深度带计数排序**三阶段（直方图 → 256 线程排他前缀和 → 散列）；同带内乱序无害 |
-| `additive.vsh` | `gl_InstanceID`（或排序排列）从粒子 SSBO 取数、相机朝向 billboard、尺寸/颜色/透明度关键帧、每发射器 glow |
+| `additive.vsh` | `gl_InstanceID` 经 orderAdd 排列（keygen 视锥剔除后的可见加法粒子集）从粒子 SSBO 取数、相机朝向 billboard、尺寸/颜色/透明度关键帧、每发射器 glow |
 | `additive.fsh` | 软圆衰减 + 距离淡出 + 叠加输出 |
 | `alpha.vsh` | 纹理（ALPHA）牌面：按 seed 选 sprite 帧、vanilla 自旋（roll0+ωt+½αt²）、经排序排列远→近取粒子 |
 | `alpha.fsh` | 采样 sprite 图集、贴花 alpha 混合、远淡出 |
@@ -73,7 +73,7 @@
 
 ### 发射命令（32 B / 条，环 ×3）：`origin.xyz + count` / `emitterId + seed`
 ### 间接命令（2×16 B）：`count=6, instanceCount(GPU原子累计), first=0, baseInstance=0`（cmd0=additive, cmd1=alpha）
-### 计数器（16 B / 槽，环 ×4）：`writeSlot, spare`（spare 由 capture 记录上一帧 alphaCount）
+### 计数器（16 B / 槽，环 ×4）：`writeSlot, spare, alphaAlive`（spare 由 capture 记录上一帧**未剔除** alpha 计数；alphaAlive 由 keygen 在剔除测试前累加）
 ### 排序数据（双缓冲，按 ALPHA 数量紧凑使用）：`sortData` 8 B/alpha = `(key, index)`；`orderAdd` 4 B/粒子 = additive 排列；直方图/偏移 各 256×uint
 ### 碰撞纹理（GL_TEXTURE_3D R8）：`48 × 32 × (48×K)`，K=8 个 3D 切片堆叠；bakeMeta（每槽 origin.xyz + presence）
 
@@ -81,26 +81,29 @@
 
 ## 4. 每帧渲染管线（`AFTER_LEVEL`）
 
-### 快速路径（无 ALPHA 材质，与原始引擎一致）
+### 快速路径（无 ALPHA 粒子存活）
 
 ```
 1. 清空/合并客户端请求（pending 队列：burst / stream / clear）
 2. 从计数器环读上一帧 slot → aliveRead
 3. 按节流 scale 构建发射命令（bursts + streams），按剩余容量裁剪
 4. upload 发射命令到环槽；若发射器头脏则整块增量上传
-5. compute：reset(1线程) → memoryBarrier → update(aliveRead 线程) → emit(totalSpawn 线程) → memoryBarrier
-6. draw：additive 程序 + 新鲜写入缓冲(binding1) + 发射器头(binding5) + VAO，uUsePerm=0（gl_InstanceID 直取）
-   → 叠加混合 + 深度测试（不过深度写）→ glDrawArraysIndirect(cmd0)
-7. 解绑 SSBO base 0-11；swap ping-pong；记录帧耗时 → 节流更新
+5. compute：reset(1线程) → update(aliveRead 线程) → emit(totalSpawn 线程)
+   → keygen(视锥剔除 + orderAdd 排列) → memoryBarrier
+6. draw：additive 程序经 orderAdd 排列（仅可见实例）+ 新鲜写入缓冲(binding1)
+   + 发射器头(binding5) + VAO → 叠加混合 + 深度测试（不过深度写）→ glDrawArraysIndirect(cmd0)
+7. 解绑 SSBO base 0-11；swap ping-pong；GPU 计时回读 → 节流更新
 ```
 
 ### 排序路径（存在 ALPHA 粒子时，由 lagged prevAlpha / 本帧 alpha 发射 逐帧判定）
 
 ```
-0. 帧首从计数器环滞回读 {alive, alphaCount} → aliveRead、prevAlpha（非阻塞，与 aliveRead 同机制）
-1..5. 同快速路径；update 额外做 flutter 飘摇 + 块碰撞；uSort=1 时 update/emit 不再累加间接实例数
-6. keygen=partition(sortUpper 上界)：additive→orderAdd[atomicAdd(cmd0.y)]=g；
-   alpha→sortData[atomicAdd(cmd1.y)]=(255−深度带, g)（深度仅 alpha 计算）
+0. 帧首从计数器环滞回读 {alive, 未剔除 alpha 计数} → aliveRead、prevAlpha
+1..5. 同快速路径；update 额外做 flutter 飘摇 + 块碰撞（update/emit 恒不累加
+   间接实例数——keygen 独占计数）
+6. keygen=partition(sortUpper 上界)：视锥剔除后 additive→orderAdd[atomicAdd(cmd0.y)]=g；
+   alpha→sortData[atomicAdd(cmd1.y)]=(255−对数深度带, g)；剔除测试前给
+   counter.alphaAlive 累加未剔除 alpha 计数
 7. 若 alphaUpper = min(cap, prevAlpha+本帧新增+余量) > 0：**单趟 8-bit 深度带计数排序**
    （hist→scan→scatter；key 已反转，升序即远→近）只作用于 alpha 段（以 GPU 的 cmd1.y 为守）
 8. draw：additive→orderAdd（cmd0）恒等排列；alpha→排序后的 sortData（cmd1，**远→近 back-to-front**）
@@ -111,8 +114,9 @@
 - 致密前缀不变量：写缓冲 `[0, liveCount)` 恒为全部存活粒子；死粒子在 update 中被跳过即移除
 - 存活计数走**原子计数器环**（×4）：本帧写 `simFrame%4`，回读 `(simFrame-1)%4`（上一帧应产生的最终值），消除“读-再-改同一缓冲”
 - 发射线程用 `g >= uTotalSpawn` 提前返回；`atomicAdd` 分配槽位，`slot >= uCapacity` 丢弃（CPU 侧已预留 2048 安全余量，理论上不触发）
-- **双模回退**：`sortedDraw = (prevAlpha>0) || 本帧有 alpha 发射`；否则全池只有 additive，跳过 keygen/radix/capture 副作用，additive 用 gl_InstanceID 恒等绘制（快速路径）——alpha 死光后自动回退，不再永久走排序
-- 排序 key 为 8-bit 深度带（64 块淡出范围 ÷256 = 0.25 块/带，key 反转使远带小）；计数排序只排 alpha 段，real work ∝ alphaCount（与 additive 池大小解耦）；同带内乱序无害 → 无需 LSD 多趟与稳定性
+- **双模回退**：`sorted = (prevAlpha>0) || 本帧有 alpha 发射`，prevAlpha 为**未剔除** alpha 计数（相机转开再转回不会欠派发）；无 alpha 时跳过 radix/alpha 绘制——keygen 本身两条路径都跑（快路径的剔除 pass）
+- 排序 key 为 **8-bit 对数深度带**（[1, far] 上量化，far = ceil(fade+24) 取 2 的幂，随 `fadeDistance` 配置自适应；~2%/带相对分辨率，近细远粗与感知一致）；计数排序只排 alpha 段，real work ∝ alphaCount；同带内乱序无害 → 无需 LSD 多趟与稳定性
+- **GPU 视锥剔除**：keygen 内对每粒子做球测试（保守半径 = max(sizeStart,sizeEnd)×尺寸倍数），平面由 CPU 从 Proj×View 按 Gribb–Hartmann 提取并归一化上传；屏幕外粒子不进排列、不进顶点着色（典型省 50–75% 实例）
 
 ---
 
@@ -127,7 +131,9 @@
 | 容量 | 默认 2M / 上限 4M 可配；`min(配置, GL_MAX_SHADER_STORAGE_BLOCK_SIZE/64)` 自适应 | SSBO 单块上限硬约束 |
 | 计数器 | 环 ×4 | 消除同帧“读计数器 + 立刻重置同一缓冲”的竞态耦合 |
 | 混合/材质 | ADDITIVE（旧路径零改动）+ ALPHA（带 sprite 贴图、正常 alpha 混合） | 每发射器一档 `material`；ALPHA 需 GPU 深度排序才能正确叠加 |
-| 深度排序 | **partition + 单趟 8-bit 深度带计数排序**（key 反转 = 远带小 key，升序即远→近），只作用于 **alpha 段**（compact sortData），additive 走独立 orderAdd 恒等排列 | real work ∝ alphaCount，与 additive 池大小解耦；单趟无 LSD 稳定性要求（同带 0.25 块内乱序无害）；曾用 24-bit key × 3 趟 LSD，既有方向反（近→远）又有原子散列不稳定问题 |
+| 深度排序 | **partition + 单趟 8-bit 对数深度带计数排序**（key 反转 = 远带小 key，升序即远→近），只作用于 **alpha 段**（compact sortData），additive 走独立 orderAdd 排列 | real work ∝ alphaCount，与 additive 池大小解耦；单趟无 LSD 稳定性要求（同带内乱序无害）；对数量化使 ~2% 相对深度分辨率恒定，近细远粗与感知一致；曾用 24-bit key × 3 趟 LSD，既有方向反（近→远）又有原子散列不稳定问题 |
+| GPU 剔除 | **keygen 内置视锥剔除**（球 vs 6 归一化平面，Gribb–Hartmann 提取自 Proj×View；快路径无独立 cull pass——keygen 本身就是） | 借鉴 voxy `frustum.glsl`；屏幕外粒子不进排列/顶点着色，典型省 50–75% 绘制实例 |
+| 可见距离 | `fadeDistance` 配置（16..256，默认 96；+24 渐变后全隐） | 排序远平面 = ceil(fade+24) 取 2 的幂自适应，配置再高也不会出现“可见但排序范围不足”；不做原版雾匹配（低视距+高 fade 时粒子与雾化地形会有边界，已知取舍） |
 | 双模回退 | lagged `prevAlpha`（capture 写入 counter.spare，下帧非阻塞滞回读）判定 `sortedDraw` | alpha 死光自动回恒等快路径，消除“永久排序路径”开销；无新增同步点 |
 | 块碰撞 | 3D 占用纹理（48×32×48/K 切片） + **积分前** X/Y/Z 轴分离 sweep | 真 SDF 距离场成本高；占用纹理实现快、够用，后需可升级。sweep 必须从移动前位置起测：曾放在 `pos += vel*dt` 之后，导致无碰撞时速度×2、受阻时嵌入方块 |
 | cherry_leaves | 忠实复刻 `CherryParticle`：300t 寿命/0.3 块/s² 重力/0.075 尺寸/flutter 螺旋/±30°自旋/12 帧/触地移除 | flutter 换算成块/s²（×1.0 系数）；自旋/选帧在 vsh 由 seed 解析，不占粒子数据 |
@@ -170,7 +176,7 @@
 ```
 预设：`mana_spark / ember / ash / soul_flame / mana_burst / cherry_leaves / flood`。
 `cherry_leaves` 为 **ALPHA 材质 + 碰撞（触地即移除）** 演示：`/cmip stream cherry_leaves 200 20` 可在任意位置看持续飘落。
-配置文件 `run/config/createmanaindustry-client.toml` → `[particles]`：`enabled / maxParticles / frameBudgetMs / autoThrottle`
+配置文件 `run/config/createmanaindustry-client.toml` → `[particles]`：`enabled / maxParticles / frameBudgetMs / autoThrottle / fadeDistance`
 
 ---
 

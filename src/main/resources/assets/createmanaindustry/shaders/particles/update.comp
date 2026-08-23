@@ -3,8 +3,8 @@
 //   - vanilla cherry-style flutter (life-gated horizontal spiral, header 7.z)
 //   - block collision (occupancy 3D texture, axis-separated pre-move sweep,
 //     header 7.y) — when the sweep runs it owns the position update entirely
-//   - the indirect instance count is only incremented in the fast path (uSort=0);
-//     in the sorted path keygen.comp owns the per-material draw counts.
+//   - keygen.comp owns the per-material draw counts; this pass never touches
+//     the indirect command buffer.
 layout(local_size_x = 64) in;
 
 const int SX = 48;
@@ -13,8 +13,7 @@ const int SZ = 48;
 
 layout(std430, binding = 0) readonly buffer ParticleRead { vec4 data[]; } readBuf;
 layout(std430, binding = 1) buffer ParticleWrite { vec4 data[]; } writeBuf;
-layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
-layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; } counter;
+layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; uint alphaAlive; } counter;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = 11) readonly buffer BakeMetaBuf { vec4 m[]; } bakeMeta;
 
@@ -23,7 +22,6 @@ layout(binding = 0) uniform sampler3D uCollision;
 uniform uint uAliveRead;
 uniform uint uCapacity;
 uniform float uDt;
-uniform uint uSort;        // 1 = sorted path (keygen owns counts)
 uniform int  uCollisionOn; // 1 = collision texture/SSBO bound & valid
 
 bool solidAt(vec3 wp, vec3 mOrigin, int slice) {
@@ -148,7 +146,4 @@ void main() {
     writeBuf.data[wb + 1u] = vec4(vel, p1.w);
     writeBuf.data[wb + 2u] = p2;
     writeBuf.data[wb + 3u] = vec4(age, p3.y, p3.z, p3.w);
-
-    if (uSort == 0u)
-        atomicAdd(indirect.cmd[0].y, 1u);
 }

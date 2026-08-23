@@ -1,11 +1,13 @@
-// End-of-frame capture: record this frame's ALPHA particle count (cmd[1].y)
-// into the counter ring slot's spare. The next frame reads it back as the
-// lagged non-blocking alphaCount for dispatch sizing / dual-mode selection.
+// End-of-frame capture: record this frame's UNculled alpha census (keygen
+// counts every live alpha particle before the frustum test) into the counter
+// ring slot's spare. The next frame reads it back as the lagged alpha count
+// for dual-mode selection and radix dispatch sizing — deliberately unculled
+// so a camera swing that reveals hidden alpha particles can never undersize
+// the sort dispatch.
 layout(local_size_x = 1) in;
 
-layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
-layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; } counter;
+layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; uint alphaAlive; } counter;
 
 void main() {
-    counter.spare = indirect.cmd[1].y;
+    counter.spare = counter.alphaAlive;
 }

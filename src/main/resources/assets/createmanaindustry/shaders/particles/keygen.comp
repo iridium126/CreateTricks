@@ -1,22 +1,29 @@
-// Partition pass for the two permutation buffers:
+// Partition pass for the two permutation buffers — runs EVERY frame (it is
+// also the fast path's cull pass):
 //   - additive particles -> orderAdd[] (dense uint permutation, order irrelevant)
 //   - alpha particles    -> sortData[]  (compact uvec2 (depthKey, index))
-// The GPU counts (indirect.cmd[0].y / [1].y) are the per-material draw counts, so
-// update/emit must NOT increment them when this partition runs (uSort=1).
+// Every particle first passes a GPU frustum test (sphere vs 6 normalized
+// planes extracted on the CPU from Proj*View), so off-screen particles never
+// reach vertex shading. The GPU counts (indirect.cmd[0].y / [1].y) are the
+// per-material DRAW counts, owned exclusively here; update/emit never touch
+// them. keygen also maintains counter.alphaAlive — the UNculled alpha census
+// used by next frame's dual-mode decision and radix dispatch sizing.
 //
-// Depth key: an 8-bit band over the 64-block fade range (particles are fully
-// faded beyond uMaxDepth, so finer resolution is wasted). FAR bands get the
-// SMALL key, so the ascending single-pass counting sort (hist/scan/scatter)
-// orders far particles first — back-to-front compositing. Within one band
-// (0.25 blocks) order is arbitrary, which is visually harmless and removes
-// any LSD-radix stability requirement.
+// Depth key: logarithmically quantized 8-bit bands over [1, uMaxDepth] blocks,
+// giving ~constant RELATIVE depth resolution (~2% per band) — fine near the
+// camera, coarse far away, matching how compositing-order errors are
+// perceived. FAR bands get the SMALL key, so the ascending single-pass
+// counting sort (hist/scan/scatter) orders far particles first — back-to-front
+// compositing. Within one band the order is arbitrary (visually harmless and
+// removes any radix stability requirement).
 layout(local_size_x = 64) in;
 
 const uint DEPTH_BANDS = 256u;
+const float BAND_NEAR = 1.0; // blocks; log quantization lower bound
 
 layout(std430, binding = 0) readonly buffer ParticleRead { vec4 data[]; } pool;
 layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
-layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; } counter;
+layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; uint alphaAlive; } counter;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = 7) buffer SortWrite { uvec2 kv[]; } sortOut;
 layout(std430, binding = 8) buffer OrderAddW { uint order[]; } orderAdd;
@@ -24,7 +31,17 @@ layout(std430, binding = 8) buffer OrderAddW { uint order[]; } orderAdd;
 uniform uint uUpper;      // CPU-side safe upper bound (aliveRead + spawns + margin)
 uniform vec3 uCamPos;
 uniform mat4 uView;
-uniform float uMaxDepth;
+uniform float uMaxDepth;  // power-of-two far bound >= fade end (Java sortFarBlocks())
+uniform vec4 uFrustum[6]; // normalized planes, distances vs camera-relative points
+
+bool sphereVisible(vec3 rel, float r) {
+    for (int i = 0; i < 6; i++) {
+        vec4 pl = uFrustum[i];
+        if (dot(pl.xyz, rel) + pl.w < -r)
+            return false;
+    }
+    return true;
+}
 
 void main() {
     uint g = gl_GlobalInvocationID.x;
@@ -38,14 +55,25 @@ void main() {
     uint eid = floatBitsToUint(p3.w);
     uint hb = eid * 20u; // VEC4_PER_EMITTER (must match EmitterSpec.VEC4_PER_EMITTER)
 
-    if (emitters.u[hb + 7u].x < 0.5) {
+    bool alpha = emitters.u[hb + 7u].x >= 0.5;
+    if (alpha)
+        atomicAdd(counter.alphaAlive, 1u); // census BEFORE the cull test
+
+    // conservative bound of the billboard's half-extent (size interpolates
+    // between the keyframes; p0.w is the per-particle multiplier)
+    float radius = max(emitters.u[hb + 5u].z, emitters.u[hb + 5u].w) * p0.w;
+    if (!sphereVisible(p0.xyz - uCamPos, radius))
+        return;
+
+    if (!alpha) {
         uint pos = atomicAdd(indirect.cmd[0].y, 1u);
         orderAdd.order[pos] = g;
     } else {
         // view-space depth: negative z is in front of the camera
         vec4 vs = uView * vec4(p0.xyz - uCamPos, 1.0);
-        float depth = clamp(-vs.z, 0.0, uMaxDepth);
-        uint band = min(DEPTH_BANDS - 1u, uint(depth / uMaxDepth * float(DEPTH_BANDS)));
+        float depth = clamp(-vs.z, BAND_NEAR, uMaxDepth);
+        float t = log2(depth / BAND_NEAR) / log2(max(uMaxDepth, 2.0) / BAND_NEAR);
+        uint band = min(DEPTH_BANDS - 1u, uint(t * float(DEPTH_BANDS)));
         uint key = (DEPTH_BANDS - 1u) - band; // far -> small key -> drawn first
         uint pos = atomicAdd(indirect.cmd[1].y, 1u);
         sortOut.kv[pos] = uvec2(key, g);

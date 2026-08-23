@@ -1,13 +1,14 @@
 // Additive billboard particle vertex shader. Draws via glDrawArraysIndirect:
-// 6 vertices per instance (2 triangles), corner derived from gl_VertexID,
-// per-instance particle data fetched from the particle SSBO by gl_InstanceID,
-// presentation params (size/color curves, tint) fetched from the emitter SSBO.
+// 6 vertices per instance (2 triangles), corner derived from gl_VertexID.
+// Instances walk the additive permutation (orderAdd) written by keygen.comp —
+// the frustum-culled dense list of visible additive particles. Per-instance
+// data is fetched from the particle SSBO, presentation params (size/color
+// curves, tint) from the emitter SSBO.
 uniform mat4 ModelViewMat;
 uniform mat4 ProjMat;
 uniform vec3 uCamPos;
 uniform vec3 uCamRight;
 uniform vec3 uCamUp;
-uniform uint uUsePerm;  // 1 = draw through the additive permutation (orderAdd)
 
 layout(std430, binding = 1) readonly buffer ParticleRead { vec4 data[]; } particles;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
@@ -30,7 +31,7 @@ vec2 quadCorner(int v) {
 }
 
 void main() {
-    uint inst = (uUsePerm == 1u) ? orderAdd.order[gl_InstanceID] : gl_InstanceID;
+    uint inst = orderAdd.order[gl_InstanceID];
     uint base = inst * 4u;
     vec4 p0 = particles.data[base + 0u];
     vec4 p1 = particles.data[base + 1u];

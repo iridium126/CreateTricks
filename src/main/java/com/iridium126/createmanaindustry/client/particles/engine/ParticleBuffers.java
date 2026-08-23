@@ -286,8 +286,10 @@ public final class ParticleBuffers {
     /**
      * Reads the previous frame's counters from the given ring slot in one
      * non-blocking (lagged) 8-byte readback: {@code {writeSlot, spare}} =
-     * {@code {liveCount, alphaCount}}. The alpha count is written into
-     * {@code spare} by {@code capture.comp} at the end of each frame.
+     * {@code {liveCount, alphaCensus}}. The alpha census is UNculled (every
+     * live alpha particle, off-screen included) — keygen counts it before the
+     * frustum test and {@code capture.comp} copies it into {@code spare} at
+     * the end of each frame.
      */
     public int[] readbackCounts(int slot) {
         this.readTmp8.clear();

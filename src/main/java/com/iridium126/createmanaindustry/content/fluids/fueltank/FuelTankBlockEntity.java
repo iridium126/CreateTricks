@@ -398,12 +398,7 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 		controller = null;
 		count = 1;
 		basins = null;
-		savedSurfaces = null;
-		savedCount = null;
-		savedBasins = null;
-		savedHeight = -1;
-		savedMin = null;
-		savedMax = null;
+		clearSavedGroupState();
 		updateCapability = true;
 		setChanged();
 		sendData();
@@ -531,6 +526,23 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 	/** True while a saved group load has not yet confirmed its full block count. */
 	public boolean hasPendingGroupLoad() {
 		return savedCount != null;
+	}
+
+	/**
+	 * Clears the cross-chunk load-in-progress state ({@code savedSurfaces}/{@code savedCount}/
+	 * {@code savedBasins} and the saved footprint). Only a controller's pending state is ever
+	 * read ({@link FuelTankConnectivity#recomputeBasins}), so it must be dropped once a part is
+	 * absorbed into a resolved group — otherwise the stale {@code savedCount} keeps answering
+	 * {@link #hasPendingGroupLoad()} and can hold later merges hostage until every neighbour
+	 * chunk happens to load.
+	 */
+	void clearSavedGroupState() {
+		savedSurfaces = null;
+		savedCount = null;
+		savedBasins = null;
+		savedHeight = -1;
+		savedMin = null;
+		savedMax = null;
 	}
 
 	/**
@@ -697,6 +709,11 @@ public class FuelTankBlockEntity extends CopycatBlockEntity
 					if (basins.chasers == null)
 						basins.initChasers(basins.surfaces);
 					invalidateRenderBoundingBox();
+					// The client rebuilds the geometry directly from the tag; the
+					// pending-load state is a server-side convergence mechanism
+					// (recomputeBasins / lazyTick) with no client consumer. Clear it
+					// here instead of leaving it set for the BE's whole lifetime.
+					clearSavedGroupState();
 				}
 			}
 		}

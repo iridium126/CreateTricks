@@ -6,7 +6,10 @@ uniform sampler2D DiffuseDepthSampler;
 // Injection target: 0 = replace-style into the pack's scene-colour buffer
 // (colortex0 families), 1 = translucent-layer RMW (Bliss-family colortex2):
 // fold the glow under the sampled translucent layer at the pack's 0.1x
-// storage scale instead of re-emitting scene + glow.
+// storage scale instead of re-emitting scene + glow, 2 = raw additive layer
+// (iterationT-family colortex10): output the pure tonemapped ring radiance;
+// the pack's lighting pass merges this buffer over its lit image itself
+// (composing here would be relit as surface albedo).
 uniform int OutputMode;
 // Translucent mode only: the pack's colortex4, whose texel (10,37).r carries the
 // auto-exposure scalar its final composite multiplies the frame by.
@@ -73,9 +76,9 @@ void main() {
     vec4 sceneColor = texture(DiffuseSampler0, texCoord);
     float sceneDepth = texture(DiffuseDepthSampler, texCoord).r;
 
-    // No rods active — pass through
+    // No rods active — pass through (raw-layer mode leaves its buffer empty)
     if (RodCount <= 0) {
-        fragColor = sceneColor;
+        fragColor = OutputMode == 2 ? vec4(0.0) : sceneColor;
         gl_FragDepth = sceneDepth;
         return;
     }
@@ -92,7 +95,7 @@ void main() {
     vec3 rayDir = worldEnd - rayStart;
     float rayLength = length(rayDir);
     if (rayLength < 1e-5) {
-        fragColor = sceneColor;
+        fragColor = OutputMode == 2 ? vec4(0.0) : sceneColor;
         gl_FragDepth = sceneDepth;
         return;
     }
@@ -187,6 +190,17 @@ void main() {
     // HDR tone map: the accumulated glow may exceed 1.0 at the ring core;
     // compress it exponentially instead of clipping (scene untouched).
     glow = vec3(1.0) - exp(-glow * GLOW_EXPOSURE);
+
+    if (OutputMode == 2) {
+        // Raw additive layer (iterationT): the pack's lighting pass adds this
+        // buffer over its finished lit image itself — the gbuffer colour there
+        // holds unlit albedo, so composing here would be relit as surface
+        // albedo. rgb carries the tonemapped ring radiance in calibrated
+        // units; the pack-side merge applies the radiance unit scale.
+        fragColor = vec4(glow, 0.0);
+        gl_FragDepth = sceneDepth;
+        return;
+    }
 
     if (OutputMode == 1) {
         // Translucent-layer RMW (Bliss colortex2): the pack stores lit translucent

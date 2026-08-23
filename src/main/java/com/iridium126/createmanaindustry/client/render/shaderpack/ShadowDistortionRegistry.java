@@ -23,7 +23,8 @@ public final class ShadowDistortionRegistry {
             new QuarticShadowDistortion(),
             new EuclideanShadowDistortion(),
             new LogShadowDistortion(),
-            new SundialShadowDistortion());
+            new SundialShadowDistortion(),
+            new IterationTShadowDistortion());
 
     private static String lastSignature = "";
     private static PackShadowParams lastParams = PackShadowParams.NONE;

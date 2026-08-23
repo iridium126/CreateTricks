@@ -50,6 +50,12 @@ import com.iridium126.createmanaindustry.client.render.mist.MistIrisHook;
  * pass raises that alpha towards 1 across its own silhouette, and a
  * coverage-weighted fold would cancel the ring behind exactly that mist
  * (see {@code fuel_rod_glow_iris.fsh}).</li>
+ * <li>iterationT-family packs go further still: their gbuffer colour holds
+ * unlit albedo and the lighting pass runs after translucent, so ANY scene-
+ * colour draw would be relit as surface albedo. The raw hook renders the
+ * tonemapped ring radiance into the unused {@code colortex10}, which the
+ * patched lighting pass adds over its lit image next to the mist layer
+ * ({@code colortex9}) — see {@code IterationTColoredLightAdapter}.</li>
  * </ul>
  * The samplers are bound manually (unit 0 = scene colour, unit 1 = main depth,
  * unit 3 = the pack's exposure scalar), the same way {@code MistIrisHook} does
@@ -61,6 +67,7 @@ public final class FuelRodBloomIrisHook {
     private static final String HOOK_ID = "createmanaindustry:fuel_rod_glow";
     private static final String HOOK_ID_BLISS = "createmanaindustry:fuel_rod_glow_bliss";
     private static final String HOOK_ID_HDR = "createmanaindustry:fuel_rod_glow_hdr";
+    private static final String HOOK_ID_RAW = "createmanaindustry:fuel_rod_glow_raw";
     /** Scene-colour packs: replace-style draw into colortex0, like the default mist hook. */
     private static final int[] DRAW_BUFFERS = {0};
     /**
@@ -75,6 +82,16 @@ public final class FuelRodBloomIrisHook {
      * draws never reach the screen there).
      */
     private static final int[] DRAW_BUFFERS_HDR = {3};
+    /**
+     * iterationT-family packs: render the tonemapped ring radiance as a raw
+     * additive layer into colortex10, a buffer the pack never touches. The
+     * in-memory patch installed by IterationTColoredLightAdapter makes the
+     * pack's own lighting pass (composite.fsh) add this buffer over its lit
+     * image alongside the mist layer in colortex9 — the gbuffer colour there
+     * holds unlit albedo, so a scene-colour draw would be relit as surface
+     * albedo and collapse under the pack's lighting.
+     */
+    private static final int[] DRAW_BUFFERS_RAW = {10};
 
     private static boolean registered;
 
@@ -111,6 +128,14 @@ public final class FuelRodBloomIrisHook {
                 FuelRodBloomIrisHook::shouldRenderHdr,
                 (camera, gameRenderer) -> render(camera, gameRenderer,
                         MistInjectionProfiles.Profile.HDR_SCENE));
+        // Like the other non-scene gates, this one does not tick: the
+        // scene-colour gate owns the rod animation tick every frame regardless
+        // of which registration draws.
+        VeilCompatRegistry.registerWorldRenderHook(
+                HOOK_ID_RAW, DRAW_BUFFERS_RAW,
+                FuelRodBloomIrisHook::shouldRenderRawLayer,
+                (camera, gameRenderer) -> render(camera, gameRenderer,
+                        MistInjectionProfiles.Profile.RAW_LAYER));
     }
 
     /** Whether the active pack uses the Bliss-family translucent-layer profile. */
@@ -168,6 +193,15 @@ public final class FuelRodBloomIrisHook {
         boolean draw = isActivePath() && isHdrProfile();
         if (draw)
             logFirstDraw(HOOK_ID_HDR, "hdr-scene fold into colortex3");
+        return draw;
+    }
+
+    /** Raw-layer hook gate (iterationT) — no ticking (the scene-colour gate owns that). */
+    private static boolean shouldRenderRawLayer() {
+        boolean draw = isActivePath()
+                && MistInjectionProfiles.activeProfile() == MistInjectionProfiles.Profile.RAW_LAYER;
+        if (draw)
+            logFirstDraw(HOOK_ID_RAW, "raw additive layer into colortex10");
         return draw;
     }
 
@@ -250,10 +284,15 @@ public final class FuelRodBloomIrisHook {
                 GL30.glUniform1i(depthUniform, 1);
 
             // Injection target: 0 = replace-style scene-colour output, 1 =
-            // translucent-layer RMW (Bliss-family colortex2).
+            // translucent-layer RMW (Bliss-family colortex2), 2 = raw additive
+            // layer (iterationT-family colortex10).
             var outputModeUniform = shader.getUniform("OutputMode");
             if (outputModeUniform != null)
-                outputModeUniform.setInt(translucentLayer ? 1 : 0);
+                outputModeUniform.setInt(switch (profile) {
+                    case TRANSLUCENT_LAYER -> 1;
+                    case RAW_LAYER -> 2;
+                    default -> 0;
+                });
 
             // Exposure-compensation state: unit 3 carries the pack's exposure
             // buffer for sampler-based modes (Bliss); the Sundial fold instead

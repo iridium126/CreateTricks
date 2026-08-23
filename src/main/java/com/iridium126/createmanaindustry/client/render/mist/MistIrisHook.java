@@ -60,6 +60,7 @@ public final class MistIrisHook {
     private static final String HOOK_ID_SCENE = "createmanaindustry:mist";
     private static final String HOOK_ID_TRANSLUCENT = "createmanaindustry:mist_translucent";
     private static final String HOOK_ID_HDR = "createmanaindustry:mist_hdr";
+    private static final String HOOK_ID_RAW = "createmanaindustry:mist_raw";
     /** Scene-colour packs: draw into colortex0, like the simulated end-sea compat hook. */
     private static final int[] DRAW_BUFFERS_SCENE = {0};
     /**
@@ -76,6 +77,15 @@ public final class MistIrisHook {
      * never reach the screen there).
      */
     private static final int[] DRAW_BUFFERS_HDR = {3};
+    /**
+     * iterationT-family packs: render the raw premultiplied mist layer into
+     * colortex9, a buffer the pack never touches. The in-memory patch installed
+     * by {@code IterationTColoredLightAdapter} teaches the pack's own lighting
+     * pass (composite.fsh) to merge this layer over its lit image, so the mist
+     * rides the pack's bloom, TAA, auto-exposure and AgX tonemap like native
+     * radiance instead of being relit as surface albedo.
+     */
+    private static final int[] DRAW_BUFFERS_RAW = {9};
 
     private static boolean registered;
 
@@ -108,6 +118,13 @@ public final class MistIrisHook {
                 MistIrisHook::shouldRenderHdr,
                 (camera, gameRenderer) -> render(camera, gameRenderer,
                         MistInjectionProfiles.Profile.HDR_SCENE));
+        // Like the other non-scene gates, this one does not tick: the scene
+        // hook owns the mist tick every frame regardless of which profile wins.
+        VeilCompatRegistry.registerWorldRenderHook(
+                HOOK_ID_RAW, DRAW_BUFFERS_RAW,
+                MistIrisHook::shouldRenderRawLayer,
+                (camera, gameRenderer) -> render(camera, gameRenderer,
+                        MistInjectionProfiles.Profile.RAW_LAYER));
     }
 
     /**
@@ -146,6 +163,12 @@ public final class MistIrisHook {
     private static boolean shouldRenderHdr() {
         return isActivePath()
                 && MistInjectionProfiles.activeProfile() == MistInjectionProfiles.Profile.HDR_SCENE;
+    }
+
+    /** Raw-layer hook gate (iterationT) — no ticking (the scene hook owns that). */
+    private static boolean shouldRenderRawLayer() {
+        return isActivePath()
+                && MistInjectionProfiles.activeProfile() == MistInjectionProfiles.Profile.RAW_LAYER;
     }
 
     /**
@@ -354,8 +377,11 @@ public final class MistIrisHook {
             // (Bliss-family colortex2).
             var targetUniform = shader.getUniform("MistTargetMode");
             if (targetUniform != null)
-                targetUniform.setInt(
-                        profile == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER ? 1 : 0);
+                targetUniform.setInt(switch (profile) {
+                    case TRANSLUCENT_LAYER -> 1;
+                    case RAW_LAYER -> 3;
+                    default -> 0;
+                });
             // Logarithmic distortion curve (mode 3): x=k, y=a, z=b, w=z scale.
             var logUniform = shader.getUniform("ShadowLogParams");
             if (logUniform != null)

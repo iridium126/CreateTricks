@@ -26,6 +26,17 @@ import com.iridium126.createmanaindustry.client.render.shaderpack.ShaderColoredL
  * the HDR-scene profile folds the mist into {@code colortex3} instead, where
  * the pack's own cloud compositing, SSR, TAA, bloom and tonemapping process it
  * exactly like native scene radiance.</li>
+ * <li>iterationT goes one step further than merely relocating the image: its
+ * gbuffer colour holds <em>unlit albedo</em>, and the lighting pass
+ * ({@code composite.fsh}) multiplies the whole light sum by it before writing
+ * the lit frame to {@code colortex1}. A scene-colour draw would be relit as
+ * surface albedo — dimmed by the underlying surface's light term, crushed by
+ * the RGBA8 albedo precision and divided by the pack's output factor. The
+ * raw-layer profile instead renders a premultiplied mist layer into the unused
+ * {@code colortex9}, and an in-memory patch ({@code IterationTColoredLightAdapter})
+ * teaches the pack's own {@code composite.fsh} to merge that layer over its lit
+ * image — so the mist passes through the pack's bloom, TAA, auto-exposure and
+ * AgX tonemap exactly like native radiance.</li>
  * </ul>
  * Detection is name-based for now ({@code bliss}, {@code sundial}), cached per
  * pack name.
@@ -38,7 +49,12 @@ public final class MistInjectionProfiles {
         /** Draw into colortex2 with premultiplied under-operator semantics. */
         TRANSLUCENT_LAYER,
         /** Fold into the deferred-lit HDR scene buffer (Sundial colortex3). */
-        HDR_SCENE
+        HDR_SCENE,
+        /**
+         * Render a raw premultiplied layer into the spare colortex9 for
+         * albedo-gbuffer packs (iterationT); the pack's lighting pass merges it.
+         */
+        RAW_LAYER
     }
 
     private static String lastPackName;
@@ -57,12 +73,15 @@ public final class MistInjectionProfiles {
             profile = Profile.TRANSLUCENT_LAYER;
         else if (lower.contains("sundial"))
             profile = Profile.HDR_SCENE;
+        else if (lower.contains("iterationt"))
+            profile = Profile.RAW_LAYER;
         else
             profile = Profile.SCENE_COLOR;
         CreateManaIndustry.LOGGER.info("Mist injection profile for shaderpack '{}': {}", name,
                 switch (profile) {
                     case TRANSLUCENT_LAYER -> "translucent-layer (Bliss-family)";
                     case HDR_SCENE -> "hdr-scene (Sundial-family)";
+                    case RAW_LAYER -> "raw-layer (iterationT-family)";
                     case SCENE_COLOR -> "scene-color";
                 });
         lastPackName = name;

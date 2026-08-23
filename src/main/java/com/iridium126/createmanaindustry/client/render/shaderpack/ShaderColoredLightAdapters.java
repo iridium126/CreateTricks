@@ -15,7 +15,8 @@ public final class ShaderColoredLightAdapters {
 	public static final List<ShaderColoredLightAdapter> ALL = List.of(
 		new PhotonColoredLightAdapter(),
 		new ComplementaryColoredLightAdapter(),
-		new BlissColoredLightAdapter());
+		new BlissColoredLightAdapter(),
+		new IterationTColoredLightAdapter());
 
 	private ShaderColoredLightAdapters() {
 	}

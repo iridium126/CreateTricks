@@ -44,7 +44,10 @@ uniform float ShadowDepthScale;
 // 0 = no radial distortion (depth scale still applies), 1 = quartic (Photon SHADOW_DISTORTION),
 // 2 = euclidean (Complementary shadowMapBias), 3 = logarithmic
 // (Bliss BiasShadowProjection — curve parameters in ShadowLogParams),
-// 4 = Sundial log-tile (SHADOW_DISTORTION_STRENGTH in ShadowDistortion).
+// 4 = Sundial log-tile (SHADOW_DISTORTION_STRENGTH in ShadowDistortion),
+// 5 = linear-with-margin (iterationT SHADOW_MAP_BIAS: constant-bias linear length
+// compression plus a 0.95 coordinate margin, depth rebuilt from the view-space z
+// because the pack ignores the ortho z row — see the mode 5 branch below).
 uniform int ShadowDistortionMode;
 uniform vec4 ShadowLogParams; // mode 3 only: x = k, y = a, z = b, w = z scale
 
@@ -191,6 +194,17 @@ vec3 distort_shadow_space(vec3 shadowClipPos) {
         vec2 direction = len > 1e-5 ? shadowClipPos.xy / len : vec2(0.0);
         return vec3(direction * curve * 0.5 + 0.5, shadowClipPos.z * ShadowDepthScale);
     }
+    if (ShadowDistortionMode == 5) {
+        // iterationT: linear length compression with a constant bias, then an
+        // extra 0.95 margin on the distorted coordinates. Its shadow stage
+        // rebuilds clip z as viewZ * (-m00 * 0.5) instead of using the ortho z
+        // row, so strip the constant z offset from our clip z and rescale by
+        // ShadowDepthScale (= -m00*0.5 / m22 of the live projection).
+        float len = length(shadowClipPos.xy);
+        float distortionFactor = len * ShadowDistortion + (1.0 - ShadowDistortion);
+        float z = (shadowClipPos.z - ShadowProjection[3].z) * ShadowDepthScale;
+        return vec3(shadowClipPos.xy / distortionFactor * 0.95, z);
+    }
     float l = ShadowDistortionMode == 2
             ? length(shadowClipPos.xy)
             : quartic_length(shadowClipPos.xy);
@@ -289,9 +303,10 @@ void main() {
     vec4 sceneColor = texture(DiffuseSampler0, texCoord);
     float sceneDepth = texture(DiffuseDepthSampler, texCoord).r;
 
-    // No atomizers active — pass through
+    // No atomizers active — pass through (the raw-layer mode must leave its
+    // side buffer transparent instead of copying the scene into it).
     if (AtomizerCount <= 0) {
-        fragColor = sceneColor;
+        fragColor = MistTargetMode == 3 ? vec4(0.0) : sceneColor;
         gl_FragDepth = sceneDepth;
         return;
     }
@@ -355,7 +370,7 @@ void main() {
     }
     if (marchEnd < marchStart) {
         // The ray reaches no mist volume — pass the scene through
-        fragColor = sceneColor;
+        fragColor = MistTargetMode == 3 ? vec4(0.0) : sceneColor;
         gl_FragDepth = sceneDepth;
         return;
     }
@@ -442,6 +457,17 @@ void main() {
         }
 
         t += stepSize;
+    }
+
+    if (MistTargetMode == 3) {
+        // Raw premultiplied layer for albedo-gbuffer packs (iterationT): their
+        // lighting pass merges this side buffer over the lit image itself
+        // (composing here would be relit as surface albedo). rgb carries the
+        // premultiplied radiance in calibrated units, a the coverage; the
+        // pack-side merge applies the radiance unit scale.
+        fragColor = vec4(accumulatedMist.rgb, accumulatedMist.a);
+        gl_FragDepth = sceneDepth;
+        return;
     }
 
     if (MistTargetMode == 1) {

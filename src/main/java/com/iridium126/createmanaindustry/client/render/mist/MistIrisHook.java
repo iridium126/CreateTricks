@@ -161,24 +161,23 @@ public final class MistIrisHook {
                 return false;
 
             // Exposure-compensation plumbing per profile. Translucent-layer packs
-            // store their auto-exposure scalar in colortex4 texel (10,37); Sundial
-            // keeps the adapted average brightness in colortex7 texel (0,0).w and
-            // multiplies the final frame by avg^-S * 0.2 * 2^EV — the HDR fold
-            // pre-divides our added radiance by that product so the calibrated
-            // mist brightness survives the pack's auto-exposure. The acquisition
-            // binds its own query framebuffer and restores the vanilla main
-            // target, so the draw framebuffer must be re-bound through the compat
-            // accessor afterwards.
+            // store their auto-exposure scalar in colortex4 texel (10,37), read
+            // through a bound sampler. Sundial's multiply is a CONSTANT — its
+            // colortex7 sampler is redirected to an RGB16 LUT whose .w is always
+            // 1.0, making the adaptation term inert (see SundialAutoExposure) —
+            // so the HDR fold just carries the resolved scale in ExposureParams.x
+            // and binds nothing. The translucent acquisition binds its own query
+            // framebuffer and restores the vanilla main target, so the draw
+            // framebuffer must be re-bound through the compat accessor afterwards.
             int exposureTextureId = -1;
             int exposureMode = 0;
-            SundialAutoExposure.Params sundialExposure = null;
+            float sundialScale = 1.0F;
             if (profile == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER) {
                 exposureTextureId = MistExposureSource.acquireExposureTexture(4);
                 exposureMode = 1;
             } else if (profile == MistInjectionProfiles.Profile.HDR_SCENE) {
-                exposureTextureId = MistExposureSource.acquireExposureTexture(7);
+                sundialScale = SundialAutoExposure.compensationScale();
                 exposureMode = 2;
-                sundialExposure = SundialAutoExposure.resolveForCurrentPack();
             }
             if (exposureMode != 0) {
                 if (Iris.getPipelineManager().getPipelineNullable()
@@ -299,16 +298,17 @@ public final class MistIrisHook {
             if (coloredUniform != null)
                 coloredUniform.setInt(coloredStage ? 1 : 0);
 
-            // Exposure-compensation sampler: unit 3 carries the pack's exposure
-            // buffer (colortex4 for translucent-layer packs, colortex7 for the
-            // Sundial HDR fold); ExposureMode tells the shader which texel and
-            // formula to apply.
+            // Exposure-compensation state: unit 3 carries the pack's exposure
+            // buffer for sampler-based modes (Bliss); the Sundial fold instead
+            // receives its constant scale through ExposureParams.x.
             if (exposureMode != 0) {
-                var exposureUniform = shader.getUniformLocation("ExposureSampler");
-                RenderSystem.activeTexture(GL13.GL_TEXTURE3);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, Math.max(exposureTextureId, 0));
-                if (exposureUniform >= 0)
-                    GL30.glUniform1i(exposureUniform, 3);
+                if (exposureTextureId >= 0) {
+                    var exposureUniform = shader.getUniformLocation("ExposureSampler");
+                    RenderSystem.activeTexture(GL13.GL_TEXTURE3);
+                    GL11.glBindTexture(GL11.GL_TEXTURE_2D, exposureTextureId);
+                    if (exposureUniform >= 0)
+                        GL30.glUniform1i(exposureUniform, 3);
+                }
                 var exposureBoundUniform = shader.getUniform("ExposureBound");
                 if (exposureBoundUniform != null)
                     exposureBoundUniform.setInt(exposureTextureId >= 0 ? 1 : 0);
@@ -318,9 +318,7 @@ public final class MistIrisHook {
                 var exposureParamsUniform = shader.getUniform("ExposureParams");
                 if (exposureParamsUniform != null)
                     exposureParamsUniform.setVector(
-                            exposureMode == 2 && sundialExposure != null ? sundialExposure.strength() : 0.0F,
-                            exposureMode == 2 && sundialExposure != null ? sundialExposure.exposureValue() : 0.0F,
-                            0.0F, 0.0F);
+                            exposureMode == 2 ? sundialScale : 0.0F, 0.0F, 0.0F, 0.0F);
             }
 
             MistClientHandler.applyMistUniforms(shader);

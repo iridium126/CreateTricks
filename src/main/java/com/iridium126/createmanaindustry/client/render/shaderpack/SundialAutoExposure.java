@@ -15,63 +15,76 @@ import com.iridium126.createmanaindustry.CreateManaIndustry;
 import net.irisshaders.iris.Iris;
 
 /**
- * Resolves Sundial's auto-exposure parameters so the HDR-scene injection folds
- * can pre-compensate the radiance they add. {@code Composite14} multiplies the
- * tonemapped frame by
+ * Resolves the constant exposure pre-compensation the Sundial HDR-scene folds
+ * need. {@code Composite14} multiplies the tonemapped frame by
  * <pre>
  *     E = exp2(-log2(averageBrightness + 1e-5) * AVERAGE_EXPOSURE_STRENGTH)
  *         * 0.2 * exp2(EXPOSURE_VALUE)
  * </pre>
- * where {@code averageBrightness} is the adapted scalar Composite10 leaves in
- * colortex7 texel {@code (0, 0)}.{@code w}. Radiance we fold into colortex3
- * passes through that multiply like native scene light, which makes fixed
- * calibrated values fade out in bright daylight — multiplying them by
- * {@code 1/E} (center-pixel terms; the vignette is deliberately not mirrored)
- * keeps their on-screen weight stable across day, night and weather.
+ * where {@code averageBrightness} nominally comes from colortex7 texel
+ * {@code (0, 0)}.{@code w}. However, Sundial redirects that sampler to its
+ * atmosphere-transmittance LUT for the deferred and composite stages
+ * ({@code texture.deferred.colortex7} / {@code texture.composite.colortex7} in
+ * {@code shaders.properties}; Iris renames the sampler onto the custom texture,
+ * see {@code TextureTransformer}), and the LUT's RGB16 format has no alpha
+ * channel — sampled {@code .w} is a constant 1.0. The adaptation term is
+ * therefore inert and the multiply the frame actually experiences is
+ * <pre>
+ *     E = 0.2 * exp2(EXPOSURE_VALUE)
+ * </pre>
+ * Radiance folded into colortex3 passes through that constant, so the folds
+ * pre-divide by it ({@link #compensationScale()}) to keep their calibrated
+ * brightness stable. Reading the real colortex7 buffer instead would chase an
+ * average nobody applies — that mistake made daytime mist several times too
+ * dense.
  * <p>
- * The shipped defines are parsed from {@code programs/composite/Composite14.frag}
- * (the only file carrying them); user overrides come from the pack option file
- * through {@link ActivePackOptions#doubleValue}. Any structural surprise falls
- * back to the shipped defaults, never throws.
+ * {@code EXPOSURE_VALUE} is user-tunable, so its shipped literal is parsed
+ * from {@code programs/composite/Composite14.frag} and overridden by the pack
+ * option file through {@link ActivePackOptions#doubleValue}. Any structural
+ * surprise falls back to the shipped default, never throws.
  */
 public final class SundialAutoExposure {
 
-    /** {@link #resolveForCurrentPack()} result: the two exposure defines. */
-    public record Params(float strength, float exposureValue) {}
+    /** The {@code * 0.2} factor baked into Composite14's exposure multiply. */
+    private static final float BASE_MULTIPLY = 0.2F;
 
-    private static final Pattern STRENGTH = Pattern.compile(
-            "#define\\s+AVERAGE_EXPOSURE_STRENGTH\\s*([-+]?[0-9]*\\.?[0-9]+)");
     private static final Pattern EXPOSURE_VALUE = Pattern.compile(
             "(?m)^\\s*#define\\s+EXPOSURE_VALUE\\s*([-+]?[0-9]*\\.?[0-9]+)");
 
-    /** Shipped defaults of the two defines, used when unparseable. */
-    private static final float DEFAULT_STRENGTH = 0.60F;
+    /** Shipped default of the EXPOSURE_VALUE define, used when unparseable. */
     private static final float DEFAULT_EXPOSURE_VALUE = 0.0F;
 
     private static final String COMPOSITE14 = "shaders/programs/composite/Composite14.frag";
 
     private static String lastName;
-    private static Params lastParams =
-            new Params(DEFAULT_STRENGTH, DEFAULT_EXPOSURE_VALUE);
+    private static float lastScale = compensationScale(DEFAULT_EXPOSURE_VALUE);
 
     private SundialAutoExposure() {}
 
-    /** The active pack's exposure parameters, cached per pack name. */
-    public static Params resolveForCurrentPack() {
+    /**
+     * The constant factor the HDR-scene folds must pre-multiply their added
+     * radiance by so it survives the pack's exposure multiply, cached per pack
+     * name. Bounded like every other adapter's compensation.
+     */
+    public static float compensationScale() {
         String name = ShaderColoredLightAdapters.activePackName();
-        if (name.equals(lastName))
-            return lastParams;
-        lastName = name;
-        lastParams = load(name);
-        return lastParams;
+        if (!name.equals(lastName)) {
+            lastName = name;
+            lastScale = compensationScale(loadExposureValue(name));
+        }
+        return lastScale;
     }
 
-    private static Params load(String packName) {
-        float strength = DEFAULT_STRENGTH;
+    private static float compensationScale(float exposureValue) {
+        float e = BASE_MULTIPLY * (float) Math.exp(exposureValue * Math.log(2.0));
+        return Math.max(0.125F, Math.min(64.0F, 1.0F / e));
+    }
+
+    private static float loadExposureValue(String packName) {
         float exposureValue = DEFAULT_EXPOSURE_VALUE;
         try {
             if (packName == null || packName.isEmpty() || packName.equals("(internal)"))
-                return new Params(strength, exposureValue);
+                return exposureValue;
             Path pack = Iris.getShaderpacksDirectory().resolve(packName);
             String source = readComposite14(pack);
             if (source == null) {
@@ -79,32 +92,22 @@ public final class SundialAutoExposure {
                         "Sundial auto-exposure: {} not found in '{}'; using shipped defaults",
                         COMPOSITE14, packName);
             } else {
-                strength = match(STRENGTH, source, strength);
-                exposureValue = match(EXPOSURE_VALUE, source, exposureValue);
+                Matcher m = EXPOSURE_VALUE.matcher(source);
+                if (m.find()) {
+                    try {
+                        exposureValue = Float.parseFloat(m.group(1));
+                    } catch (NumberFormatException ignored) {
+                        // malformed literal — keep the shipped default
+                    }
+                }
             }
         } catch (IOException | RuntimeException | LinkageError e) {
             CreateManaIndustry.LOGGER.warn(
                     "Sundial auto-exposure parameters unreadable; using shipped defaults", e);
         }
-        // User overrides win over the shipped literals (Iris persists only keys
+        // User override wins over the shipped literal (Iris persists only keys
         // the user actually changed).
-        strength = (float) ActivePackOptions.doubleValue("AVERAGE_EXPOSURE_STRENGTH", strength);
-        exposureValue = (float) ActivePackOptions.doubleValue("EXPOSURE_VALUE", exposureValue);
-        CreateManaIndustry.LOGGER.info(
-                "Sundial auto-exposure compensation params: strength={}, exposureValue={}",
-                strength, exposureValue);
-        return new Params(strength, exposureValue);
-    }
-
-    private static float match(Pattern pattern, String source, float fallback) {
-        Matcher m = pattern.matcher(source);
-        if (!m.find())
-            return fallback;
-        try {
-            return Float.parseFloat(m.group(1));
-        } catch (NumberFormatException e) {
-            return fallback;
-        }
+        return (float) ActivePackOptions.doubleValue("EXPOSURE_VALUE", exposureValue);
     }
 
     /** Reads {@value #COMPOSITE14} from a zipped or extracted pack, or null. */

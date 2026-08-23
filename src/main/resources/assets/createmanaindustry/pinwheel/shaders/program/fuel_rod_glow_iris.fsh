@@ -14,9 +14,10 @@ uniform sampler2D ExposureSampler;
 uniform int ExposureBound; // 1 when ExposureSampler is bound to the pack's exposure buffer
 // Exposure compensation formula selector: 0 = none (scene-colour packs),
 // 1 = Bliss translucent-layer RMW (texel (10,37).r reciprocal), 2 = Sundial
-// HDR fold (ExposureSampler texel (0,0).w holds the adapted average brightness
-// and the pack's final composite multiplies by avg^-S * 0.2 * 2^EV, with S =
-// ExposureParams.x and EV = ExposureParams.y; our added glow pre-divides by it).
+// HDR fold — the pack's exposure multiply is a CONSTANT 0.2 * 2^EV (its
+// colortex7 sampler is redirected to an RGB16 LUT whose .w reads as 1.0, so
+// the adaptation term is inert); ExposureParams.x carries the resolved
+// constant scale and our added glow pre-multiplies by it.
 uniform int ExposureMode;
 uniform vec4 ExposureParams;
 
@@ -219,17 +220,12 @@ void main() {
         return;
     }
 
-    // Sundial HDR fold (mode 2): pre-divide only OUR added glow by the pack's
-    // final auto-exposure product so its calibrated brightness survives; the
-    // sampled native scene part must stay untouched.
+    // Sundial HDR fold (mode 2): pre-compensate only OUR added glow with the
+    // constant scale the pack's exposure multiply implies so its calibrated
+    // brightness survives; the sampled native scene part must stay untouched.
     vec3 glowAdd = glow;
-    if (ExposureMode == 2 && ExposureBound == 1) {
-        float averageBrightness =
-                max(texelFetch(ExposureSampler, ivec2(0, 0), 0).w, 1e-5);
-        float exposure = exp2(-log2(averageBrightness) * ExposureParams.x)
-                * 0.2 * exp2(ExposureParams.y);
-        glowAdd *= clamp(1.0 / exposure, 0.125, 64.0);
-    }
+    if (ExposureMode == 2)
+        glowAdd *= ExposureParams.x;
     fragColor = sceneColor;
     fragColor.rgb += glowAdd;
     fragColor.a = sceneColor.a;

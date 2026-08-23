@@ -199,17 +199,17 @@ public final class FuelRodBloomIrisHook {
             // auto-exposure scalar first — the acquisition binds its own query
             // framebuffer and restores the vanilla main target, so the compat
             // gbuffer framebuffer must be re-bound through the accessor
-            // afterwards.
+            // afterwards. Sundial needs no binding: its exposure multiply is a
+            // constant (see SundialAutoExposure), carried in ExposureParams.x.
             int exposureTextureId = -1;
             int exposureMode = 0;
-            SundialAutoExposure.Params sundialExposure = null;
+            float sundialScale = 1.0F;
             if (translucentLayer) {
                 exposureTextureId = MistExposureSource.acquireExposureTexture(4);
                 exposureMode = 1;
             } else if (hdrScene) {
-                exposureTextureId = MistExposureSource.acquireExposureTexture(7);
+                sundialScale = SundialAutoExposure.compensationScale();
                 exposureMode = 2;
-                sundialExposure = SundialAutoExposure.resolveForCurrentPack();
             }
             if (exposureMode != 0) {
                 if (Iris.getPipelineManager().getPipelineNullable()
@@ -255,16 +255,17 @@ public final class FuelRodBloomIrisHook {
             if (outputModeUniform != null)
                 outputModeUniform.setInt(translucentLayer ? 1 : 0);
 
-            // Exposure-compensation sampler: unit 3 carries the pack's exposure
-            // buffer (colortex4 for translucent-layer packs, colortex7 for the
-            // Sundial HDR fold); ExposureMode tells the shader which texel and
-            // formula to apply.
+            // Exposure-compensation state: unit 3 carries the pack's exposure
+            // buffer for sampler-based modes (Bliss); the Sundial fold instead
+            // receives its constant scale through ExposureParams.x.
             if (exposureMode != 0) {
-                var exposureUniform = shader.getUniformLocation("ExposureSampler");
-                RenderSystem.activeTexture(GL13.GL_TEXTURE3);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, Math.max(exposureTextureId, 0));
-                if (exposureUniform >= 0)
-                    GL30.glUniform1i(exposureUniform, 3);
+                if (exposureTextureId >= 0) {
+                    var exposureUniform = shader.getUniformLocation("ExposureSampler");
+                    RenderSystem.activeTexture(GL13.GL_TEXTURE3);
+                    GL11.glBindTexture(GL11.GL_TEXTURE_2D, exposureTextureId);
+                    if (exposureUniform >= 0)
+                        GL30.glUniform1i(exposureUniform, 3);
+                }
                 var exposureBoundUniform = shader.getUniform("ExposureBound");
                 if (exposureBoundUniform != null)
                     exposureBoundUniform.setInt(exposureTextureId >= 0 ? 1 : 0);
@@ -274,9 +275,7 @@ public final class FuelRodBloomIrisHook {
                 var exposureParamsUniform = shader.getUniform("ExposureParams");
                 if (exposureParamsUniform != null)
                     exposureParamsUniform.setVector(
-                            exposureMode == 2 && sundialExposure != null ? sundialExposure.strength() : 0.0F,
-                            exposureMode == 2 && sundialExposure != null ? sundialExposure.exposureValue() : 0.0F,
-                            0.0F, 0.0F);
+                            exposureMode == 2 ? sundialScale : 0.0F, 0.0F, 0.0F, 0.0F);
             }
 
             FuelRodBloomHandler.applyGlowUniforms(shader);

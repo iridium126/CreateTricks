@@ -1,5 +1,6 @@
-// LSD radix sort — histogram pass over the ALPHA segment only. The number of
-// elements to sort is the GPU-written alpha count (indirect.cmd[1].y).
+// Counting-sort histogram pass over the ALPHA segment (single pass over the
+// 8-bit depth band key written by keygen.comp). The number of elements is the
+// GPU-written alpha count (indirect.cmd[1].y).
 layout(local_size_x = 64) in;
 
 layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;

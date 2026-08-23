@@ -30,6 +30,7 @@ public final class ClientConfig {
     private static ModConfigSpec.IntValue PARTICLE_MAX_COUNT;
     private static ModConfigSpec.DoubleValue PARTICLE_BUDGET_MS;
     private static ModConfigSpec.BooleanValue PARTICLE_AUTO_THROTTLE;
+    private static ModConfigSpec.IntValue PARTICLE_FADE_DISTANCE;
 
     static {
         BUILDER.comment("Volumetric mist rendering options.").push("rendering");
@@ -46,7 +47,8 @@ public final class ClientConfig {
 
         BUILDER.comment("GPU particle engine options.").push("particles");
         PARTICLE_ENABLED = BUILDER
-                .comment("Master switch for the GPU particle engine (requires Veil).")
+                .comment("Master switch for the GPU particle engine (self-hosted GL, no Veil needed). "
+                        + "Turning it off drops all live particles immediately.")
                 .define("enabled", true);
         PARTICLE_MAX_COUNT = BUILDER
                 .comment("Maximum live particles allocated in GPU memory (64 bytes each, double-buffered). "
@@ -58,6 +60,13 @@ public final class ClientConfig {
         PARTICLE_AUTO_THROTTLE = BUILDER
                 .comment("Automatically reduce emission rate when the frame budget is exceeded.")
                 .define("autoThrottle", true);
+        PARTICLE_FADE_DISTANCE = BUILDER
+                .comment("Distance in blocks at which particles start fading out; they are fully "
+                        + "invisible 24 blocks further. Raise to see particles farther away — "
+                        + "the alpha sort range adapts automatically. Note: particles do not "
+                        + "match vanilla fog, so very high values with a short render distance "
+                        + "can look out of place.")
+                .defineInRange("fadeDistance", 96, 16, 256);
         BUILDER.pop();
     }
 
@@ -70,6 +79,7 @@ public final class ClientConfig {
     public static int particleMaxCount = 2_000_000;
     public static double particleBudgetMs = 16.6;
     public static boolean particleAutoThrottle = true;
+    public static int particleFadeDistance = 96;
 
     private ClientConfig() {}
 
@@ -84,6 +94,7 @@ public final class ClientConfig {
             particleMaxCount = PARTICLE_MAX_COUNT.get();
             particleBudgetMs = PARTICLE_BUDGET_MS.get();
             particleAutoThrottle = PARTICLE_AUTO_THROTTLE.get();
+            particleFadeDistance = PARTICLE_FADE_DISTANCE.get();
         }
     }
 }

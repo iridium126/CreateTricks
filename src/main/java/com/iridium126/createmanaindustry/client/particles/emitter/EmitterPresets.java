@@ -120,6 +120,69 @@ public final class EmitterPresets {
             .color(0.80f, 0.88f, 1.00f, 0.5f)
             .build();
 
+    /**
+     * Allay-model particle (MODEL material): the vanilla allay rendered as an
+     * instanced 3D model, fullbright cutout with depth writes. Total body
+     * height = 2 x size (~0.66 blocks at size 0.33). The four presets differ
+     * only in animation/motion; `/cmip anim <preset> <anim>` switches the
+     * animation of live particles at runtime.
+     */
+    public static final EmitterSpec ALLAY_FLY = EmitterSpec.builder()
+            .shape(EmitterShape.POINT)
+            .speed(0.6, 1.4)
+            .life(10.0, 18.0)
+            .sizeOverLife(0.33, 0.33, 1.0)
+            .gravity(0, 0.35, 0)       // gentle rise
+            .drag(1.2)
+            .material(EmitterSpec.Material.MODEL)
+            .animation(EmitterSpec.Animation.FLY)
+            .glow(1.0)
+            .color(1f, 1f, 1f, 1f)
+            .build();
+
+    /** Allay dancing in place (vanilla jukebox pose, no spin). */
+    public static final EmitterSpec ALLAY_DANCE = EmitterSpec.builder()
+            .shape(EmitterShape.POINT)
+            .speed(0.05, 0.2)
+            .life(20.0, 30.0)
+            .sizeOverLife(0.33, 0.33, 1.0)
+            .gravity(0, 0.05, 0)
+            .drag(2.0)
+            .material(EmitterSpec.Material.MODEL)
+            .animation(EmitterSpec.Animation.DANCE)
+            .glow(1.0)
+            .color(1f, 1f, 1f, 1f)
+            .build();
+
+    /** Allay spiralling upward with the looped 4-turn spin. */
+    public static final EmitterSpec ALLAY_SPIN = EmitterSpec.builder()
+            .shape(EmitterShape.POINT)
+            .speed(0.3, 0.8)
+            .life(6.0, 10.0)
+            .sizeOverLife(0.33, 0.33, 1.0)
+            .gravity(0, 0.8, 0)
+            .flutter(0.6)
+            .drag(0.8)
+            .material(EmitterSpec.Material.MODEL)
+            .animation(EmitterSpec.Animation.SPIN)
+            .glow(1.0)
+            .color(1f, 1f, 1f, 1f)
+            .build();
+
+    /** Allay drifting with raised arms (item not rendered). */
+    public static final EmitterSpec ALLAY_HOLD = EmitterSpec.builder()
+            .shape(EmitterShape.POINT)
+            .speed(0.4, 0.9)
+            .life(8.0, 14.0)
+            .sizeOverLife(0.33, 0.33, 1.0)
+            .gravity(0, 0.25, 0)
+            .drag(1.0)
+            .material(EmitterSpec.Material.MODEL)
+            .animation(EmitterSpec.Animation.HOLD)
+            .glow(1.0)
+            .color(1f, 1f, 1f, 1f)
+            .build();
+
     /** Looks up a preset by its command name, or returns null. */
     public static EmitterSpec byName(String name) {
         return switch (name) {
@@ -130,12 +193,22 @@ public final class EmitterPresets {
             case "mana_burst" -> MANA_BURST;
             case "cherry_leaves" -> CHERRY_LEAVES;
             case "flood" -> FLOOD;
+            case "allay_fly" -> ALLAY_FLY;
+            case "allay_dance" -> ALLAY_DANCE;
+            case "allay_spin" -> ALLAY_SPIN;
+            case "allay_hold" -> ALLAY_HOLD;
             default -> null;
         };
     }
 
     /** Names registered for the command argument suggestions. */
     public static String[] names() {
-        return new String[] { "mana_spark", "ember", "ash", "soul_flame", "mana_burst", "cherry_leaves", "flood" };
+        return new String[] { "mana_spark", "ember", "ash", "soul_flame", "mana_burst", "cherry_leaves", "flood",
+                "allay_fly", "allay_dance", "allay_spin", "allay_hold" };
+    }
+
+    /** Animation names for the /cmip anim argument suggestions. */
+    public static String[] animationNames() {
+        return new String[] { "fly", "dance", "spin", "hold" };
     }
 }

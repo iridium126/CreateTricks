@@ -28,7 +28,8 @@ import net.minecraft.world.phys.Vec3;
  *   7:  material, collideMode,          flutter, spin
  *   8..15: colour keyframes RGBA (padded with the last colour)
  *  16:  bakeIndex(0 if none), spriteCount, 0, 0
- *  17..19: reserved
+ *  17:  animation(0 FLY..3 HOLD, MODEL only), 0, 0, 0
+ *  18..19: reserved
  * </pre>
  */
 public final class EmitterSpec {
@@ -38,7 +39,12 @@ public final class EmitterSpec {
         /** Existing untextured soft-circle, additive blending — order independent. */
         ADDITIVE(0),
         /** Textured sprite, normal alpha blending — requires GPU depth sorting. */
-        ALPHA(1);
+        ALPHA(1),
+        /**
+         * Instanced 3D model (Allay), fullbright cutout with depth writes —
+         * animation/pose computed in the vertex shader from the header.
+         */
+        MODEL(2);
 
         final int index;
 
@@ -51,7 +57,33 @@ public final class EmitterSpec {
         }
 
         public static Material byIndex(int i) {
-            return i == 1 ? ALPHA : ADDITIVE;
+            return i == 1 ? ALPHA : (i == 2 ? MODEL : ADDITIVE);
+        }
+    }
+
+    /** Procedural pose set for {@link Material#MODEL} emitters (header 17.x). */
+    public enum Animation {
+        /** Vanilla hover: wing flap, bobbing, arm sway (limbSwingAmount from speed). */
+        FLY(0),
+        /** Vanilla jukebox dance: body/head roll, no spin. */
+        DANCE(1),
+        /** Dance pose plus the looping 4-turn spin (vanilla one-shot, re-looped). */
+        SPIN(2),
+        /** Arms raised as if carrying an item (item itself is not rendered). */
+        HOLD(3);
+
+        final int index;
+
+        Animation(int index) {
+            this.index = index;
+        }
+
+        public int index() {
+            return index;
+        }
+
+        public static Animation byIndex(int i) {
+            return i == 1 ? DANCE : (i == 2 ? SPIN : (i == 3 ? HOLD : FLY));
         }
     }
 
@@ -125,6 +157,8 @@ public final class EmitterSpec {
     public final boolean spin;
     /** Number of sprite frames in the atlas (1 = single frame / unsprited). */
     public final int spriteCount;
+    /** Procedural animation for {@link Material#MODEL} emitters. */
+    public final Animation animation;
 
     private final float[] packed;
 
@@ -155,6 +189,7 @@ public final class EmitterSpec {
         this.flutter = b.flutter;
         this.spin = b.spin;
         this.spriteCount = Math.max(1, Math.min(64, b.spriteCount));
+        this.animation = Objects.requireNonNull(b.animation, "animation");
         this.packed = pack();
     }
 
@@ -209,7 +244,9 @@ public final class EmitterSpec {
         f[16 * 4 + 1] = spriteCount;
         f[16 * 4 + 2] = 0f;
         f[16 * 4 + 3] = 0f;
-        // 17..19 stay zero
+        // 17: animation (MODEL only), 0, 0, 0
+        f[17 * 4 + 0] = animation.index();
+        // 18..19 stay zero
         return f;
     }
 
@@ -225,6 +262,16 @@ public final class EmitterSpec {
     public float[] packedWithBake(int slice1Based) {
         float[] f = packed.clone();
         f[16 * 4] = slice1Based;
+        return f;
+    }
+
+    /**
+     * Header copy with the animation id written into vec4 #17.x. Used by the
+     * runtime live-switch override (emitter header re-upload).
+     */
+    public float[] packedWithAnimation(int animationIndex) {
+        float[] f = packed.clone();
+        f[17 * 4] = animationIndex;
         return f;
     }
 
@@ -273,6 +320,7 @@ public final class EmitterSpec {
         private double flutter = 0;
         private boolean spin = false;
         private int spriteCount = 1;
+        private Animation animation = Animation.FLY;
 
         public Builder shape(EmitterShape v) { this.shape = v; return this; }
         public Builder size(double v) { this.size = v; return this; }
@@ -320,6 +368,8 @@ public final class EmitterSpec {
         public Builder flutter(double v) { this.flutter = v; return this; }
         public Builder spin(boolean v) { this.spin = v; return this; }
         public Builder spriteCount(int v) { this.spriteCount = v; return this; }
+        /** Procedural animation for MODEL emitters (default FLY). */
+        public Builder animation(Animation v) { this.animation = v; return this; }
 
         public EmitterSpec build() {
             return new EmitterSpec(this);

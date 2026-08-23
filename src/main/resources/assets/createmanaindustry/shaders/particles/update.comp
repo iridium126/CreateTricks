@@ -1,9 +1,10 @@
 // Particle update: integrates live particles (compaction), preserving the dense
 // prefix invariant of the output buffer. Dead particles drop out. Adds:
 //   - vanilla cherry-style flutter (life-gated horizontal spiral, header 7.z)
-//   - block collision (occupancy 3D texture, axis-separated resolve, header 7.y)
-//   - the indirect instance count is only incremented in the fast path (uSort=0);
-//     in the sorted path keygen.comp owns the per-material draw counts.
+//   - block collision (occupancy 3D texture, axis-separated pre-move sweep,
+//     header 7.y) — when the sweep runs it owns the position update entirely
+//   - keygen.comp owns the per-material draw counts; this pass never touches
+//     the indirect command buffer.
 layout(local_size_x = 64) in;
 
 const int SX = 48;
@@ -12,8 +13,7 @@ const int SZ = 48;
 
 layout(std430, binding = 0) readonly buffer ParticleRead { vec4 data[]; } readBuf;
 layout(std430, binding = 1) buffer ParticleWrite { vec4 data[]; } writeBuf;
-layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
-layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; } counter;
+layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; uint alphaAlive; } counter;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = 11) readonly buffer BakeMetaBuf { vec4 m[]; } bakeMeta;
 
@@ -22,7 +22,6 @@ layout(binding = 0) uniform sampler3D uCollision;
 uniform uint uAliveRead;
 uniform uint uCapacity;
 uniform float uDt;
-uniform uint uSort;        // 1 = sorted path (keygen owns counts)
 uniform int  uCollisionOn; // 1 = collision texture/SSBO bound & valid
 
 bool solidAt(vec3 wp, vec3 mOrigin, int slice) {
@@ -80,10 +79,15 @@ void main() {
         vel.z += sin(ang) * acc * uDt;
     }
 
-    pos += vel * uDt;
-    age += uDt;
-
-    // ---- block collision: axis-separated resolve on the occupancy volume ----
+    // ---- block collision: axis-separated sweep from the PRE-move position ----
+    // Each axis tests one step ahead; a blocked axis zeroes its velocity and
+    // keeps the particle in place, a free axis advances exactly vel*uDt. The
+    // sweep fully owns the position update when it runs, so the plain Euler
+    // integration below is skipped — with and without collision a frame moves
+    // exactly vel*uDt (the old code integrated first and then swept from the
+    // already-moved position, doubling the speed and tunnelling into blocks).
+    bool swept = false;
+    bool landed = false;
     float bakeS = emitters.u[hb + 16u].x;
     float collideMode = emitters.u[hb + 7u].y;
     if (uCollisionOn == 1 && bakeS > 0.5 && collideMode > 0.5) {
@@ -91,39 +95,47 @@ void main() {
         vec3 mOrigin = bakeMeta.m[slice].xyz;
         float presence = bakeMeta.m[slice].w;
         if (presence > 0.5) {
+            swept = true;
             float sx = vel.x * uDt;
             if (sx != 0.0) {
-                vec3 cand = pos + vec3(sx, 0.0, 0.0);
-                if (solidAt(cand, mOrigin, slice))
+                if (solidAt(pos + vec3(sx, 0.0, 0.0), mOrigin, slice))
                     vel.x = 0.0;
                 else
-                    pos.x = cand.x;
+                    pos.x += sx;
             }
-            bool landed = false;
             float sy = vel.y * uDt;
             if (sy != 0.0) {
-                vec3 cand = pos + vec3(0.0, sy, 0.0);
-                if (solidAt(cand, mOrigin, slice)) {
+                if (solidAt(pos + vec3(0.0, sy, 0.0), mOrigin, slice)) {
                     vel.y = 0.0;
-                    if (sy < 0.0)
+                    if (sy < 0.0) {
                         landed = true;
+                        // if the blocked step's target voxel is the voxel the
+                        // particle already sits in (spawned inside a block),
+                        // pop it up onto that voxel's top face
+                        float top = floor(pos.y + sy + 0.0001) + 1.0;
+                        pos.y = max(pos.y, top);
+                    }
                 } else {
-                    pos.y = cand.y;
+                    pos.y += sy;
                 }
             }
             float sz = vel.z * uDt;
             if (sz != 0.0) {
-                vec3 cand = pos + vec3(0.0, 0.0, sz);
-                if (solidAt(cand, mOrigin, slice))
+                if (solidAt(pos + vec3(0.0, 0.0, sz), mOrigin, slice))
                     vel.z = 0.0;
                 else
-                    pos.z = cand.z;
+                    pos.z += sz;
             }
-            // DIE_ON_GROUND (cherry): draw the landing frame once, gone next tick.
-            if (collideMode > 1.5 && landed)
-                age = maxLife;
         }
     }
+
+    if (!swept)
+        pos += vel * uDt;
+    age += uDt;
+
+    // DIE_ON_GROUND (cherry): draw the landing frame once, gone next tick.
+    if (collideMode > 1.5 && landed)
+        age = maxLife;
 
     uint slot = atomicAdd(counter.writeSlot, 1u);
     if (slot >= uCapacity)
@@ -134,7 +146,4 @@ void main() {
     writeBuf.data[wb + 1u] = vec4(vel, p1.w);
     writeBuf.data[wb + 2u] = p2;
     writeBuf.data[wb + 3u] = vec4(age, p3.y, p3.z, p3.w);
-
-    if (uSort == 0u)
-        atomicAdd(indirect.cmd[0].y, 1u);
 }

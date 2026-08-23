@@ -19,5 +19,7 @@ void main() {
     float farFade = 1.0 - smoothstep(uFadeDist, uFadeDist + 24.0, vDist);
     alpha *= farFade;
     vec3 col = vColor * (alpha * uGlow);
-    fragColor = vec4(col, 1.0);
+    // alpha 0.0: with (ONE, ONE) alpha blending this leaves the destination's
+    // alpha channel untouched instead of accumulating 1 per overlapping quad.
+    fragColor = vec4(col, 0.0);
 }

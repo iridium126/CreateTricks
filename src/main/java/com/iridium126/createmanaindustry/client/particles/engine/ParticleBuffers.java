@@ -17,7 +17,7 @@ import org.lwjgl.opengl.GL43;
  * Owns all GPU resources of the particle engine: the double-buffered particle
  * SSBOs (64 B/particle = 4 vec4), the emit-command ring, the emitter header
  * SSBO, the indirect draw command buffer (two commands: additive + sorted alpha),
- * the counter ring, the LSD-radix sort data/histogram/offset buffers, and the
+ * the counter ring, the counting-sort data/histogram/offset buffers, and the
  * collision bake-meta SSBO — plus the packless vertex array used for the
  * instanced draw.
  * <p>
@@ -41,10 +41,10 @@ public final class ParticleBuffers {
      * previous frame's value plenty of margin before it is reused.
      */
     public static final int COUNTER_RING = 4;
-    /** Number of draw commands in the indirect buffer (additive, alpha). */
-    public static final int INDIRECT_COMMANDS = 2;
-    /** LSD radix sort passes over the 24-bit depth key (8 bits each). */
-    public static final int RADIX_PASSES = 3;
+    /** Number of draw commands in the indirect buffer (additive, alpha, model). */
+    public static final int INDIRECT_COMMANDS = 3;
+    /** Counting-sort passes over the 8-bit depth-band key (one, by design). */
+    public static final int RADIX_PASSES = 1;
     /** Radix digit size (bins). */
     public static final int RADIX_BINS = 256;
 
@@ -63,6 +63,10 @@ public final class ParticleBuffers {
     public static final int HIST_BINDING = 9;
     public static final int OFFSET_BINDING = 10;
     public static final int BAKEMETA_BINDING = 11;
+    /** Static baked model geometry (flat float array, MODEL particles). */
+    public static final int MODELGEO_BINDING = 12;
+    /** Dense permutation of visible MODEL particles (keygen's third bucket). */
+    public static final int ORDERMODEL_BINDING = 13;
 
     private final int[] particleSSBOs = new int[2];
     private final int[] emitSSBOs = new int[EMIT_RING_SIZE];
@@ -74,6 +78,8 @@ public final class ParticleBuffers {
     private int histSSBO = -1;
     private int offsetSSBO = -1;
     private int bakeMetaSSBO = -1;
+    private int modelGeoSSBO = -1;
+    private int orderModelSSBO = -1;
     private int vao = -1;
 
     private int readIndex = 0;
@@ -85,10 +91,14 @@ public final class ParticleBuffers {
     private float[] emitterMirror;
     private boolean emittersDirty = false;
 
-    // Reusable scratch for tiny uploads: indirect commands (8 ints = 32 B) and
-    // counter pair (2 ints); 32 bytes covers both safely.
-    private final ByteBuffer tmp4 = BufferUtils.createByteBuffer(32);
+    // Reusable scratch for tiny uploads: the initial indirect payload is the
+    // largest writer (INDIRECT_COMMANDS x 16 B = 48 B); 64 B covers it and the
+    // counter pairs with headroom.
+    private final ByteBuffer tmp4 = BufferUtils.createByteBuffer(64);
     private final ByteBuffer zero1024 = BufferUtils.createByteBuffer(1024);
+    /** Matches the "major.minor" prefix of a GL_VERSION string. */
+    private static final java.util.regex.Pattern GL_VERSION_PATTERN =
+            java.util.regex.Pattern.compile("(\\d+)\\.(\\d+)");
 
     // Dedicated read-back targets: glGetBufferSubData reads exactly
     // buffer.remaining() bytes, so these must be sized to the value widths.
@@ -100,6 +110,22 @@ public final class ParticleBuffers {
      * provide a usable SSBO capacity or the max-width it supports is tiny.
      */
     public boolean init(int maxParticles, int maxEmitters) {
+        // The pipeline needs OpenGL 4.3 (compute shaders + robust SSBOs). On an
+        // older context the SSBO-size query below would just return 0/garbage —
+        // fail with a clear message instead so the engine disables cleanly.
+        String glVersion = GL11.glGetString(GL11.GL_VERSION);
+        if (glVersion != null) {
+            java.util.regex.Matcher m = GL_VERSION_PATTERN.matcher(glVersion);
+            if (m.find()) {
+                int major = Integer.parseInt(m.group(1));
+                int minor = Integer.parseInt(m.group(2));
+                if (major < 4 || (major == 4 && minor < 3)) {
+                    CreateManaIndustry.LOGGER.warn(
+                            "[CMI particles] OpenGL {}.{} found, compute shaders need 4.3+; engine disabled", major, minor);
+                    return false;
+                }
+            }
+        }
         int maxSSBO = GL11.glGetInteger(GL43.GL_MAX_SHADER_STORAGE_BLOCK_SIZE);
         int cap = Math.min(maxParticles, Math.max(0, maxSSBO / BYTES_PER_PARTICLE));
         if (cap < 1000) {
@@ -130,6 +156,8 @@ public final class ParticleBuffers {
         }
         // Additive permutation (dense, uint per additive particle).
         this.orderAddSSBO = createBuffer(cap * 4L, null);
+        // Model permutation (dense, uint per visible MODEL particle).
+        this.orderModelSSBO = createBuffer(cap * 4L, null);
         this.histSSBO = createBuffer((long) RADIX_BINS * 4, null);
         this.offsetSSBO = createBuffer((long) RADIX_BINS * 4, null);
         this.bakeMetaSSBO = createBuffer(CollisionBake.MAX_SLICES * 16L, null);
@@ -236,6 +264,37 @@ public final class ParticleBuffers {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, ORDERADD_BINDING, this.orderAddSSBO);
     }
 
+    /** Binds the model-permutation buffer at its fixed binding for keygen/draw. */
+    public void bindOrderModel() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, ORDERMODEL_BINDING, this.orderModelSSBO);
+    }
+
+    /** Binds the static model geometry for the model draw pass (must be re-bound every frame — see {@link #unbindShaders()}). */
+    public void bindModelGeo() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, MODELGEO_BINDING, this.modelGeoSSBO);
+    }
+
+    /**
+     * Uploads the static baked model geometry (flat float array, see
+     * {@link AllayModelGeometry#VERTEX_FLOATS} stride) once after init, and
+     * rewrites draw command 2's vertexCount to the baked vertex count (the
+     * model pass instances a fixed mesh, not 6-vertex billboards).
+     */
+    public void uploadModelGeometry(float[] baked) {
+        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            FloatBuffer buf = stack.mallocFloat(baked.length);
+            buf.put(baked).flip();
+            this.modelGeoSSBO = createBuffer(4L * baked.length, buf);
+        }
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, MODELGEO_BINDING, this.modelGeoSSBO);
+
+        this.tmp4.clear();
+        this.tmp4.putInt(baked.length / AllayModelGeometry.VERTEX_FLOATS).putInt(0).putInt(0).putInt(0);
+        this.tmp4.flip();
+        GL30.glBindBuffer(GL40.GL_DRAW_INDIRECT_BUFFER, this.indirectSSBO);
+        GL15.glBufferSubData(GL40.GL_DRAW_INDIRECT_BUFFER, 2L * 16, this.tmp4);
+    }
+
     public void bindHist() {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, HIST_BINDING, this.histSSBO);
     }
@@ -267,8 +326,10 @@ public final class ParticleBuffers {
     /**
      * Reads the previous frame's counters from the given ring slot in one
      * non-blocking (lagged) 8-byte readback: {@code {writeSlot, spare}} =
-     * {@code {liveCount, alphaCount}}. The alpha count is written into
-     * {@code spare} by {@code capture.comp} at the end of each frame.
+     * {@code {liveCount, alphaCensus}}. The alpha census is UNculled (every
+     * live alpha particle, off-screen included) — keygen counts it before the
+     * frustum test and {@code capture.comp} copies it into {@code spare} at
+     * the end of each frame.
      */
     public int[] readbackCounts(int slot) {
         this.readTmp8.clear();
@@ -336,7 +397,7 @@ public final class ParticleBuffers {
      * the world's rendering after our frame.
      */
     public void unbindShaders() {
-        for (int i = 0; i <= 12; i++) {
+        for (int i = 0; i <= 13; i++) {
             GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, i, 0);
         }
     }
@@ -375,6 +436,10 @@ public final class ParticleBuffers {
                 GL15.glDeleteBuffers(id);
         if (this.orderAddSSBO > 0)
             GL15.glDeleteBuffers(this.orderAddSSBO);
+        if (this.orderModelSSBO > 0)
+            GL15.glDeleteBuffers(this.orderModelSSBO);
+        if (this.modelGeoSSBO > 0)
+            GL15.glDeleteBuffers(this.modelGeoSSBO);
         if (this.histSSBO > 0)
             GL15.glDeleteBuffers(this.histSSBO);
         if (this.offsetSSBO > 0)

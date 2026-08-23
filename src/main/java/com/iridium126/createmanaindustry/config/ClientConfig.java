@@ -46,7 +46,8 @@ public final class ClientConfig {
 
         BUILDER.comment("GPU particle engine options.").push("particles");
         PARTICLE_ENABLED = BUILDER
-                .comment("Master switch for the GPU particle engine (requires Veil).")
+                .comment("Master switch for the GPU particle engine (self-hosted GL, no Veil needed). "
+                        + "Turning it off drops all live particles immediately.")
                 .define("enabled", true);
         PARTICLE_MAX_COUNT = BUILDER
                 .comment("Maximum live particles allocated in GPU memory (64 bytes each, double-buffered). "

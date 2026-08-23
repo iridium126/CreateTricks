@@ -23,8 +23,10 @@ import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 import org.lwjgl.opengl.GL13;
+import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL33;
 import org.lwjgl.opengl.GL42;
 import org.lwjgl.opengl.GL43;
 import org.lwjgl.system.MemoryStack;
@@ -41,11 +43,13 @@ import org.lwjgl.system.MemoryStack;
  *   <li><b>Fast</b> (no ALPHA emitters ever used): matches the original engine —
  *       particles drawn by {@code gl_InstanceID} straight from the write pool.</li>
  *   <li><b>Sorted</b> (any ALPHA emitter): after update/emit, {@code keygen}
- *       writes (key,index) pairs into the sort buffer with a material-major,
- *       view-depth key; an LSD radix sort orders the permutation; the pool is
- *       then drawn in two ranges (additive first, alpha back-to-front) through
- *       the permutation. ALPHA particles sample a sprite atlas; colliding
- *       emitters also resolve against a 3D occupancy bake in the update pass.</li>
+ *       writes (key,index) pairs into the sort buffer — an inverted 8-bit
+ *       view-depth band so far particles get small keys; a single-pass GPU
+ *       counting sort (histogram/scan/scatter) orders the permutation
+ *       back-to-front; the pool is then drawn in two ranges (additive first,
+ *       alpha back-to-front) through the permutation. ALPHA particles sample a
+ *       sprite atlas; colliding emitters also resolve against a 3D occupancy
+ *       bake in the update pass.</li>
  * </ul>
  * All GL programs are created from the mod's bundled GLSL with raw LWJGL
  * ({@link ParticlePrograms}) — no dependency on Veil's shader manager.
@@ -57,8 +61,16 @@ public final class CMIParticleEngine {
     private static final int MAX_EMITTERS = 128;
     private static final int SAFETY_MARGIN = 2048;
     private static final float DEFAULT_FADE_DIST = 40.0f;
-    private static final float SORT_MAX_DEPTH = 2048.0f;
-    private static final int RADIX_SHIFTS[] = { 0, 8, 16 }; // 24-bit depth key
+    /**
+     * Depth range of the alpha sort key. Particles are fully faded at
+     * DEFAULT_FADE_DIST + 24 = 64 blocks, so the 256 counting-sort bands are
+     * 0.25 blocks wide — beyond this range finer ordering is invisible.
+     */
+    private static final float SORT_MAX_DEPTH = 64.0f;
+    /** Counting-sort passes over the 8-bit band key. */
+    private static final int RADIX_SHIFTS[] = { 0 };
+    /** GL_TIME_ELAPSED query ring — reads a 3-frame-old sample, never blocking. */
+    private static final int TIMER_RING = 4;
 
     /** One-shot burst request posted from a client thread. */
     private static final class Burst {
@@ -123,6 +135,12 @@ public final class CMIParticleEngine {
     private int simFrame = 0;
     private int frameSeed = 0;
     private long lastErrorTime = 0;
+    private final int[] timerQueries = new int[TIMER_RING];
+    private int timerSlot = 0;
+    private int timerIssued = 0;
+    private boolean timerReady = false;
+    /** Last completed GPU-side frame cost (ms), 3 frames lagged; 0 = none yet. */
+    private double lastGpuMs = 0;
 
     private CMIParticleEngine() {
     }
@@ -186,6 +204,13 @@ public final class CMIParticleEngine {
             CreateManaIndustry.LOGGER.warn("[CMI particles] GPU free failed", e);
         }
         this.programs.delete();
+        if (this.timerReady) {
+            GL15.glDeleteQueries(this.timerQueries);
+            this.timerReady = false;
+        }
+        this.timerSlot = 0;
+        this.timerIssued = 0;
+        this.lastGpuMs = 0;
         try {
             this.cherryAtlas.free();
             this.collisionBake.free();
@@ -224,6 +249,13 @@ public final class CMIParticleEngine {
     public void renderFrame(Camera camera, Matrix4fc view, Matrix4fc projectionMatrix, DeltaTracker deltaTracker) {
         if (this.disabled)
             return;
+        if (!ClientConfig.particleEnabled) {
+            // Master switch off: drop live particles/streams so nothing lingers
+            // (we are on the render thread, GPU state is ours to touch).
+            if (this.initialized)
+                dropAll();
+            return;
+        }
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null)
             return;
@@ -258,8 +290,23 @@ public final class CMIParticleEngine {
                 CreateManaIndustry.LOGGER.error("[CMI particles] frame failed", e);
             }
         }
-        this.profiler.record((System.nanoTime() - t0) / 1_000_000.0, ClientConfig.particleAutoThrottle);
+        // Prefer the (lagged) GPU-side cost; fall back to CPU submit time until
+        // the first timer query has completed.
+        this.profiler.record(this.lastGpuMs > 0 ? this.lastGpuMs : (System.nanoTime() - t0) / 1_000_000.0,
+                ClientConfig.particleAutoThrottle);
         this.scale = this.profiler.emissionScale();
+    }
+
+    /** Clears every particle, stream and queued request (render thread only). */
+    private void dropAll() {
+        this.pending.clear();
+        this.streams.clear();
+        this.gpu.clearParticles();
+        this.aliveRead = 0;
+        this.prevAlpha = 0;
+        this.liveDisplay = 0;
+        this.streamCount = 0;
+        this.profiler.reset();
     }
 
     private void runFrame(Camera camera, Matrix4fc view, Matrix4fc projectionMatrix, DeltaTracker deltaTracker) {
@@ -384,11 +431,15 @@ public final class CMIParticleEngine {
         this.gpu.uploadDirtyEmitters();
         if (entryCount > 0) {
             this.emitFront.clear();
+            int prefix = 0;
             for (int i = 0; i < entryCount; i++) {
                 Vec3 o = this.emitOrigins[i];
                 float seed = (((long) this.frameSeed * 2654435761L + i * 73856093L) >>> 8) % 1_000_000 * 0.000001f;
                 this.emitFront.put((float) o.x).put((float) o.y).put((float) o.z).put(this.emitCounts[i]);
-                this.emitFront.put(this.emitIds[i]).put(seed).put(0f).put(0f);
+                // b.z carries the exclusive prefix offset so the shader can
+                // binary-search its command instead of scanning linearly
+                this.emitFront.put(this.emitIds[i]).put(seed).put((float) prefix).put(0f);
+                prefix += this.emitCounts[i];
             }
             this.emitFront.flip();
             this.gpu.uploadEmits(ringId, this.emitFront);
@@ -399,7 +450,13 @@ public final class CMIParticleEngine {
         boolean sorted = (this.prevAlpha > 0) || this.alphaSpawnedThisFrame;
         int sortUInt = sorted ? 1 : 0;
 
-        // 5. Compute passes: reset -> update -> emit.
+        // 5. Compute passes: reset -> update -> emit. The elapsed-time query
+        //    brackets all GPU work (dispatches + draws) of this frame.
+        if (!this.timerReady) {
+            GL15.glGenQueries(this.timerQueries);
+            this.timerReady = true;
+        }
+        GL15.glBeginQuery(GL33.GL_TIME_ELAPSED, this.timerQueries[this.timerSlot]);
         GL20.glUseProgram(this.programs.reset());
         this.gpu.bindIndirect(2);
         this.gpu.bindCounter(3, slot);
@@ -531,6 +588,17 @@ public final class CMIParticleEngine {
         this.gpu.bindCounter(3, slot);
         GL43.glDispatchCompute(1, 1, 1);
         GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
+        GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
+
+        // Collect the oldest query in the ring (issued TIMER_RING-1 frames ago,
+        // virtually always complete): the true GPU-side cost of a frame. Never
+        // blocks — skipped when the GPU is running that far behind.
+        this.timerSlot = (this.timerSlot + 1) % TIMER_RING;
+        if (++this.timerIssued >= TIMER_RING) {
+            int oldest = this.timerQueries[this.timerSlot];
+            if (GL15.glGetQueryObjecti(oldest, GL15.GL_QUERY_RESULT_AVAILABLE) == GL11.GL_TRUE)
+                this.lastGpuMs = (GL15.glGetQueryObjectui(oldest, GL15.GL_QUERY_RESULT) & 0xFFFFFFFFL) / 1_000_000.0;
+        }
 
         // 9. Unbind SSBO bases and release the 3D occupancy texture (unit 0) /
         //    sprite atlas (unit 1); swap the ping-pong pool.
@@ -635,7 +703,9 @@ public final class CMIParticleEngine {
             this.cherryAtlas.ensureLoaded();
         }
         if (spec.collideMode != EmitterSpec.CollideMode.NONE && origin != null) {
-            int bake = this.collisionBake.ensure(spec, origin);
+            // bake slices are anchor-keyed: same-site emitters share, distant
+            // sites get their own slice (no more per-frame re-anchor thrash)
+            int bake = this.collisionBake.ensure(origin);
             Integer prev = this.bakedSliceByEmitter.get(id);
             if (prev == null || prev.intValue() != bake) {
                 this.bakedSliceByEmitter.put(id, bake);

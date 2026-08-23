@@ -17,7 +17,7 @@ import org.lwjgl.opengl.GL43;
  * Owns all GPU resources of the particle engine: the double-buffered particle
  * SSBOs (64 B/particle = 4 vec4), the emit-command ring, the emitter header
  * SSBO, the indirect draw command buffer (two commands: additive + sorted alpha),
- * the counter ring, the LSD-radix sort data/histogram/offset buffers, and the
+ * the counter ring, the counting-sort data/histogram/offset buffers, and the
  * collision bake-meta SSBO — plus the packless vertex array used for the
  * instanced draw.
  * <p>
@@ -43,8 +43,8 @@ public final class ParticleBuffers {
     public static final int COUNTER_RING = 4;
     /** Number of draw commands in the indirect buffer (additive, alpha). */
     public static final int INDIRECT_COMMANDS = 2;
-    /** LSD radix sort passes over the 24-bit depth key (8 bits each). */
-    public static final int RADIX_PASSES = 3;
+    /** Counting-sort passes over the 8-bit depth-band key (one, by design). */
+    public static final int RADIX_PASSES = 1;
     /** Radix digit size (bins). */
     public static final int RADIX_BINS = 256;
 
@@ -89,6 +89,9 @@ public final class ParticleBuffers {
     // counter pair (2 ints); 32 bytes covers both safely.
     private final ByteBuffer tmp4 = BufferUtils.createByteBuffer(32);
     private final ByteBuffer zero1024 = BufferUtils.createByteBuffer(1024);
+    /** Matches the "major.minor" prefix of a GL_VERSION string. */
+    private static final java.util.regex.Pattern GL_VERSION_PATTERN =
+            java.util.regex.Pattern.compile("(\\d+)\\.(\\d+)");
 
     // Dedicated read-back targets: glGetBufferSubData reads exactly
     // buffer.remaining() bytes, so these must be sized to the value widths.
@@ -100,6 +103,22 @@ public final class ParticleBuffers {
      * provide a usable SSBO capacity or the max-width it supports is tiny.
      */
     public boolean init(int maxParticles, int maxEmitters) {
+        // The pipeline needs OpenGL 4.3 (compute shaders + robust SSBOs). On an
+        // older context the SSBO-size query below would just return 0/garbage —
+        // fail with a clear message instead so the engine disables cleanly.
+        String glVersion = GL11.glGetString(GL11.GL_VERSION);
+        if (glVersion != null) {
+            java.util.regex.Matcher m = GL_VERSION_PATTERN.matcher(glVersion);
+            if (m.find()) {
+                int major = Integer.parseInt(m.group(1));
+                int minor = Integer.parseInt(m.group(2));
+                if (major < 4 || (major == 4 && minor < 3)) {
+                    CreateManaIndustry.LOGGER.warn(
+                            "[CMI particles] OpenGL {}.{} found, compute shaders need 4.3+; engine disabled", major, minor);
+                    return false;
+                }
+            }
+        }
         int maxSSBO = GL11.glGetInteger(GL43.GL_MAX_SHADER_STORAGE_BLOCK_SIZE);
         int cap = Math.min(maxParticles, Math.max(0, maxSSBO / BYTES_PER_PARTICLE));
         if (cap < 1000) {

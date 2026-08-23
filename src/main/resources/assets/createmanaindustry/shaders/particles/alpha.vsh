@@ -90,8 +90,8 @@ void main() {
         float t = p3.x;
         float v0 = (hash1(p3.z * 1.31) > 0.5 ? 30.0 : -30.0); // deg/tick
         float a0 = (hash1(p3.z * 2.47) > 0.5 ? 5.0 : -5.0);   // deg/tick^2
-        float v0r = radians(v0 * 20.0);                       // rad/s
-        float a0r = radians(a0 * 20.0);                       // rad/s^2 (20 ticks/s -> deg/s^2 * PI/180)
+        float v0r = radians(v0 * 20.0);                       // deg/tick -> rad/s (x20)
+        float a0r = radians(a0 * 400.0);                      // deg/tick^2 -> rad/s^2 (x20^2)
         roll = p1.w + v0r * t + 0.5 * a0r * t * t;
     } else {
         roll = p1.w;

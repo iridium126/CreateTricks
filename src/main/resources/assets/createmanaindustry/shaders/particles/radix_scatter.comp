@@ -1,5 +1,7 @@
-// LSD radix sort — scatter pass over the ALPHA segment only (bound by the GPU
-// alpha count, indirect.cmd[1].y). sortIn/sortOut are swapped each pass by CPU.
+// Counting-sort scatter pass over the ALPHA segment only (single pass; bound
+// by the GPU alpha count, indirect.cmd[1].y). Within-band order is arbitrary
+// and harmless; bands are ordered far->near by the inverted key. uShift is
+// kept at 0 — the key is one byte wide.
 layout(local_size_x = 64) in;
 
 layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;

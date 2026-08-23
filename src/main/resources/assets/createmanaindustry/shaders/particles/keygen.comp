@@ -1,12 +1,18 @@
 // Partition pass for the two permutation buffers:
 //   - additive particles -> orderAdd[] (dense uint permutation, order irrelevant)
-//   - alpha particles    -> sortData[]  (compact uvec2 (depthKey, index), far->near
-//                                        by the view distance, later LSD-radix sorted)
+//   - alpha particles    -> sortData[]  (compact uvec2 (depthKey, index))
 // The GPU counts (indirect.cmd[0].y / [1].y) are the per-material draw counts, so
 // update/emit must NOT increment them when this partition runs (uSort=1).
+//
+// Depth key: an 8-bit band over the 64-block fade range (particles are fully
+// faded beyond uMaxDepth, so finer resolution is wasted). FAR bands get the
+// SMALL key, so the ascending single-pass counting sort (hist/scan/scatter)
+// orders far particles first — back-to-front compositing. Within one band
+// (0.25 blocks) order is arbitrary, which is visually harmless and removes
+// any LSD-radix stability requirement.
 layout(local_size_x = 64) in;
 
-const uint MAXDISTKEY = 16777215u; // 2^24-1
+const uint DEPTH_BANDS = 256u;
 
 layout(std430, binding = 0) readonly buffer ParticleRead { vec4 data[]; } pool;
 layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
@@ -39,7 +45,8 @@ void main() {
         // view-space depth: negative z is in front of the camera
         vec4 vs = uView * vec4(p0.xyz - uCamPos, 1.0);
         float depth = clamp(-vs.z, 0.0, uMaxDepth);
-        uint key = uint(depth / uMaxDepth * float(MAXDISTKEY));
+        uint band = min(DEPTH_BANDS - 1u, uint(depth / uMaxDepth * float(DEPTH_BANDS)));
+        uint key = (DEPTH_BANDS - 1u) - band; // far -> small key -> drawn first
         uint pos = atomicAdd(indirect.cmd[1].y, 1u);
         sortOut.kv[pos] = uvec2(key, g);
     }

@@ -147,7 +147,7 @@ public final class CMIParticleCommand {
         tell(ctx, "", "§b[CMI particles]§r live=§e" + e.liveCount() + "§r/" + e.capacity()
                 + "  streams=" + e.streamCount()
                 + "  emission=" + Math.round(e.emissionScale() * 100) + "%"
-                + "  frame=" + String.format("%.2f", e.emaMs()) + "ms (budget " + e.budgetMs() + "ms)");
+                + "  gpu=" + String.format("%.2f", e.emaMs()) + "ms (budget " + e.budgetMs() + "ms)");
         return Command.SINGLE_SUCCESS;
     }
 

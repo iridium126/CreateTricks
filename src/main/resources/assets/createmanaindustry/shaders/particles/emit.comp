@@ -4,7 +4,7 @@ layout(local_size_x = 64) in;
 
 struct EmitEntry {
     vec4 a; // origin.xyz, count
-    vec4 b; // emitterId, seed, 0, 0
+    vec4 b; // emitterId, seed, prefixOffset (exclusive), 0
 };
 
 layout(std430, binding = 1) buffer ParticleWrite { vec4 data[]; } writeBuf;
@@ -37,21 +37,22 @@ void main() {
     if (g >= uTotalSpawn)
         return;
 
-    uint acc = 0u;
-    uint entry = uEmitCount;
-    uint inner = 0u;
-    for (uint e = 0u; e < uEmitCount; e++) {
-        uint c = uint(emitCmd.entries[e].a.w);
-        if (g < acc + c) {
-            entry = e;
-            inner = g - acc;
-            break;
-        }
-        acc += c;
+    // Locate our command by binary search over the CPU-written exclusive
+    // prefix offsets (prefix[e] <= g < prefix[e] + count[e]). O(log N) per
+    // thread instead of a linear scan over all entries.
+    uint lo = 0u;
+    uint hi = uEmitCount;
+    while (lo + 1u < hi) {
+        uint mid = (lo + hi) >> 1u;
+        if (uint(emitCmd.entries[mid].b.z) <= g)
+            lo = mid;
+        else
+            hi = mid;
     }
-    if (entry >= uEmitCount)
-        return;
-    EmitEntry et = emitCmd.entries[entry];
+    uint inner = g - uint(emitCmd.entries[lo].b.z);
+    if (inner >= uint(emitCmd.entries[lo].a.w))
+        return; // defensive: g past the last entry's count
+    EmitEntry et = emitCmd.entries[lo];
 
     vec3 origin = et.a.xyz;
     uint eid = uint(et.b.x);
@@ -81,10 +82,13 @@ void main() {
         pos = origin + d * (size * pow(hash1(seed + 6.0), 1.0 / 3.0));
         velDir = d;
     } else {                               // CONE (height `size`, axis = windDir)
-        vec3 axis = normalize(emitters.u[hb + 4u].xyz + vec3(1e-4));
-        vec3 t1 = normalize(cross(axis, vec3(0.0, 1.0, 0.0)));
-        if (dot(t1, t1) < 1e-6)
-            t1 = normalize(cross(axis, vec3(1.0, 0.0, 0.0)));
+        vec3 axis = normalize(emitters.u[hb + 4u].xyz);
+        // Build a tangent frame; guard the axis || +Y case BEFORE normalizing
+        // (normalize of a zero cross product is NaN and would poison the spawn).
+        vec3 side = cross(axis, vec3(0.0, 1.0, 0.0));
+        if (dot(side, side) < 1e-6)
+            side = cross(axis, vec3(1.0, 0.0, 0.0));
+        vec3 t1 = normalize(side);
         vec3 t2 = cross(axis, t1);
         float hgt = size * hash1(seed + 7.0);
         float ang = 6.2831853 * hash1(seed + 8.0);

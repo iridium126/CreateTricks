@@ -22,9 +22,10 @@ import org.lwjgl.opengl.GL43;
  * programs work with or without Veil loaded.
  * <p>
  * Pipeline: reset -> update -> emit (fast additive path) or
- * reset -> update -> emit -> keygen -> radix{hist,scan,scatter} x4 (sorted
- * path with material-major depth sort), then the additive render program and/or
- * the textured alpha render program.
+ * reset -> update -> emit -> keygen -> radix{hist,scan,scatter} x1 (sorted
+ * path: single-pass counting sort over an inverted 8-bit depth band, i.e.
+ * back-to-front), then the additive render program and/or the textured
+ * alpha render program.
  * <p>
  * A {@code #version} header is prepended (raw GL requires one; Veil used to
  * inject it). Programs are rebuilt by {@link #rebuild()} — called lazily on the

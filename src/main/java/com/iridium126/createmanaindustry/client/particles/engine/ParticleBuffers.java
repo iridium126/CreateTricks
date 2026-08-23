@@ -67,6 +67,8 @@ public final class ParticleBuffers {
     public static final int MODELGEO_BINDING = 12;
     /** Dense permutation of visible MODEL particles (keygen's third bucket). */
     public static final int ORDERMODEL_BINDING = 13;
+    /** Previous frame's counter slot, read by update.comp for the GPU-exact live count. */
+    public static final int PREVCOUNTER_BINDING = 14;
 
     private final int[] particleSSBOs = new int[2];
     private final int[] emitSSBOs = new int[EMIT_RING_SIZE];
@@ -236,6 +238,12 @@ public final class ParticleBuffers {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, binding, this.counterSSBOs[slot % COUNTER_RING]);
     }
 
+    /** Binds the PREVIOUS frame's counter slot read-only (update.comp's exact live-count source). */
+    public void bindPrevCounter(int binding, int slot) {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, binding,
+                this.counterSSBOs[(slot + COUNTER_RING - 1) % COUNTER_RING]);
+    }
+
     public void bindEmitters(int binding) {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, binding, this.emitterSSBO);
     }
@@ -324,12 +332,15 @@ public final class ParticleBuffers {
     }
 
     /**
-     * Reads the previous frame's counters from the given ring slot in one
-     * non-blocking (lagged) 8-byte readback: {@code {writeSlot, spare}} =
-     * {@code {liveCount, alphaCensus}}. The alpha census is UNculled (every
-     * live alpha particle, off-screen included) — keygen counts it before the
-     * frustum test and {@code capture.comp} copies it into {@code spare} at
-     * the end of each frame.
+     * Reads one ring slot's counters in an 8-byte readback:
+     * {@code {writeSlot, spare}} = {@code {liveCount, alphaCensus}}. The alpha
+     * census is UNculled (every live alpha particle, off-screen included) —
+     * keygen counts it before the frustum test and {@code capture.comp} copies
+     * it into {@code spare} at the end of each frame.
+     * <p>
+     * <b>Call this only when the fence covering that frame's GL work has
+     * signalled</b> — {@code glGetBufferSubData} is otherwise a CPU-GPU
+     * pipeline stall, however "lagged" the slot is.
      */
     public int[] readbackCounts(int slot) {
         this.readTmp8.clear();
@@ -397,7 +408,7 @@ public final class ParticleBuffers {
      * the world's rendering after our frame.
      */
     public void unbindShaders() {
-        for (int i = 0; i <= 13; i++) {
+        for (int i = 0; i <= PREVCOUNTER_BINDING; i++) {
             GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, i, 0);
         }
     }

@@ -396,8 +396,16 @@ public final class FuelTankConnectivity {
 		recomputeBasins(controllerBE, group);
 		for (BlockPos p : group) {
 			FuelTankBlockEntity part = partAt(type, level, p);
-			if (part != null)
-				part.notifyMultiUpdated();
+			if (part == null)
+				continue;
+			// Absorbed parts never consume their own pending-load state (only a
+			// controller's is read, which recomputeBasins just did — or is
+			// legitimately still pending when the group is not fully loaded). Drop
+			// it now so a stale savedCount cannot answer hasPendingGroupLoad and
+			// hold later merges hostage until neighbour chunks load.
+			if (part != controllerBE)
+				part.clearSavedGroupState();
+			part.notifyMultiUpdated();
 		}
 		controllerBE.sendDataImmediately();
 	}
@@ -517,6 +525,9 @@ public final class FuelTankConnectivity {
 				part.preventConnectivityUpdate();
 				part.setController(cPos);
 				part.count = compSize;
+				// The component's basins are assigned directly below, so any pending
+				// load state on any part (the new controller included) is obsolete.
+				part.clearSavedGroupState();
 			}
 			cBE.count = compSize;
 			cBE.tankInventory.setFluid(FluidStack.EMPTY);
@@ -716,12 +727,7 @@ public final class FuelTankConnectivity {
 				// the current fluid.
 				settle(controller);
 			}
-			controller.savedSurfaces = null;
-			controller.savedCount = null;
-			controller.savedBasins = null;
-			controller.savedHeight = -1;
-			controller.savedMin = null;
-			controller.savedMax = null;
+			controller.clearSavedGroupState();
 			controller.markBasinsDirty();
 			return;
 		}
@@ -1089,7 +1095,14 @@ public final class FuelTankConnectivity {
 					if (in[nb])
 						continue;
 					int s = data.adjHeight[b][nb];
-					boolean join = level < 0
+					// Sentinel test must be the exact sentinel value, not `level < 0`:
+					// a real fill level is negative for underground tanks (Y < 0) and
+					// must take the fill-semantics branch below. (The wrong branch used
+					// to be mostly harmless in practice: a ridge's floor equals its
+					// spill height, so empty ridges still joined, and rebalanceOverSpill
+					// pumped the rest across — only single fills larger than the seed
+					// basin + ridge room diverged.)
+					boolean join = level == Float.NEGATIVE_INFINITY
 							? s <= Math.min(data.surfaces[b], data.surfaces[nb])
 							: data.surfaces[b] > data.basins.get(b).minY
 									&& s <= Math.min(data.surfaces[b], level);

@@ -32,7 +32,7 @@
 | `client/particles/engine/ParticleShaderReloadListener.java` | 客户端资源重载监听（F3+T → 请求重编译着色器） |
 | `client/particles/engine/ParticleAtlas.java` | 自托管 sprite 图集：vanilla `cherry_0..11` 与 `allay_0` 拷入本 mod 资源，`NativeImage` 解码拼 GL 图集，懒加载 |
 | `client/particles/engine/AllayModelGeometry.java` | **MODEL 材质几何烘焙**：原版 `AllayModel.createBodyLayer` 的 8 个立方体 → 扁平 float[]（pos/uv/partId，6 float/顶点，退化的翅膀薄面剔除），UV/绕序与 `ModelPart.Cube` 完全一致 |
-| `client/particles/engine/CollisionBake.java` | 块碰撞占用烘焙：单张 `GL_TEXTURE_3D`（48×32×(48×K)，K=8），按 spec 分配切片、同锚共享、LRU 淘汰、每秒重建 |
+| `client/particles/engine/CollisionBake.java` | 块碰撞占用烘焙：单张 `GL_TEXTURE_3D`（48×32×(48×K)，K=8），按锚点格子分配切片、同锚共享、LRU 淘汰、每秒**后台线程**重建（渲染线程仅解析区块引用与上传） |
 | `client/particles/emitter/EmitterSpec.java` | 不可变发射器规格 + builder；`pack()` 打成 20×vec4 GPU 头（material/collide/flutter/spin/spriteCount/bakeIndex/**animation**） |
 | `client/particles/emitter/EmitterShape.java` | `POINT / BOX / SPHERE / CONE` |
 | `client/particles/emitter/EmitterPresets.java` | 7 个内置蓝本：`mana_spark / ember / ash / soul_flame / mana_burst / cherry_leaves / flood` |
@@ -46,7 +46,7 @@
 | 文件 | 用途 |
 |---|---|
 | `reset.comp` | 1 线程：计数器归零 + 两条间接绘制实例数归零 |
-| `update.comp` | 物理积分（重力/恒加速度/风/阻力/`flutter` 飘摇）、寿命、致密化回收、**块碰撞（占用纹理，积分前轴分离 sweep）**、原子追加 |
+| `update.comp` | 物理积分（重力/恒加速度/风/阻力/`flutter` 飘摇）、寿命、致密化回收、**块碰撞（占用纹理，积分前轴分离 sweep，bakeMeta 每粒子切片扫描）**、原子追加；存活数由 GPU 从上一帧计数槽（binding 14）直读早退 |
 | `emit.comp` | 读 CPU 发射命令（按 b.z 前缀偏移二分定位），按形状/随机初始化新粒子 |
 | `keygen.comp` | **每帧运行**（兼作快路径的剔除 pass）：先做 **GPU 视锥剔除**（粒子球 vs CPU 从 Proj×View 提取的 6 归一化平面），再按材质**三桶**分派：additive→`orderAdd`、alpha→`sortData`（`key = 255 − 对数深度带`，远带小 key → 升序即远→近）、model→`orderModel`；原子累计三条间接命令实例数 + 未剔除 alpha 计数（`counter.alphaAlive`） |
 | `radix_hist.comp` / `radix_scan.comp` / `radix_scatter.comp` | **单趟 8-bit 深度带计数排序**三阶段（直方图 → 256 线程排他前缀和 → 散列）；同带内乱序无害 |
@@ -88,7 +88,8 @@
 
 ```
 1. 清空/合并客户端请求（pending 队列：burst / stream / clear）
-2. 从计数器环读上一帧 slot → aliveRead
+2. 轮询帧末 fence：就绪才回读计数快照 {aliveKnown, alphaKnown}（未就绪用旧快照，
+   CPU 侧发射增量维持派发上界；`glGetBufferSubData` 只在 fence 就绪后调用，杜绝流水线停等）
 3. 按节流 scale 构建发射命令（bursts + streams），按剩余容量裁剪
 4. upload 发射命令到环槽；若发射器头脏则整块增量上传
 5. compute：reset(1线程) → update(aliveRead 线程) → emit(totalSpawn 线程)
@@ -98,10 +99,10 @@
 7. 解绑 SSBO base 0-11；swap ping-pong；GPU 计时回读 → 节流更新
 ```
 
-### 排序路径（存在 ALPHA 粒子时，由 lagged prevAlpha / 本帧 alpha 发射 逐帧判定）
+### 排序路径（存在 ALPHA 粒子时，由 alpha 闩锁判定：发射置位、新鲜普查为 0 才清位）
 
 ```
-0. 帧首从计数器环滞回读 {alive, 未剔除 alpha 计数} → aliveRead、prevAlpha
+0. 帧首轮询 fence → 新鲜快照 {aliveKnown, 未剔除 alpha 普查}（未就绪保持旧快照）
 1..5. 同快速路径；update 额外做 flutter 飘摇 + 块碰撞（update/emit 恒不累加
    间接实例数——keygen 独占计数）
 6. keygen=partition(sortUpper 上界)：视锥剔除后 additive→orderAdd[atomicAdd(cmd0.y)]=g；
@@ -115,9 +116,9 @@
 ```
 
 - 致密前缀不变量：写缓冲 `[0, liveCount)` 恒为全部存活粒子；死粒子在 update 中被跳过即移除
-- 存活计数走**原子计数器环**（×4）：本帧写 `simFrame%4`，回读 `(simFrame-1)%4`（上一帧应产生的最终值），消除“读-再-改同一缓冲”
+- 存活计数走**原子计数器环**（×4）：本帧写 `simFrame%4`；CPU 不再逐帧阻塞回读——帧末 `glFenceSync`，下帧零超时轮询，就绪才读该槽 `{writeSlot, spare}`（消除"读-再-改同一缓冲"竞态的同时消除 CPU-GPU 流水线停等）。GPU 侧 update.comp 经 binding 14 直读上一帧槽的 writeSlot 做精确早退，CPU 只需"快照 + 发射增量"上界派发（死亡只减不增，上界恒安全）
 - 发射线程用 `g >= uTotalSpawn` 提前返回；`atomicAdd` 分配槽位，`slot >= uCapacity` 丢弃（CPU 侧已预留 2048 安全余量，理论上不触发）
-- **双模回退**：`sorted = (prevAlpha>0) || 本帧有 alpha 发射`，prevAlpha 为**未剔除** alpha 计数（相机转开再转回不会欠派发）；无 alpha 时跳过 radix/alpha 绘制——keygen 本身两条路径都跑（快路径的剔除 pass）
+- **双模回退**：`sorted = alphaLatched`（发射 alpha 置位，仅新鲜快照普查为 0 清位），普查为**未剔除** alpha 计数（相机转开再转回不会欠派发）；无 alpha 时跳过 radix/alpha 绘制——keygen 本身两条路径都跑（快路径的剔除 pass）
 - 排序 key 为 **8-bit 对数深度带**（[1, far] 上量化，far = ceil(fade+24) 取 2 的幂，随 `fadeDistance` 配置自适应；~2%/带相对分辨率，近细远粗与感知一致）；计数排序只排 alpha 段，real work ∝ alphaCount；同带内乱序无害 → 无需 LSD 多趟与稳定性
 - **GPU 视锥剔除**：keygen 内对每粒子做球测试（保守半径 = max(sizeStart,sizeEnd)×尺寸倍数），平面由 CPU 从 Proj×View 按 Gribb–Hartmann 提取并归一化上传；屏幕外粒子不进排列、不进顶点着色（典型省 50–75% 实例）
 
@@ -139,7 +140,7 @@
 | 可见距离 | `fadeDistance` 配置（16..256，默认 96；+24 渐变后全隐） | 排序远平面 = ceil(fade+24) 取 2 的幂自适应，配置再高也不会出现“可见但排序范围不足”；不做原版雾匹配（低视距+高 fade 时粒子与雾化地形会有边界，已知取舍） |
 | MODEL 材质 | **Allay 实例化**：几何静态烘焙 SSBO + `setupAnim` GLSL 直译（FLY/DANCE/SPIN/HOLD，动画 id 在头 vec4 17，`/cmip anim` 热切换走 pending 队列 → 头增量重上传，存活粒子下帧生效）；全亮（vanilla `getBlockLightLevel=15`）+ cutout（alpha<0.5 丢弃）+ **写深度**（自遮挡/互挡正确）；绘制顺序 model→additive→alpha，模型段关混合开深度写、禁用背面剔除（绕序无关）；朝向=水平速度方向（低速回退 seed 朝向+慢漂移），身高=2×size（默认 0.66 格）；~204 顶点/只，无硬上限靠 autoThrottle | 3D 模型必须写深度否则部件穿插错序（billboard 的“不写深度”约定不适用）；全亮是 vanilla 事实而非风格选择；持物渲染留作后续（SSBO arena 纯增量） |
 | 双模回退 | lagged `prevAlpha`（capture 写入 counter.spare，下帧非阻塞滞回读）判定 `sortedDraw` | alpha 死光自动回恒等快路径，消除“永久排序路径”开销；无新增同步点 |
-| 块碰撞 | 3D 占用纹理（48×32×48/K 切片） + **积分前** X/Y/Z 轴分离 sweep | 真 SDF 距离场成本高；占用纹理实现快、够用，后需可升级。sweep 必须从移动前位置起测：曾放在 `pos += vel*dt` 之后，导致无碰撞时速度×2、受阻时嵌入方块 |
+| 块碰撞 | 3D 占用纹理（48×32×48/K 切片） + **积分前** X/Y/Z 轴分离 sweep；**切片由 update.comp 每粒子按包含关系扫描 bakeMeta 选择**（头不携带位置状态，同 spec 多 site 不互抢） | 真 SDF 距离场成本高；占用纹理实现快、够用，后需可升级。sweep 必须从移动前位置起测：曾放在 `pos += vel*dt` 之后，导致无碰撞时速度×2、受阻时嵌入方块 |
 | cherry_leaves | 忠实复刻 `CherryParticle`：300t 寿命/0.3 块/s² 重力/0.075 尺寸/flutter 螺旋/±30°自旋/12 帧/触地移除 | flutter 换算成块/s²（×1.0 系数）；自旋/选帧在 vsh 由 seed 解析，不占粒子数据 |
 | 亮度预算 | 每发射器 `glow` 生效（F1）+ 关键帧 alpha（F2） | 预设已按不洗白重调：`mana_spark 1.1 / soul_flame 1.4 / mana_burst 1.2 / ember 0.9 / ash 0.6 / flood 0.7` |
 
@@ -168,6 +169,10 @@
 22. **回归：`INDIRECT_COMMANDS` 2→3 后 `tmp4`（32 B）写 3×16=48 B 初始命令 → `BufferOverflowException`、GPU init 失败**（踩坑 #1 同款：容量常量与命令数解耦）。`tmp4` 扩至 64 B；教训：`tmp4` 容量必须 ≥ `INDIRECT_COMMANDS × 16`
 23. **症状"所有粒子不可见"（live 正常、`gpu≈0.0x ms`）：手写 Gribb–Hartmann 平面提取取错了 JOML 矩阵元素**——`mAB()` 是**列 A 行 B**约定，取"第 3 行"应读 `m03/m13/m23/m33`，误取了第 3 列 `m30/m31/m32/m33`（平移列）→ 垃圾平面把所有粒子判为屏幕外，keygen 全部剔除（实例数 0）。改用 JOML 内置 `Matrix4f.frustumPlane(i, Vector4f)`（同算法、约定免疫）+ 手动归一化。**诊断特征**：存活计数正常但 GPU 耗时趋近于零 = 剔除/绘制段产出为零
 24. **症状"仅 MODEL 不可见（首帧闪现后消失）"：模型几何 SSBO（binding 12）只在 init 上传时绑定过一次，而 `unbindShaders()` 每帧把 binding 0..13 全清**——其余绑定（粒子池/发射器头/orderAdd/orderModel/sort）都在各自 pass 每帧重绑，唯独几何漏了 → 第 2 帧起顶点拉取落空、draw 静默失败。修复：`drawModels` 每帧 `bindModelGeo()`。**纪律**：新增任何常驻 SSBO 绑定，必须在消费它的 pass 里每帧重绑（`unbindShaders` 全清是卫生约定）
+25. **审查修复：计数回读是隐式 CPU-GPU 同步点** → `glGetBufferSubData` 每帧在帧首强等 GPU 队列（"滞后一帧"只消除了与本帧 reset 的竞态，并非非阻塞）；bench 过载时恰在最需要节流数据的时刻卡住渲染线程。改为**GPU 自持计数 + fence 懒快照**：update.comp 经 binding 14 直读上一帧计数槽的 writeSlot 精确早退（CPU 只派发上界，超派发线程零成本退出）；CPU 快照走 `glFenceSync` 零超时轮询，未就绪时用「旧快照 + CPU 侧发射增量」推上界（死亡只减不增，上界恒安全）；sorted 双模判定改闩锁（alpha 发射置位、新鲜普查为 0 才清位），fence 滞后不会出现 alpha 粒子漏画帧
+26. **审查修复：发射器头 bakeIndex 与位置身份冲突** → 头按 spec 去重但 bakeIndex 是世界位置相关的量：同 spec 双远距 site 同时流式发射时，两 site 每帧轮流改写同一头的 bakeIndex（碰撞隔帧失效，/cmip 单点演示不可见、接入玩法必炸）。碰撞切片改为**每粒子 GPU 端选择**：update.comp 扫 bakeMeta 8 切片，取「presence=1 且 48³ 体积包含粒子坐标」的第一片做 sweep；头不再携带任何世界位置状态（16.x 废弃为保留位，`packedWithBake` 与 `bakedSliceByEmitter` 删除），附带消除 `packedWithAnimation`/`packedWithBake` 互不清空的隐患；语义改进：漂出自己体积、落入其他 site 体积的粒子会在该处继续碰撞
+27. **审查修复：uniform 位置每帧重查** → ~30 次/帧 `glGetUniformLocation` 驱动调用（每次 uniform 设置都走 `loc()`）；改为两级 Map 缓存（program id → name → location，`computeIfAbsent` 惰性填充），程序重建（F3+T）与引擎关闭时清空——链接后位置恒定，缓存一次终身有效
+28. **审查修复：碰撞烘焙 73k 次 getBlockState 跑在渲染线程** → 每片重建 ~毫秒级尖峰，正是帧预算的竞争者。移到后台守护线程（同时至多 1 片在途）：**渲染线程仅解析所覆盖区块的 `LevelChunk` 引用**（客户端区块映射不可被非渲染线程遍历，捕获引用后工作线程只做纯数组读，卸载的区块靠引用存活、读到旧数据无害——体秒级刷新本就是快照语义）；成品体素回渲染线程上传 GL；跨维/换世界/切片被逐出的过期结果直接丢弃（切片保持 dirty 自然重试），工作线程异常同样返回空由下轮重试
 
 ---
 
@@ -196,7 +201,7 @@
 - 每帧 GPU（快速路径）：reset/update/emit 3 次极小 compute + 1 次间接绘制；空载 `gpu≈0.0x ms`
 - 每帧 GPU（排序路径）：reset/update/emit + keygen + 计数排序（hist/scan/scatter 各 1 次）共 ~7 次小 compute + 2 次间接绘制；alpha 粒子不多时开销仍极小
 - 帧耗时计量：`GL_TIME_ELAPSED` 查询环（×4，读 3 帧前样本，`GL_QUERY_RESULT_AVAILABLE` 不阻塞），GPU 真实耗时而非 CPU 提交耗时
-- 碰撞烘焙：每帧最多重建 1 片（73k 次 getBlockState，~ms 级），8 片满载按 LRU 轮换无尖峰
+- 碰撞烘焙：后台单守护线程，同时至多 1 片在重建（73k 次 getBlockState 不占渲染线程；渲染线程仅解析所覆盖区块的引用并上传 73KB 成品体素），8 片满载按 LRU 轮换无尖峰
 - 节流：EMA（0.9/0.1）+ 迟滞（>预算 ×0.85 降 / <预算×0.5 ×1.05 升，钳制 0.05..1）
 - 验收：默认预算 2M 时 1440p ≥60fps、更新+绘制 ≤5ms（中端卡）；`/cmip bench 1000000` 可压测
 

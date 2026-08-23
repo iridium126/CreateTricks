@@ -24,6 +24,8 @@ import org.lwjgl.opengl.GL30;
 public final class ParticleAtlas {
 
     public static final ParticleAtlas CHERRY = new ParticleAtlas("cherry", 4, 3, 12);
+    /** Single 32x32 frame: the vanilla allay entity texture (for MODEL particles). */
+    public static final ParticleAtlas ALLAY = new ParticleAtlas("allay", 1, 1, 1);
 
     private final String baseName;
     private final int cols;

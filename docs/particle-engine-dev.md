@@ -3,7 +3,7 @@
 > 模组：CreateManaIndustry（机械动力：魔法工业）
 > 版本基线：`0.2.3-fix`（Minecraft 1.21.1 / NeoForge 21.1.227 / Java 21）
 > 状态：**可用**（用户实测：开/关光影包均正常显示粒子；流时长=真实秒数；编译打包通过）
-> 本轮新增：**ALPHA 材质（带贴图）+ GPU LSD 深度排序 + 块碰撞（3D 占用纹理）**，并用 `cherry_leaves` 预设忠实复刻了原版樱花粒子作为集成演示。
+> 本轮新增：**MODEL 材质——每粒子实例化渲染 vanilla Allay 模型**（SSBO 顶点拉取 + GLSL 移植 `setupAnim`，FLY/DANCE/SPIN/HOLD 四动画，`/cmip anim` 存活期热切换，全亮 cutout + 深度写入）；此前：ALPHA 材质 + GPU 深度排序（单趟计数排序）+ 块碰撞 + GPU 视锥剔除 + 可配淡出距离。
 
 ---
 
@@ -26,13 +26,14 @@
 | 文件 | 职责 |
 |---|---|
 | `client/particles/engine/CMIParticleEngine.java` | 引擎单例：帧钩子、`spawn/stream/clear/budget/stats`、ping-pong 编排、reset/update/emit + keygen/radix 排序路径、双段绘制（additive + alpha）、块碰撞烘焙编排、自适应节流、`close()` |
-| `client/particles/engine/ParticleBuffers.java` | GPU 资源：双缓冲粒子 SSBO、发射命令环 ×3、计数器环 ×4、发射器头 SSBO（20×vec4）、间接命令 ×2（additive/alpha）、排序数据/直方图/偏移 SSBO、bakeMeta SSBO、无属性 VAO；上传/回读/解绑/free |
+| `client/particles/engine/ParticleBuffers.java` | GPU 资源：双缓冲粒子 SSBO、发射命令环 ×3、计数器环 ×4、发射器头 SSBO（20×vec4）、间接命令 ×3（additive/alpha/**model**）、排序数据/直方图/偏移 SSBO、bakeMeta SSBO、模型几何 SSBO、orderModel 排列、无属性 VAO；上传/回读/解绑/free |
 | `client/particles/engine/ParticlePrograms.java` | 自托管 GLSL：读 `assets/.../shaders/particles/*`，原生编译/链接 9 个程序（reset/update/emit/keygen/hist/scan/scatter/additive/alpha），脏标记+F3+T 重编译 |
 | `client/particles/engine/ParticleFrameProfiler.java` | 帧耗时 EMA + 迟滞节流控制器（预算默认 5ms） |
 | `client/particles/engine/ParticleShaderReloadListener.java` | 客户端资源重载监听（F3+T → 请求重编译着色器） |
-| `client/particles/engine/ParticleAtlas.java` | 自托管 sprite 图集：vanilla `cherry_0..11` 拷入本 mod 资源，`NativeImage` 解码拼 4×3 GL 图集，懒加载 |
+| `client/particles/engine/ParticleAtlas.java` | 自托管 sprite 图集：vanilla `cherry_0..11` 与 `allay_0` 拷入本 mod 资源，`NativeImage` 解码拼 GL 图集，懒加载 |
+| `client/particles/engine/AllayModelGeometry.java` | **MODEL 材质几何烘焙**：原版 `AllayModel.createBodyLayer` 的 8 个立方体 → 扁平 float[]（pos/uv/partId，6 float/顶点，退化的翅膀薄面剔除），UV/绕序与 `ModelPart.Cube` 完全一致 |
 | `client/particles/engine/CollisionBake.java` | 块碰撞占用烘焙：单张 `GL_TEXTURE_3D`（48×32×(48×K)，K=8），按 spec 分配切片、同锚共享、LRU 淘汰、每秒重建 |
-| `client/particles/emitter/EmitterSpec.java` | 不可变发射器规格 + builder；`pack()` 打成 20×vec4 GPU 头（新增 material/collide/flutter/spin/spriteCount/bakeIndex） |
+| `client/particles/emitter/EmitterSpec.java` | 不可变发射器规格 + builder；`pack()` 打成 20×vec4 GPU 头（material/collide/flutter/spin/spriteCount/bakeIndex/**animation**） |
 | `client/particles/emitter/EmitterShape.java` | `POINT / BOX / SPHERE / CONE` |
 | `client/particles/emitter/EmitterPresets.java` | 7 个内置蓝本：`mana_spark / ember / ash / soul_flame / mana_burst / cherry_leaves / flood` |
 | `client/particles/command/CMIParticleCommand.java` | `/cmip spawn|stream|bench|clear|stats|budget`（NeoForge 客户端命令） |
@@ -47,12 +48,14 @@
 | `reset.comp` | 1 线程：计数器归零 + 两条间接绘制实例数归零 |
 | `update.comp` | 物理积分（重力/恒加速度/风/阻力/`flutter` 飘摇）、寿命、致密化回收、**块碰撞（占用纹理，积分前轴分离 sweep）**、原子追加 |
 | `emit.comp` | 读 CPU 发射命令（按 b.z 前缀偏移二分定位），按形状/随机初始化新粒子 |
-| `keygen.comp` | **每帧运行**（兼作快路径的剔除 pass）：先做 **GPU 视锥剔除**（粒子球 vs CPU 从 Proj×View 提取的 6 归一化平面），再生成 `(key,index)` 排序对：`key = 255 − 对数深度带`（[1, far] 上 ~2%/带相对分辨率，远带小 key → 升序即远→近），并按材质原子累计两条间接命令实例数 + 未剔除 alpha 计数（`counter.alphaAlive`） |
+| `keygen.comp` | **每帧运行**（兼作快路径的剔除 pass）：先做 **GPU 视锥剔除**（粒子球 vs CPU 从 Proj×View 提取的 6 归一化平面），再按材质**三桶**分派：additive→`orderAdd`、alpha→`sortData`（`key = 255 − 对数深度带`，远带小 key → 升序即远→近）、model→`orderModel`；原子累计三条间接命令实例数 + 未剔除 alpha 计数（`counter.alphaAlive`） |
 | `radix_hist.comp` / `radix_scan.comp` / `radix_scatter.comp` | **单趟 8-bit 深度带计数排序**三阶段（直方图 → 256 线程排他前缀和 → 散列）；同带内乱序无害 |
 | `additive.vsh` | `gl_InstanceID` 经 orderAdd 排列（keygen 视锥剔除后的可见加法粒子集）从粒子 SSBO 取数、相机朝向 billboard、尺寸/颜色/透明度关键帧、每发射器 glow |
 | `additive.fsh` | 软圆衰减 + 距离淡出 + 叠加输出 |
 | `alpha.vsh` | 纹理（ALPHA）牌面：按 seed 选 sprite 帧、vanilla 自旋（roll0+ωt+½αt²）、经排序排列远→近取粒子 |
 | `alpha.fsh` | 采样 sprite 图集、贴花 alpha 混合、远淡出 |
+| `model.vsh` | **MODEL（Allay）顶点着色器**：orderModel 排列取粒子 → 程序化推导动画输入（速度→limbSwingAmount/朝向/头部俯仰，seed 相位）→ **GLSL 移植 `AllayModel.setupAnim`**（FLY/DANCE/SPIN/HOLD 四姿势）→ 部件矩阵链 + 原版变换（`Ry(π−yaw)·S(−1,−1,1)·T(0,−1.501,0)`）→ 从几何 SSBO 拉顶点输出；高度=2×size |
+| `model.fsh` | 全亮 cutout：贴图 × tint，alpha×远淡出 <0.5 丢弃，不混合、写深度（自遮挡正确） |
 
 （着色器已迁出 Veil 的 `pinwheel/`，与 Veil 完全解耦；Veil 仅继续服务雾墙/后处理。）
 
@@ -69,12 +72,12 @@
 | p3 | `age, maxLife, seed, emitterId(uint bits)` |
 
 ### 发射器头（320 B = 20×vec4 / emitter，SSBO，按 spec equals 去重缓存）
-`origin(占位)` / `shape,speed,radius` / `gravity,drag` / `accel,windStrength` / `windDir,rotation` / `life,sizeStart,sizeEnd` / `sizeEase,coneTanHalf,colorCount,glow` / `material,collideMode,flutter,spin` / `8×RGBA 颜色关键帧` / `bakeIndex,spriteCount,0,0` / 保留
+`origin(占位)` / `shape,speed,radius` / `gravity,drag` / `accel,windStrength` / `windDir,rotation` / `life,sizeStart,sizeEnd` / `sizeEase,coneTanHalf,colorCount,glow` / `material(0 ADD/1 ALPHA/2 MODEL),collideMode,flutter,spin` / `8×RGBA 颜色关键帧` / `bakeIndex,spriteCount,0,0` / `animation(0 FLY..3 HOLD),0,0,0` / 保留
 
 ### 发射命令（32 B / 条，环 ×3）：`origin.xyz + count` / `emitterId + seed`
-### 间接命令（2×16 B）：`count=6, instanceCount(GPU原子累计), first=0, baseInstance=0`（cmd0=additive, cmd1=alpha）
+### 间接命令（3×16 B）：`count=6(cmd2=模型顶点数), instanceCount(GPU原子累计), first=0, baseInstance=0`（cmd0=additive, cmd1=alpha, cmd2=model）
 ### 计数器（16 B / 槽，环 ×4）：`writeSlot, spare, alphaAlive`（spare 由 capture 记录上一帧**未剔除** alpha 计数；alphaAlive 由 keygen 在剔除测试前累加）
-### 排序数据（双缓冲，按 ALPHA 数量紧凑使用）：`sortData` 8 B/alpha = `(key, index)`；`orderAdd` 4 B/粒子 = additive 排列；直方图/偏移 各 256×uint
+### 排序数据（双缓冲，按 ALPHA 数量紧凑使用）：`sortData` 8 B/alpha = `(key, index)`；`orderAdd` 4 B/粒子 = additive 排列；`orderModel` 4 B/粒子 = MODEL 排列；直方图/偏移 各 256×uint；模型几何 SSBO 静态（~204 顶点 × 24 B，binding 12）
 ### 碰撞纹理（GL_TEXTURE_3D R8）：`48 × 32 × (48×K)`，K=8 个 3D 切片堆叠；bakeMeta（每槽 origin.xyz + presence）
 
 ---
@@ -134,6 +137,7 @@
 | 深度排序 | **partition + 单趟 8-bit 对数深度带计数排序**（key 反转 = 远带小 key，升序即远→近），只作用于 **alpha 段**（compact sortData），additive 走独立 orderAdd 排列 | real work ∝ alphaCount，与 additive 池大小解耦；单趟无 LSD 稳定性要求（同带内乱序无害）；对数量化使 ~2% 相对深度分辨率恒定，近细远粗与感知一致；曾用 24-bit key × 3 趟 LSD，既有方向反（近→远）又有原子散列不稳定问题 |
 | GPU 剔除 | **keygen 内置视锥剔除**（球 vs 6 归一化平面，Gribb–Hartmann 提取自 Proj×View；快路径无独立 cull pass——keygen 本身就是） | 借鉴 voxy `frustum.glsl`；屏幕外粒子不进排列/顶点着色，典型省 50–75% 绘制实例 |
 | 可见距离 | `fadeDistance` 配置（16..256，默认 96；+24 渐变后全隐） | 排序远平面 = ceil(fade+24) 取 2 的幂自适应，配置再高也不会出现“可见但排序范围不足”；不做原版雾匹配（低视距+高 fade 时粒子与雾化地形会有边界，已知取舍） |
+| MODEL 材质 | **Allay 实例化**：几何静态烘焙 SSBO + `setupAnim` GLSL 直译（FLY/DANCE/SPIN/HOLD，动画 id 在头 vec4 17，`/cmip anim` 热切换走 pending 队列 → 头增量重上传，存活粒子下帧生效）；全亮（vanilla `getBlockLightLevel=15`）+ cutout（alpha<0.5 丢弃）+ **写深度**（自遮挡/互挡正确）；绘制顺序 model→additive→alpha，模型段关混合开深度写、禁用背面剔除（绕序无关）；朝向=水平速度方向（低速回退 seed 朝向+慢漂移），身高=2×size（默认 0.66 格）；~204 顶点/只，无硬上限靠 autoThrottle | 3D 模型必须写深度否则部件穿插错序（billboard 的“不写深度”约定不适用）；全亮是 vanilla 事实而非风格选择；持物渲染留作后续（SSBO arena 纯增量） |
 | 双模回退 | lagged `prevAlpha`（capture 写入 counter.spare，下帧非阻塞滞回读）判定 `sortedDraw` | alpha 死光自动回恒等快路径，消除“永久排序路径”开销；无新增同步点 |
 | 块碰撞 | 3D 占用纹理（48×32×48/K 切片） + **积分前** X/Y/Z 轴分离 sweep | 真 SDF 距离场成本高；占用纹理实现快、够用，后需可升级。sweep 必须从移动前位置起测：曾放在 `pos += vel*dt` 之后，导致无碰撞时速度×2、受阻时嵌入方块 |
 | cherry_leaves | 忠实复刻 `CherryParticle`：300t 寿命/0.3 块/s² 重力/0.075 尺寸/flutter 螺旋/±30°自旋/12 帧/触地移除 | flutter 换算成块/s²（×1.0 系数）；自旋/选帧在 vsh 由 seed 解析，不占粒子数据 |
@@ -169,13 +173,15 @@
 ```
 /cmip spawn <preset> [count]      爆发（受节流）
 /cmip stream <preset> <rate> [sec] 流式（秒数=真实秒；<=0 为无限，直到 /cmip clear）
+/cmip anim <preset> <animation>   MODEL 粒子动画热切换（fly/dance/spin/hold，存活粒子下帧生效）
 /cmip bench <count>                不受节流压测（默认用 mana_burst）
 /cmip clear                        清空粒子与流
 /cmip stats                        存活/容量、streams、emission%、GPU 帧耗时 EMA、预算
 /cmip budget <ms>                  覆盖节流预算
 ```
-预设：`mana_spark / ember / ash / soul_flame / mana_burst / cherry_leaves / flood`。
+预设：`mana_spark / ember / ash / soul_flame / mana_burst / cherry_leaves / flood` + MODEL 系 `allay_fly / allay_dance / allay_spin / allay_hold`。
 `cherry_leaves` 为 **ALPHA 材质 + 碰撞（触地即移除）** 演示：`/cmip stream cherry_leaves 200 20` 可在任意位置看持续飘落。
+`allay_*` 为 **MODEL 材质**演示：`/cmip spawn allay_fly 50` 后 `/cmip anim allay_fly dance` 可当场切换群舞。
 配置文件 `run/config/createmanaindustry-client.toml` → `[particles]`：`enabled / maxParticles / frameBudgetMs / autoThrottle / fadeDistance`
 
 ---
@@ -208,6 +214,7 @@
 - 粒子位置为绝对世界坐标；模型视图为相机旋转矩阵 + 相对坐标换算（vsh 内 `worldPos - uCamPos`）
 - 无 Veil 时引擎可独立工作（自托管），但雾墙/后处理仍依赖 Veil（互不影响）
 - 叠加混合粒子上限受 8bit 目标钳制；超过 1 即饱和为白（glow 已按预算重调）
+- MODEL（Allay）已知取舍：翅膀边缘半透明像素为硬边（cutout）；HOLD 不渲染手中物品；模型段禁用背面剔除（绕序无关，背面被深度测试剔除）；死亡瞬间整体消失（cutout 无法淡出，可用 sizeOverLife 收缩过渡）
 - 开发期验证命令 `/cmip` 归入客户端命令，随模组发布（不影响服务端稳定性）
 
 ---

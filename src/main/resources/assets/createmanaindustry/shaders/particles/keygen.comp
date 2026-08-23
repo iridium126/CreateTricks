@@ -22,11 +22,12 @@ const uint DEPTH_BANDS = 256u;
 const float BAND_NEAR = 1.0; // blocks; log quantization lower bound
 
 layout(std430, binding = 0) readonly buffer ParticleRead { vec4 data[]; } pool;
-layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
+layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[3]; } indirect;
 layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; uint alphaAlive; } counter;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = 7) buffer SortWrite { uvec2 kv[]; } sortOut;
 layout(std430, binding = 8) buffer OrderAddW { uint order[]; } orderAdd;
+layout(std430, binding = 13) buffer OrderModelW { uint order[]; } orderModel;
 
 uniform uint uUpper;      // CPU-side safe upper bound (aliveRead + spawns + margin)
 uniform vec3 uCamPos;
@@ -55,20 +56,26 @@ void main() {
     uint eid = floatBitsToUint(p3.w);
     uint hb = eid * 20u; // VEC4_PER_EMITTER (must match EmitterSpec.VEC4_PER_EMITTER)
 
-    bool alpha = emitters.u[hb + 7u].x >= 0.5;
+    // conservative bound of the billboard's half-extent (size interpolates
+    // between the keyframes; p0.w is the per-particle multiplier). MODEL
+    // particles are a full 3D body ~2*size tall — use a 1.5x margin so a
+    // partially-offscreen allay never pops at the screen edge.
+    float matId = emitters.u[hb + 7u].x;
+    float keySize = max(emitters.u[hb + 5u].z, emitters.u[hb + 5u].w) * p0.w;
+    float radius = matId >= 1.5 ? keySize * 1.5 : keySize;
+    bool alpha = matId >= 0.5 && matId < 1.5;
+
     if (alpha)
         atomicAdd(counter.alphaAlive, 1u); // census BEFORE the cull test
 
-    // conservative bound of the billboard's half-extent (size interpolates
-    // between the keyframes; p0.w is the per-particle multiplier)
-    float radius = max(emitters.u[hb + 5u].z, emitters.u[hb + 5u].w) * p0.w;
     if (!sphereVisible(p0.xyz - uCamPos, radius))
         return;
 
-    if (!alpha) {
+    if (matId < 0.5) {
+        // ADDITIVE: dense permutation, order irrelevant
         uint pos = atomicAdd(indirect.cmd[0].y, 1u);
         orderAdd.order[pos] = g;
-    } else {
+    } else if (alpha) {
         // view-space depth: negative z is in front of the camera
         vec4 vs = uView * vec4(p0.xyz - uCamPos, 1.0);
         float depth = clamp(-vs.z, BAND_NEAR, uMaxDepth);
@@ -77,5 +84,9 @@ void main() {
         uint key = (DEPTH_BANDS - 1u) - band; // far -> small key -> drawn first
         uint pos = atomicAdd(indirect.cmd[1].y, 1u);
         sortOut.kv[pos] = uvec2(key, g);
+    } else {
+        // MODEL: own bucket, drawn first with depth writes (no sort needed)
+        uint pos = atomicAdd(indirect.cmd[2].y, 1u);
+        orderModel.order[pos] = g;
     }
 }

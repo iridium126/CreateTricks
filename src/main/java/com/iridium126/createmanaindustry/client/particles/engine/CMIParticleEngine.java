@@ -91,6 +91,10 @@ public final class CMIParticleEngine {
     private record StreamReq(EmitterSpec spec, Vec3 origin, double rate, double duration) {
     }
 
+    /** Live animation-switch request posted from a client thread. */
+    private record AnimReq(EmitterSpec spec, EmitterSpec.Animation animation) {
+    }
+
     /** Active stream consumed each frame on the render thread. */
     private static final class Stream {
         final EmitterSpec spec;
@@ -117,6 +121,7 @@ public final class CMIParticleEngine {
     private final ParticleFrameProfiler profiler = new ParticleFrameProfiler();
     private final CollisionBake collisionBake = new CollisionBake();
     private final ParticleAtlas cherryAtlas = ParticleAtlas.CHERRY;
+    private final ParticleAtlas allayAtlas = ParticleAtlas.ALLAY;
 
     private final FloatBuffer emitFront = BufferUtils.createFloatBuffer(ParticleBuffers.MAX_EMIT_COMMANDS * 8);
     private final Vec3[] emitOrigins = new Vec3[ParticleBuffers.MAX_EMIT_COMMANDS];
@@ -177,6 +182,15 @@ public final class CMIParticleEngine {
         this.pending.add(new StreamReq(spec, origin, rate, seconds));
     }
 
+    /**
+     * Live-switches the animation of every emitter created from {@code spec} —
+     * including already-alive particles (the header re-uploads next frame).
+     * Fire-and-forget like {@link #spawn}; applied on the render thread.
+     */
+    public void setAnimation(EmitterSpec spec, EmitterSpec.Animation animation) {
+        this.pending.add(new AnimReq(spec, animation));
+    }
+
     /** Drops all live particles and clears streams. */
     public void clear() {
         this.pending.add(Boolean.TRUE);
@@ -222,6 +236,7 @@ public final class CMIParticleEngine {
         this.lastGpuMs = 0;
         try {
             this.cherryAtlas.free();
+            this.allayAtlas.free();
             this.collisionBake.free();
         } catch (RuntimeException | LinkageError e) {
             CreateManaIndustry.LOGGER.warn("[CMI particles] atlas/bake free failed", e);
@@ -272,6 +287,8 @@ public final class CMIParticleEngine {
         if (!this.initialized) {
             try {
                 this.initialized = this.gpu.init(ClientConfig.particleMaxCount, MAX_EMITTERS);
+                if (this.initialized)
+                    this.gpu.uploadModelGeometry(AllayModelGeometry.BAKED);
             } catch (RuntimeException | LinkageError e) {
                 this.initialized = false;
                 CreateManaIndustry.LOGGER.error("[CMI particles] GPU init failed", e);
@@ -346,6 +363,8 @@ public final class CMIParticleEngine {
                 bursts.add(b);
             } else if (item instanceof StreamReq sr) {
                 this.streams.add(new Stream(sr.spec(), sr.origin(), sr.rate(), sr.duration()));
+            } else if (item instanceof AnimReq ar) {
+                applyAnimation(ar.spec(), ar.animation());
             } else if (item instanceof Boolean) {
                 doClear = true;
             }
@@ -521,6 +540,7 @@ public final class CMIParticleEngine {
             this.gpu.bindCounter(3, slot);
             this.gpu.bindEmitters(5);
             this.gpu.bindOrderAdd();
+            this.gpu.bindOrderModel();
             this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, this.gpu.sortBuffer(0));
             setUIntUniform(kg, "uUpper", sortUpper);
             Vec3 camPos = camera.getPosition();
@@ -584,9 +604,12 @@ public final class CMIParticleEngine {
             }
         }
 
-        // 7. Draw (two dense culled permutations; additive always through
-        //    orderAdd, alpha additionally back-to-front via the sort).
+        // 7. Draw. Models first (opaque cutout with depth writes — correct
+        //    self-occlusion, occludes and is occluded properly), then the
+        //    additive billboards, then the sorted alpha billboards.
         if (this.aliveRead > 0 || entryCount > 0) {
+            this.gpu.bindOrderModel();
+            drawModels(view, projectionMatrix, camera);
             this.gpu.bindOrderAdd();
             drawPass(false, view, projectionMatrix, camera);
             if (sorted) {
@@ -624,6 +647,44 @@ public final class CMIParticleEngine {
         GL13.glActiveTexture(GL13.GL_TEXTURE0);
 
         this.gpu.swap();
+    }
+
+    /**
+     * Draws the MODEL bucket: fullbright cutout with depth writes, so models
+     * self-occlude correctly and occlude the additive/alpha passes drawn
+     * after. Winding-agnostic — culling is disabled for this pass and
+     * restored to MC's default (enabled) afterwards.
+     */
+    private void drawModels(Matrix4fc view, Matrix4fc projectionMatrix, Camera camera) {
+        int prog = this.programs.modelRender();
+        if (prog == 0)
+            return;
+        GL20.glUseProgram(prog);
+        this.gpu.bindParticleWrite(1);
+        this.gpu.bindEmitters(5);
+        this.gpu.bindVao();
+
+        setMat4Uniform(prog, "ModelViewMat", view);
+        setMat4Uniform(prog, "ProjMat", projectionMatrix);
+        Vec3 pos = camera.getPosition();
+        setFloatUniform(prog, "uCamPos", (float) pos.x, (float) pos.y, (float) pos.z);
+        setFloatUniform(prog, "uFadeDist", (float) ClientConfig.particleFadeDistance);
+        this.allayAtlas.bind(1);
+        setIntUniform(prog, "uSprite", 1);
+
+        RenderSystem.disableBlend();
+        RenderSystem.depthMask(true);
+        RenderSystem.enableDepthTest();
+        GL11.glDisable(GL11.GL_CULL_FACE);
+
+        this.gpu.bindDrawIndirect();
+        this.gpu.drawIndirect(2);
+
+        GL11.glEnable(GL11.GL_CULL_FACE);
+        RenderSystem.depthMask(false);
+        RenderSystem.enableBlend();
+        GL20.glUseProgram(0);
+        GL30.glBindVertexArray(0);
     }
 
     /** Draws one half of the pool (additive or alpha) through its permutation. */
@@ -743,6 +804,20 @@ public final class CMIParticleEngine {
     }
 
     /**
+     * Render-thread half of {@link #setAnimation}: rewrites the header of
+     * every emitter created from the spec (the mirror re-uploads next frame,
+     * so already-alive particles pick the new animation up immediately).
+     */
+    private void applyAnimation(EmitterSpec spec, EmitterSpec.Animation animation) {
+        if (spec.material != EmitterSpec.Material.MODEL)
+            return;
+        for (var e : this.emitterIds.entrySet()) {
+            if (e.getKey().equals(spec))
+                this.gpu.setEmitterHeader(e.getValue(), spec.packedWithAnimation(animation.index()));
+        }
+    }
+
+    /**
      * Per-spawn runtime state for an emitter: flips the sorted path for ALPHA
      * specs, lazy-loads the sprite atlas, and (re)assigns the collision bake
      * slice for colliding specs, re-uploading the emitter header when needed.
@@ -751,6 +826,8 @@ public final class CMIParticleEngine {
         if (spec.material == EmitterSpec.Material.ALPHA) {
             this.alphaSpawnedThisFrame = true;
             this.cherryAtlas.ensureLoaded();
+        } else if (spec.material == EmitterSpec.Material.MODEL) {
+            this.allayAtlas.ensureLoaded();
         }
         if (spec.collideMode != EmitterSpec.CollideMode.NONE && origin != null) {
             // bake slices are anchor-keyed: same-site emitters share, distant

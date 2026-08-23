@@ -41,8 +41,8 @@ public final class ParticleBuffers {
      * previous frame's value plenty of margin before it is reused.
      */
     public static final int COUNTER_RING = 4;
-    /** Number of draw commands in the indirect buffer (additive, alpha). */
-    public static final int INDIRECT_COMMANDS = 2;
+    /** Number of draw commands in the indirect buffer (additive, alpha, model). */
+    public static final int INDIRECT_COMMANDS = 3;
     /** Counting-sort passes over the 8-bit depth-band key (one, by design). */
     public static final int RADIX_PASSES = 1;
     /** Radix digit size (bins). */
@@ -63,6 +63,10 @@ public final class ParticleBuffers {
     public static final int HIST_BINDING = 9;
     public static final int OFFSET_BINDING = 10;
     public static final int BAKEMETA_BINDING = 11;
+    /** Static baked model geometry (flat float array, MODEL particles). */
+    public static final int MODELGEO_BINDING = 12;
+    /** Dense permutation of visible MODEL particles (keygen's third bucket). */
+    public static final int ORDERMODEL_BINDING = 13;
 
     private final int[] particleSSBOs = new int[2];
     private final int[] emitSSBOs = new int[EMIT_RING_SIZE];
@@ -74,6 +78,8 @@ public final class ParticleBuffers {
     private int histSSBO = -1;
     private int offsetSSBO = -1;
     private int bakeMetaSSBO = -1;
+    private int modelGeoSSBO = -1;
+    private int orderModelSSBO = -1;
     private int vao = -1;
 
     private int readIndex = 0;
@@ -149,6 +155,8 @@ public final class ParticleBuffers {
         }
         // Additive permutation (dense, uint per additive particle).
         this.orderAddSSBO = createBuffer(cap * 4L, null);
+        // Model permutation (dense, uint per visible MODEL particle).
+        this.orderModelSSBO = createBuffer(cap * 4L, null);
         this.histSSBO = createBuffer((long) RADIX_BINS * 4, null);
         this.offsetSSBO = createBuffer((long) RADIX_BINS * 4, null);
         this.bakeMetaSSBO = createBuffer(CollisionBake.MAX_SLICES * 16L, null);
@@ -255,6 +263,32 @@ public final class ParticleBuffers {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, ORDERADD_BINDING, this.orderAddSSBO);
     }
 
+    /** Binds the model-permutation buffer at its fixed binding for keygen/draw. */
+    public void bindOrderModel() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, ORDERMODEL_BINDING, this.orderModelSSBO);
+    }
+
+    /**
+     * Uploads the static baked model geometry (flat float array, see
+     * {@link AllayModelGeometry#VERTEX_FLOATS} stride) once after init, and
+     * rewrites draw command 2's vertexCount to the baked vertex count (the
+     * model pass instances a fixed mesh, not 6-vertex billboards).
+     */
+    public void uploadModelGeometry(float[] baked) {
+        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            FloatBuffer buf = stack.mallocFloat(baked.length);
+            buf.put(baked).flip();
+            this.modelGeoSSBO = createBuffer(4L * baked.length, buf);
+        }
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, MODELGEO_BINDING, this.modelGeoSSBO);
+
+        this.tmp4.clear();
+        this.tmp4.putInt(baked.length / AllayModelGeometry.VERTEX_FLOATS).putInt(0).putInt(0).putInt(0);
+        this.tmp4.flip();
+        GL30.glBindBuffer(GL40.GL_DRAW_INDIRECT_BUFFER, this.indirectSSBO);
+        GL15.glBufferSubData(GL40.GL_DRAW_INDIRECT_BUFFER, 2L * 16, this.tmp4);
+    }
+
     public void bindHist() {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, HIST_BINDING, this.histSSBO);
     }
@@ -357,7 +391,7 @@ public final class ParticleBuffers {
      * the world's rendering after our frame.
      */
     public void unbindShaders() {
-        for (int i = 0; i <= 12; i++) {
+        for (int i = 0; i <= 13; i++) {
             GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, i, 0);
         }
     }
@@ -396,6 +430,10 @@ public final class ParticleBuffers {
                 GL15.glDeleteBuffers(id);
         if (this.orderAddSSBO > 0)
             GL15.glDeleteBuffers(this.orderAddSSBO);
+        if (this.orderModelSSBO > 0)
+            GL15.glDeleteBuffers(this.orderModelSSBO);
+        if (this.modelGeoSSBO > 0)
+            GL15.glDeleteBuffers(this.modelGeoSSBO);
         if (this.histSSBO > 0)
             GL15.glDeleteBuffers(this.histSSBO);
         if (this.offsetSSBO > 0)

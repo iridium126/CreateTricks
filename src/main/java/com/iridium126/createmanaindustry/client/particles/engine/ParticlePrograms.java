@@ -47,6 +47,7 @@ public final class ParticlePrograms {
     private int capture;
     private int render;        // additive billboards
     private int alphaRender;   // textured alpha billboards
+    private int modelRender;   // instanced allay models (cutout, depth write)
 
     private volatile boolean dirty = true;
 
@@ -73,25 +74,27 @@ public final class ParticlePrograms {
         this.capture = compileCompute(GLSL_DIR + "capture.comp");
         this.render = link(GLSL_DIR + "additive.vsh", GLSL_DIR + "additive.fsh");
         this.alphaRender = link(GLSL_DIR + "alpha.vsh", GLSL_DIR + "alpha.fsh");
+        this.modelRender = link(GLSL_DIR + "model.vsh", GLSL_DIR + "model.fsh");
         if (!this.ready()) {
             CreateManaIndustry.LOGGER.error("[CMI particles] program rebuild FAILED: "
-                    + "reset={} update={} emit={} keygen={} hist={} scan={} scatter={} capture={} render={} alpha={}",
+                    + "reset={} update={} emit={} keygen={} hist={} scan={} scatter={} capture={} "
+                    + "render={} alpha={} model={}",
                     this.reset, this.update, this.emit, this.keygen,
                     this.radixHist, this.radixScan, this.radixScatter, this.capture,
-                    this.render, this.alphaRender);
+                    this.render, this.alphaRender, this.modelRender);
         } else {
             CreateManaIndustry.LOGGER
                     .info("[CMI particles] programs compiled: reset={} update={} emit={} keygen={} "
-                            + "hist={} scan={} scatter={} capture={} render={} alpha={}",
+                            + "hist={} scan={} scatter={} capture={} render={} alpha={} model={}",
                             this.reset, this.update, this.emit, this.keygen,
                             this.radixHist, this.radixScan, this.radixScatter, this.capture,
-                            this.render, this.alphaRender);
+                            this.render, this.alphaRender, this.modelRender);
         }
     }
 
     public boolean ready() {
         return this.reset != 0 && this.update != 0 && this.emit != 0 && this.render != 0
-                && this.alphaRender != 0
+                && this.alphaRender != 0 && this.modelRender != 0
                 && this.keygen != 0 && this.radixHist != 0 && this.radixScan != 0
                 && this.radixScatter != 0 && this.capture != 0;
     }
@@ -134,6 +137,10 @@ public final class ParticlePrograms {
 
     public int alphaRender() {
         return this.alphaRender;
+    }
+
+    public int modelRender() {
+        return this.modelRender;
     }
 
     // ------------------------------------------------------------------
@@ -229,12 +236,12 @@ public final class ParticlePrograms {
         for (int p : new int[] {
                 this.reset, this.update, this.emit, this.keygen,
                 this.radixHist, this.radixScan, this.radixScatter, this.capture,
-                this.render, this.alphaRender }) {
+                this.render, this.alphaRender, this.modelRender }) {
             if (p != 0)
                 GL20.glDeleteProgram(p);
         }
         this.reset = this.update = this.emit = this.keygen = 0;
         this.radixHist = this.radixScan = this.radixScatter = this.capture = 0;
-        this.render = this.alphaRender = 0;
+        this.render = this.alphaRender = this.modelRender = 0;
     }
 }

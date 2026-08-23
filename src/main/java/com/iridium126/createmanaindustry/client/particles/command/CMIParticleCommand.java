@@ -31,6 +31,7 @@ import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
  * <pre>
  *   /cmip spawn &lt;preset&gt; [count]        burst at the player's feet
  *   /cmip stream &lt;preset&gt; &lt;rate&gt; [sec]  streaming (sec &lt;= 0 = until /cmip clear)
+ *   /cmip anim &lt;preset&gt; &lt;animation&gt;     live-switch MODEL animation (fly/dance/spin/hold)
  *   /cmip bench &lt;count&gt;                 unthrottled stress test
  *   /cmip clear                          drop all particles and streams
  *   /cmip stats                          live count / budget / frame cost
@@ -45,6 +46,9 @@ public final class CMIParticleCommand {
 
     private static final SuggestionProvider<CommandSourceStack> PRESETS = (ctx, builder) ->
             SharedSuggestionProvider.suggest(EmitterPresets.names(), builder);
+
+    private static final SuggestionProvider<CommandSourceStack> ANIMATIONS = (ctx, builder) ->
+            SharedSuggestionProvider.suggest(EmitterPresets.animationNames(), builder);
 
     @SubscribeEvent
     public static void register(RegisterClientCommandsEvent event) {
@@ -66,6 +70,12 @@ public final class CMIParticleCommand {
                                                                 FloatArgumentType.floatArg(0.1f, 3600f))
                                                         .executes(ctx -> stream(ctx,
                                                                 FloatArgumentType.getFloat(ctx, "seconds")))))))
+                        .then(Commands.literal("anim")
+                                .then(Commands.argument("preset", StringArgumentType.word())
+                                        .suggests(PRESETS)
+                                        .then(Commands.argument("animation", StringArgumentType.word())
+                                                .suggests(ANIMATIONS)
+                                                .executes(CMIParticleCommand::anim))))
                         .then(Commands.literal("bench")
                                 .then(Commands.argument("count", IntegerArgumentType.integer(1, 8_000_000))
                                         .executes(CMIParticleCommand::bench)))
@@ -113,6 +123,34 @@ public final class CMIParticleCommand {
         CMIParticleEngine.INSTANCE.stream(spec, pos, rate, seconds);
         String secs = seconds <= 0 ? "forever" : seconds + "s";
         tell(ctx, "Streaming " + rate + "/s × " + StringArgumentType.getString(ctx, "preset") + " for " + secs + ".");
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int anim(CommandContext<CommandSourceStack> ctx) {
+        String presetName = StringArgumentType.getString(ctx, "preset");
+        EmitterSpec spec = EmitterPresets.byName(presetName);
+        if (spec == null || spec.material != EmitterSpec.Material.MODEL) {
+            tell(ctx, "Unknown MODEL preset. Try: allay_fly, allay_dance, allay_spin, allay_hold");
+            return 0;
+        }
+        String animName = StringArgumentType.getString(ctx, "animation");
+        EmitterSpec.Animation anim = switch (animName) {
+            case "fly" -> EmitterSpec.Animation.FLY;
+            case "dance" -> EmitterSpec.Animation.DANCE;
+            case "spin" -> EmitterSpec.Animation.SPIN;
+            case "hold" -> EmitterSpec.Animation.HOLD;
+            default -> null;
+        };
+        if (anim == null) {
+            tell(ctx, "Unknown animation. Try: fly, dance, spin, hold");
+            return 0;
+        }
+        if (!engine(ctx)) {
+            return 0;
+        }
+        CMIParticleEngine.INSTANCE.setAnimation(spec, anim);
+        tell(ctx, "Animation switch queued: " + presetName + " -> " + animName
+                + " (live particles switch next frame).");
         return Command.SINGLE_SUCCESS;
     }
 

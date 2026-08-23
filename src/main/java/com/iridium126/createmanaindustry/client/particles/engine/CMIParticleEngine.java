@@ -27,6 +27,7 @@ import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL32;
 import org.lwjgl.opengl.GL33;
 import org.lwjgl.opengl.GL42;
 import org.lwjgl.opengl.GL43;
@@ -114,7 +115,6 @@ public final class CMIParticleEngine {
 
     private final ConcurrentLinkedQueue<Object> pending = new ConcurrentLinkedQueue<>();
     private final Map<EmitterSpec, Integer> emitterIds = new HashMap<>();
-    private final Map<Integer, Integer> bakedSliceByEmitter = new HashMap<>();
     private final List<Stream> streams = new ArrayList<>();
     private final ParticleBuffers gpu = new ParticleBuffers();
     private final ParticlePrograms programs = new ParticlePrograms();
@@ -127,19 +127,42 @@ public final class CMIParticleEngine {
     private final Vec3[] emitOrigins = new Vec3[ParticleBuffers.MAX_EMIT_COMMANDS];
     private final int[] emitIds = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
     private final int[] emitCounts = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
+    private final boolean[] emitAlpha = new boolean[ParticleBuffers.MAX_EMIT_COMMANDS];
+
+    /**
+     * Uniform-location cache (program id -> name -> location). Locations are
+     * stable for a linked program, so the per-frame uniform sets cost one map
+     * lookup instead of a driver call; cleared whenever programs are rebuilt
+     * (rebuild recreates every program id) or the engine shuts down.
+     */
+    private final Map<Integer, Map<String, Integer>> uniformLocations = new HashMap<>();
 
     private boolean initialized = false;
     private boolean disabled = false;
-    /** ALPHA spawns requested during THIS frame (drives the dual-mode decision). */
-    private boolean alphaSpawnedThisFrame = false;
     /**
-     * Last frame's UNculled alpha census (lagged readback from the counter
-     * ring) — every live alpha particle counts, even off-screen ones, so the
-     * dual-mode decision and the radix dispatch sizing can never undersize
-     * when the camera swings to reveal hidden alpha particles.
+     * Newest fence-signalled counter snapshot (may lag a few frames while the
+     * GPU runs behind): {@code {exact live count, unculled alpha census}}.
      */
-    private int prevAlpha = 0;
-    private int aliveRead = 0;
+    private int aliveKnown = 0;
+    private int alphaKnown = 0;
+    /**
+     * Spawns requested since that snapshot (CPU-exact). They keep every
+     * dispatch bound conservative between fence polls — deaths only ever
+     * shrink the live pool, so {@code snapshot + delta} is always an upper
+     * bound on the real count.
+     */
+    private int spawnDelta = 0;
+    private int alphaSpawnDelta = 0;
+    /**
+     * Latch for the sorted-path decision: set when ALPHA particles spawn,
+     * cleared only by a FRESH census reading zero — fence lag can never cause
+     * a frame where live alpha particles skip the sorted draw.
+     */
+    private boolean alphaLatched = false;
+    /** Fence over the newest un-read frame's GPU work; 0 = none pending. */
+    private long pendingFence = 0;
+    /** Counter ring slot {@link #pendingFence} covers. */
+    private int pendingSlot = 0;
     private volatile int liveDisplay = 0;
     private volatile float scale = 1f;
     private volatile int streamCount = 0;
@@ -244,11 +267,10 @@ public final class CMIParticleEngine {
         }
         this.pending.clear();
         this.streams.clear();
-        this.bakedSliceByEmitter.clear();
+        resetPoolState();
+        this.uniformLocations.clear();
         this.initialized = false;
         this.disabled = false;
-        this.alphaSpawnedThisFrame = false;
-        this.prevAlpha = 0;
     }
 
     public float emissionScale() {
@@ -301,8 +323,10 @@ public final class CMIParticleEngine {
                 return;
             }
         }
-        if (this.programs.needsRebuild())
+        if (this.programs.needsRebuild()) {
             this.programs.rebuild();
+            this.uniformLocations.clear(); // every program id was recreated
+        }
         if (!this.programs.ready())
             return; // shaders not compiled yet (or compile failed) — retry on reload
         this.profiler.setBudget((float) ClientConfig.particleBudgetMs);
@@ -329,19 +353,29 @@ public final class CMIParticleEngine {
         this.pending.clear();
         this.streams.clear();
         this.gpu.clearParticles();
-        this.aliveRead = 0;
-        this.prevAlpha = 0;
-        this.liveDisplay = 0;
+        resetPoolState();
         this.streamCount = 0;
         this.profiler.reset();
     }
 
+    /** Resets the CPU-side counter snapshot bookkeeping (pool is/becomes empty). */
+    private void resetPoolState() {
+        this.aliveKnown = 0;
+        this.alphaKnown = 0;
+        this.spawnDelta = 0;
+        this.alphaSpawnDelta = 0;
+        this.alphaLatched = false;
+        this.liveDisplay = 0;
+        if (this.pendingFence != 0) {
+            GL32.glDeleteSync(this.pendingFence);
+            this.pendingFence = 0;
+        }
+    }
+
     private void runFrame(Camera camera, Matrix4fc view, Matrix4fc projectionMatrix, DeltaTracker deltaTracker) {
         this.frameSeed++;
-        this.alphaSpawnedThisFrame = false;
 
         int slot = this.simFrame % ParticleBuffers.COUNTER_RING;
-        int readSlot = (this.simFrame - 1 + ParticleBuffers.COUNTER_RING) % ParticleBuffers.COUNTER_RING;
         this.simFrame++;
 
         // 0. Refresh stale collision bakes + make CPU-side uploads visible.
@@ -373,24 +407,12 @@ public final class CMIParticleEngine {
         if (doClear) {
             this.streams.clear();
             this.gpu.clearParticles();
-            this.aliveRead = 0;
-            this.prevAlpha = 0;
-            this.liveDisplay = 0;
+            resetPoolState();
         }
 
         int cap = this.gpu.capacity();
-        if (!doClear) {
-            // {writeSlot, spare} = {last frame's live count, last frame's
-            // UNculled alpha census}
-            int[] counts = this.gpu.readbackCounts(readSlot);
-            this.aliveRead = counts[0];
-            this.prevAlpha = counts[1];
-            if (this.aliveRead < 0 || this.aliveRead > cap)
-                this.aliveRead = 0;
-            if (this.prevAlpha < 0 || this.prevAlpha > cap)
-                this.prevAlpha = 0;
-            this.liveDisplay = this.aliveRead;
-        }
+        if (!doClear)
+            pollCounterSnapshot(cap);
 
         float dt = clampDelta(deltaTracker);
 
@@ -408,6 +430,7 @@ public final class CMIParticleEngine {
             this.emitIds[entryCount] = id;
             this.emitCounts[entryCount] = n;
             this.emitOrigins[entryCount] = b.origin;
+            this.emitAlpha[entryCount] = b.spec.material == EmitterSpec.Material.ALPHA;
             totalSpawn += n;
             entryCount++;
         }
@@ -431,14 +454,18 @@ public final class CMIParticleEngine {
             this.emitIds[entryCount] = id;
             this.emitCounts[entryCount] = n;
             this.emitOrigins[entryCount] = s.origin;
+            this.emitAlpha[entryCount] = s.spec.material == EmitterSpec.Material.ALPHA;
             totalSpawn += n;
             entryCount++;
         }
 
         this.streamCount = this.streams.size();
 
-        // 3. Cap spawn request to the free pool (extra safety margin).
-        int free = Math.max(0, cap - this.aliveRead - SAFETY_MARGIN);
+        // 3. Cap spawn request to the free pool (extra safety margin). The
+        // pool-usage estimate uses the (possibly stale) snapshot plus spawns
+        // since — overspawning is impossible: the GPU-side slot guard drops
+        // anything beyond capacity anyway.
+        int free = Math.max(0, cap - this.aliveKnown - this.spawnDelta - SAFETY_MARGIN);
         if (totalSpawn > free) {
             double k = free <= 0 ? 0 : (double) free / totalSpawn;
             totalSpawn = 0;
@@ -449,12 +476,22 @@ public final class CMIParticleEngine {
                     this.emitIds[w] = this.emitIds[i];
                     this.emitCounts[w] = n;
                     this.emitOrigins[w] = this.emitOrigins[i];
+                    this.emitAlpha[w] = this.emitAlpha[i];
                     totalSpawn += n;
                     w++;
                 }
             }
             entryCount = w;
         }
+
+        // ALPHA spawns that survived capping (CPU-exact even when the counter
+        // snapshot is stale) latch the sorted path until a fresh census reads 0.
+        int alphaSpawnTotal = 0;
+        for (int i = 0; i < entryCount; i++)
+            if (this.emitAlpha[i])
+                alphaSpawnTotal += this.emitCounts[i];
+        if (alphaSpawnTotal > 0)
+            this.alphaLatched = true;
 
         // 4. Upload emit commands into the next ring slot + emitters.
         int ringId = this.gpu.nextEmitBuffer();
@@ -475,14 +512,19 @@ public final class CMIParticleEngine {
             this.gpu.uploadEmits(ringId, this.emitFront);
         }
 
-        // Dual mode: the radix sort + alpha draw run only when alpha particles
-        // exist (lagged UNculled census) or were just requested. keygen itself
-        // runs in both paths — it is the fast path's frustum-cull pass and owns
-        // the draw counts in both.
-        boolean sorted = (this.prevAlpha > 0) || this.alphaSpawnedThisFrame;
+        // Dual mode: the radix sort + alpha draw run only while alpha particles
+        // may exist (latched on spawn, released only by a fresh census reading
+        // zero — fence lag can never skip a frame with live alpha). keygen
+        // itself runs in both paths — it is the fast path's frustum-cull pass
+        // and owns the draw counts in both.
+        boolean sorted = this.alphaLatched;
 
         // 5. Compute passes: reset -> update -> emit. The elapsed-time query
         //    brackets all GPU work (dispatches + draws) of this frame.
+        // Upper bound on the read buffer's live count (snapshot + spawns since
+        // — deaths only shrink it); update threads beyond the GPU-exact count
+        // (read from the previous counter slot, binding 14) exit immediately.
+        int updateBound = Math.min(cap, this.aliveKnown + this.spawnDelta + 64);
         if (!this.timerReady) {
             GL15.glGenQueries(this.timerQueries);
             this.timerReady = true;
@@ -498,6 +540,7 @@ public final class CMIParticleEngine {
         this.gpu.bindParticleRead(0);
         this.gpu.bindParticleWrite(1);
         this.gpu.bindCounter(3, slot);
+        this.gpu.bindPrevCounter(ParticleBuffers.PREVCOUNTER_BINDING, slot);
         this.gpu.bindEmitters(5);
         if (this.collisionBake.ready()) {
             this.collisionBake.bind(0);
@@ -507,10 +550,9 @@ public final class CMIParticleEngine {
         } else {
             setIntUniform(this.programs.update(), "uCollisionOn", 0);
         }
-        setUIntUniform(this.programs.update(), "uAliveRead", this.aliveRead);
         setUIntUniform(this.programs.update(), "uCapacity", cap);
         setFloatUniform(this.programs.update(), "uDt", dt);
-        GL43.glDispatchCompute(Math.max(1, (this.aliveRead + 63) / 64), 1, 1);
+        GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
         GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
 
         if (entryCount > 0) {
@@ -526,12 +568,21 @@ public final class CMIParticleEngine {
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
         }
 
+        // This frame's spawns are CPU-exact even when the counter snapshot is
+        // stale; accumulating them right away keeps every dispatch bound below
+        // conservative until the next fence poll resets the baseline.
+        this.spawnDelta += totalSpawn;
+        this.alphaSpawnDelta += alphaSpawnTotal;
+
         // 6. keygen: GPU frustum cull + partition of both permutations. Runs in
         //    BOTH paths (it is the fast path's cull pass); it owns the draw
         //    counts, so update/emit never touch the indirect buffer.
         int finalPerm = -1;
-        if (this.aliveRead > 0 || entryCount > 0) {
-            int sortUpper = Math.min(cap, Math.max(0, this.aliveRead + totalSpawn + 64));
+        // spawnDelta now includes this frame's spawns; aliveEstimate is an
+        // upper bound on the freshly written pool's live count
+        int aliveEstimate = this.aliveKnown + this.spawnDelta;
+        if (aliveEstimate > 0 || entryCount > 0) {
+            int sortUpper = Math.min(cap, Math.max(0, aliveEstimate + 64));
 
             // keygen: additive -> orderAdd[binding 8], alpha -> compact sortData[binding 7]
             int kg = this.programs.keygen();
@@ -559,9 +610,9 @@ public final class CMIParticleEngine {
 
             if (sorted) {
                 // single-pass counting sort over the alpha segment; dispatch
-                // sized by the lagged UNculled census (visible <= alive, so
-                // this bound can never undersize the kernels)
-                int alphaUpper = Math.min(cap, Math.max(0, this.prevAlpha + totalSpawn + 64));
+                // sized by the (possibly stale) census plus alpha spawns since
+                // — always an upper bound on the real unculled alpha count
+                int alphaUpper = Math.min(cap, Math.max(0, this.alphaKnown + this.alphaSpawnDelta + 64));
                 int readId = this.gpu.sortBuffer(0);
                 int writeId = this.gpu.sortBuffer(1);
                 for (int pass = 0; pass < ParticleBuffers.RADIX_PASSES; pass++) {
@@ -608,7 +659,7 @@ public final class CMIParticleEngine {
         // 7. Draw. Models first (opaque cutout with depth writes — correct
         //    self-occlusion, occludes and is occluded properly), then the
         //    additive billboards, then the sorted alpha billboards.
-        if (this.aliveRead > 0 || entryCount > 0) {
+        if (aliveEstimate > 0 || entryCount > 0) {
             this.gpu.bindOrderModel();
             drawModels(view, projectionMatrix, camera);
             this.gpu.bindOrderAdd();
@@ -621,12 +672,18 @@ public final class CMIParticleEngine {
 
         // 8. Capture this frame's UNculled alpha census (counter.alphaAlive,
         //    maintained by keygen before the frustum test) into the counter
-        //    ring spare for next frame's lagged readback (non-blocking).
+        //    ring spare, then fence the frame: next frame POLLS the fence and
+        //    only reads the counters once the GPU has finished writing them
+        //    (a raw readback is a pipeline stall, however lagged the slot).
         GL20.glUseProgram(this.programs.capture());
         this.gpu.bindCounter(3, slot);
         GL43.glDispatchCompute(1, 1, 1);
         GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
         GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
+        if (this.pendingFence != 0)
+            GL32.glDeleteSync(this.pendingFence);
+        this.pendingFence = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        this.pendingSlot = slot;
 
         // Collect the oldest query in the ring (issued TIMER_RING-1 frames ago,
         // virtually always complete): the true GPU-side cost of a frame. Never
@@ -754,6 +811,47 @@ public final class CMIParticleEngine {
     }
 
     /**
+     * Fence-polled counter snapshot. The pending fence covers the newest frame
+     * whose counters we have not read; polling with a zero timeout never
+     * stalls. When the GPU has finished that frame, {@code {writeSlot, spare}}
+     * = {@code {exact live count, unculled alpha census}} becomes the fresh
+     * snapshot and the CPU-side spawn deltas reset. Otherwise the stale
+     * snapshot stands and the deltas keep every dispatch bound conservative
+     * (deaths only ever shrink the live pool, so snapshot + delta is always a
+     * safe upper bound).
+     */
+    private void pollCounterSnapshot(int cap) {
+        if (this.pendingFence == 0)
+            return;
+        int wait = GL32.glClientWaitSync(this.pendingFence, 0, 0L);
+        if (wait == GL32.GL_TIMEOUT_EXPIRED)
+            return; // GPU still behind — poll again next frame, zero stalls
+        if (wait == GL32.GL_WAIT_FAILED) {
+            long now = System.currentTimeMillis();
+            if (now - this.lastErrorTime > 5000) {
+                this.lastErrorTime = now;
+                CreateManaIndustry.LOGGER.warn("[CMI particles] counter fence wait failed; keeping stale snapshot");
+            }
+        } else {
+            int[] counts = this.gpu.readbackCounts(this.pendingSlot);
+            int alive = counts[0];
+            int alpha = counts[1];
+            if (alive < 0 || alive > cap)
+                alive = 0;
+            if (alpha < 0 || alpha > cap)
+                alpha = 0;
+            this.aliveKnown = alive;
+            this.alphaKnown = alpha;
+            this.spawnDelta = 0;
+            this.alphaSpawnDelta = 0;
+            this.alphaLatched = alpha > 0;
+            this.liveDisplay = alive;
+        }
+        GL32.glDeleteSync(this.pendingFence);
+        this.pendingFence = 0;
+    }
+
+    /**
      * Power-of-two sort far bound covering the configured fade end (>= 64).
      * The 256 logarithmic depth bands then carry ~constant relative
      * resolution: 2^(log2(far)/256) per band, e.g. ~1.9% at 128 blocks.
@@ -821,31 +919,25 @@ public final class CMIParticleEngine {
     }
 
     /**
-     * Per-spawn runtime state for an emitter: flips the sorted path for ALPHA
-     * specs, lazy-loads the sprite atlas, and (re)assigns the collision bake
-     * slice for colliding specs, re-uploading the emitter header when needed.
+     * Per-spawn runtime state for an emitter: lazy-loads the sprite atlas and
+     * keeps the collision bake volume near the spawn site alive. The emitter
+     * header itself stays position-free — update.comp picks the containing
+     * bake slice per particle, so one spec can serve many spawn sites.
      */
     private void ensureEmitterRuntime(int id, EmitterSpec spec, Vec3 origin) {
         if (spec.material == EmitterSpec.Material.ALPHA) {
-            this.alphaSpawnedThisFrame = true;
             this.cherryAtlas.ensureLoaded();
         } else if (spec.material == EmitterSpec.Material.MODEL) {
             this.allayAtlas.ensureLoaded();
         }
-        if (spec.collideMode != EmitterSpec.CollideMode.NONE && origin != null) {
-            // bake slices are anchor-keyed: same-site emitters share, distant
-            // sites get their own slice (no more per-frame re-anchor thrash)
-            int bake = this.collisionBake.ensure(origin);
-            Integer prev = this.bakedSliceByEmitter.get(id);
-            if (prev == null || prev.intValue() != bake) {
-                this.bakedSliceByEmitter.put(id, bake);
-                this.gpu.setEmitterHeader(id, spec.packedWithBake(bake));
-            }
-        }
+        if (spec.collideMode != EmitterSpec.CollideMode.NONE && origin != null)
+            this.collisionBake.ensure(origin);
     }
 
     private static int loc(int prog, String name) {
-        return GL20.glGetUniformLocation(prog, name);
+        return INSTANCE.uniformLocations
+                .computeIfAbsent(prog, p -> new HashMap<>())
+                .computeIfAbsent(name, n -> GL20.glGetUniformLocation(prog, n));
     }
 
     private static void setUIntUniform(int prog, String name, int value) {

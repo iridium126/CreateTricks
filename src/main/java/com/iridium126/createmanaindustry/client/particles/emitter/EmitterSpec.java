@@ -27,7 +27,9 @@ import net.minecraft.world.phys.Vec3;
  *   6:  sizeEase, coneTanHalf,          colorCount, glow
  *   7:  material, collideMode,          flutter, spin
  *   8..15: colour keyframes RGBA (padded with the last colour)
- *  16:  bakeIndex(0 if none), spriteCount, 0, 0
+ *  16:  reserved 0 (collision bake slices are selected per particle on the
+ *      GPU — the header deliberately carries no world-position state),
+ *      spriteCount, 0, 0
  *  17:  animation(0 FLY..3 HOLD, MODEL only), 0, 0, 0
  *  18..19: reserved
  * </pre>
@@ -253,16 +255,6 @@ public final class EmitterSpec {
     /** The packed 20-vec4 GPU header for this spec. */
     public float[] packed() {
         return packed;
-    }
-
-    /**
-     * Header copy with the collision bake slice (1-based, 0 = none) written into
-     * vec4 #16.x. Used when a colliding emitter is assigned a bake slot.
-     */
-    public float[] packedWithBake(int slice1Based) {
-        float[] f = packed.clone();
-        f[16 * 4] = slice1Based;
-        return f;
     }
 
     /**

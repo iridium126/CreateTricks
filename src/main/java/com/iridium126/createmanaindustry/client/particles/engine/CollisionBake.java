@@ -2,14 +2,20 @@ package com.iridium126.createmanaindustry.client.particles.engine;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.Vec3;
-import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 import org.lwjgl.opengl.GL13;
@@ -23,16 +29,18 @@ import org.lwjgl.opengl.GL30;
  * x {@link #SZ} texels at 1 block/texel, one byte per texel (255 solid, 0 air).
  * Slices are keyed by their ANCHOR GRID CELL (not by emitter spec): every
  * colliding spawn site maps to the slice anchored at its rounded origin, so
- * nearby sites share one volume while distant sites get their own — two far
- * apart emitters with identical specs can no longer fight over one slot
- * (which used to re-anchor and rebuild the volume every frame).
+ * nearby sites share one volume while distant sites get their own.
  * <p>
- * At most ONE slice is (re)built per frame (dirty slices first) to avoid the
- * 73k-block-query spike of rebuilding everything at once. A slice's presence
- * flag in the meta SSBO stays 0 until its volume matches the anchor, so
- * particles never collide against a stale volume from a previous occupant.
- * Slices are refreshed once per {@link #REBUILD_TICKS} while used and evicted
- * (LRU) when all slots are taken.
+ * The ~73k {@code getBlockState} queries of a rebuild run on a BACKGROUND
+ * daemon worker (one build in flight at a time) — the render thread only
+ * resolves the covered chunk references (the client chunk map must not be
+ * iterated off-thread) and uploads the finished voxel volume. A slice's
+ * presence flag in the meta SSBO stays 0 until its volume matches the anchor,
+ * so particles never collide against a stale volume from a previous occupant.
+ * Results are discarded when the world changed or the slice was evicted in
+ * between (the slice simply stays dirty and is retried). Slices are refreshed
+ * once per {@link #REBUILD_TICKS} while used and evicted (LRU) when all slots
+ * are taken.
  */
 public final class CollisionBake {
 
@@ -70,6 +78,28 @@ public final class CollisionBake {
         }
     }
 
+    /**
+     * One background rebuild: the world and chunk references are resolved on
+     * the render thread; the worker only performs plain reads inside the
+     * captured chunks (unloaded chunks stay alive via the reference and read
+     * their last contents — no exceptions, just momentarily stale data).
+     */
+    private static final class BuildTask {
+        final Level level;
+        final Slot slot;
+        final Map<Long, LevelChunk> chunks;
+        final int minY;
+        final int maxY;
+
+        BuildTask(Level level, Slot slot, Map<Long, LevelChunk> chunks, int minY, int maxY) {
+            this.level = level;
+            this.slot = slot;
+            this.chunks = chunks;
+            this.minY = minY;
+            this.maxY = maxY;
+        }
+    }
+
     /** accessOrder=true: iteration order = LRU -> MRU. */
     private final Map<Anchor, Slot> slots = new LinkedHashMap<>(8, 0.75f, true);
     private final boolean[] occupied = new boolean[MAX_SLICES];
@@ -78,10 +108,13 @@ public final class CollisionBake {
     private int textureId = -1;
     private boolean metaDirty = false;
 
-    // Reused across rebuilds (73,728 B each) — no per-rebuild allocation churn.
-    private byte[] voxels;
-    private ByteBuffer upload;
-    private final BlockPos.MutableBlockPos scratch = new BlockPos.MutableBlockPos();
+    /** Lazily created daemon worker (one bake at a time); shut down in free(). */
+    private ExecutorService worker;
+    private Future<byte[]> inFlight;
+    private BuildTask inFlightTask;
+
+    // Render-thread scratch for the finished-volume upload (73,728 B).
+    private final ByteBuffer upload = ByteBuffer.allocateDirect(SX * SY * SZ);
 
     /**
      * 1-based bake slice covering {@code origin} (0 = none). The slice is
@@ -127,17 +160,24 @@ public final class CollisionBake {
     }
 
     /**
-     * Rebuilds at most one stale slice per frame (a dirty one first, else the
-     * most recently used expired one), amortising the ~73k block queries each
-     * rebuild costs. Call every frame on the render thread.
+     * Keeps the slices fresh: collects a finished background build (upload on
+     * the render thread), then hands at most one stale/dirty slice to the
+     * worker. The ~73k block queries never touch the render thread. Call every
+     * frame on the render thread.
      */
     public void tick() {
         if (slots.isEmpty() || textureId < 0)
             return;
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null)
+        Level level = Minecraft.getInstance().level;
+        if (level == null)
             return;
-        long now = mc.level.getGameTime();
+
+        if (this.inFlightTask != null && this.inFlight.isDone())
+            finishBuild(level);
+        if (this.inFlightTask != null)
+            return; // one build in flight — pick the next slice when it lands
+
+        long now = level.getGameTime();
         Slot dirtyPick = null;
         Slot stalePick = null;
         for (Slot s : slots.values()) { // LRU -> MRU: keep the LAST match
@@ -148,7 +188,7 @@ public final class CollisionBake {
         }
         Slot target = dirtyPick != null ? dirtyPick : stalePick;
         if (target != null)
-            rebuild(mc, target);
+            submitBuild(level, target);
     }
 
     /**
@@ -196,6 +236,12 @@ public final class CollisionBake {
     }
 
     public void free() {
+        if (this.worker != null) {
+            this.worker.shutdownNow();
+            this.worker = null;
+        }
+        this.inFlight = null;
+        this.inFlightTask = null;
         if (textureId >= 0) {
             GL30.glDeleteTextures(textureId);
             textureId = -1;
@@ -204,6 +250,101 @@ public final class CollisionBake {
         for (int i = 0; i < MAX_SLICES; i++)
             occupied[i] = false;
         metaDirty = true;
+    }
+
+    // ------------------------------------------------------------------
+    // Async rebuild internals (render thread: submit/finish; worker: query)
+    // ------------------------------------------------------------------
+
+    private void submitBuild(Level level, Slot s) {
+        // Resolve the covered chunk references HERE: the client chunk map is
+        // not safe to iterate off-thread, but plain reads inside an already
+        // captured LevelChunk are benign (worst case a momentarily stale
+        // voxel in a volume that refreshes every second anyway).
+        Map<Long, LevelChunk> chunks = new HashMap<>();
+        for (int cx = s.ax >> 4; cx <= (s.ax + SX - 1) >> 4; cx++) {
+            for (int cz = s.az >> 4; cz <= (s.az + SZ - 1) >> 4; cz++) {
+                LevelChunk chunk = level.getChunk(cx, cz);
+                if (chunk != null)
+                    chunks.put(ChunkPos.asLong(cx, cz), chunk);
+            }
+        }
+        if (this.worker == null) {
+            this.worker = Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "CMI-collision-bake");
+                t.setDaemon(true);
+                return t;
+            });
+        }
+        BuildTask task = new BuildTask(level, s, chunks,
+                level.getMinBuildHeight(), level.getMaxBuildHeight());
+        this.inFlightTask = task;
+        this.inFlight = this.worker.submit(() -> buildVoxels(task));
+    }
+
+    /** Fills one 48x32x48 occupancy volume; null = interrupted/failed (retry). */
+    private static byte[] buildVoxels(BuildTask task) {
+        byte[] voxels = new byte[SX * SY * SZ];
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        try {
+            int i = 0;
+            for (int z = 0; z < SZ; z++) {
+                if (Thread.currentThread().isInterrupted())
+                    return null;
+                for (int y = 0; y < SY; y++) {
+                    int wy = task.slot.ay + y;
+                    boolean yInWorld = wy >= task.minY && wy < task.maxY;
+                    for (int x = 0; x < SX; x++) {
+                        boolean solid = false;
+                        if (yInWorld) {
+                            int wx = task.slot.ax + x;
+                            int wz = task.slot.az + z;
+                            LevelChunk chunk = task.chunks.get(ChunkPos.asLong(wx >> 4, wz >> 4));
+                            solid = chunk != null && !chunk.getBlockState(pos.set(wx, wy, wz)).isAir();
+                        }
+                        voxels[i++] = solid ? SOLID : AIR;
+                    }
+                }
+            }
+            return voxels;
+        } catch (Exception e) {
+            return null; // benign race with a chunk packet — retried next pick
+        }
+    }
+
+    /** Uploads a finished build; discards it if the world or slot changed. */
+    private void finishBuild(Level level) {
+        BuildTask task = this.inFlightTask;
+        Future<byte[]> future = this.inFlight;
+        this.inFlightTask = null;
+        this.inFlight = null;
+
+        byte[] data;
+        try {
+            data = future.get(); // isDone() was true — never blocks
+        } catch (Exception e) {
+            return; // cancelled (free()) or worker crash — slot stays dirty
+        }
+        if (data == null)
+            return; // interrupted/raced build — retried on the next pick
+
+        // discard results whose world went away or whose slice was
+        // evicted/re-anchored while the worker was running
+        if (Minecraft.getInstance().level != task.level
+                || this.slots.get(new Anchor(task.slot.ax, task.slot.ay, task.slot.az)) != task.slot)
+            return;
+
+        this.upload.clear();
+        this.upload.put(data);
+        this.upload.flip();
+
+        GL12.glBindTexture(GL12.GL_TEXTURE_3D, textureId);
+        ParticleGLUtil.prepareClientUpload(); // guard PBO / unpack-state leftovers
+        GL12.glTexSubImage3D(GL12.GL_TEXTURE_3D, 0, 0, 0, task.slot.slice * SZ, SX, SY, SZ,
+                GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, upload);
+        task.slot.dirty = false;
+        task.slot.lastBuilt = level.getGameTime();
+        metaDirty = true; // presence flag for this slice can now be raised
     }
 
     // ------------------------------------------------------------------
@@ -242,33 +383,6 @@ public final class CollisionBake {
         GL12.glTexImage3D(GL12.GL_TEXTURE_3D, 0, GL30.GL_R8, SX, SY, SZ * MAX_SLICES, 0,
                 GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
         return true;
-    }
-
-    private void rebuild(Minecraft mc, Slot s) {
-        if (voxels == null) {
-            voxels = new byte[SX * SY * SZ];
-            upload = ByteBuffer.allocateDirect(voxels.length);
-        }
-        int i = 0;
-        for (int z = 0; z < SZ; z++) {
-            for (int y = 0; y < SY; y++) {
-                for (int x = 0; x < SX; x++) {
-                    boolean solid = !mc.level.getBlockState(scratch.set(s.ax + x, s.ay + y, s.az + z)).isAir();
-                    voxels[i++] = solid ? SOLID : AIR;
-                }
-            }
-        }
-        upload.clear();
-        upload.put(voxels);
-        upload.flip();
-
-        GL12.glBindTexture(GL12.GL_TEXTURE_3D, textureId);
-        ParticleGLUtil.prepareClientUpload(); // guard PBO / unpack-state leftovers
-        GL12.glTexSubImage3D(GL12.GL_TEXTURE_3D, 0, 0, 0, s.slice * SZ, SX, SY, SZ,
-                GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, upload);
-        s.dirty = false;
-        s.lastBuilt = mc.level.getGameTime();
-        metaDirty = true; // presence flag for this slice can now be raised
     }
 
     /** List of all slices currently in use (for diagnostics). */

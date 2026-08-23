@@ -2,24 +2,33 @@
 // prefix invariant of the output buffer. Dead particles drop out. Adds:
 //   - vanilla cherry-style flutter (life-gated horizontal spiral, header 7.z)
 //   - block collision (occupancy 3D texture, axis-separated pre-move sweep,
-//     header 7.y) — when the sweep runs it owns the position update entirely
+//     header 7.y) — when the sweep runs it owns the position update entirely.
+//     The occupancy slice is chosen PER PARTICLE by scanning bakeMeta for the
+//     first baked volume containing the position; the emitter header carries
+//     no world-position state, so one spec can serve many spawn sites.
 //   - keygen.comp owns the per-material draw counts; this pass never touches
 //     the indirect command buffer.
+// The live count comes from the GPU itself (the PREVIOUS frame's counter slot
+// at binding 14): the CPU only knows a safe upper bound for the dispatch, and
+// the extra threads exit on the exact count below.
 layout(local_size_x = 64) in;
 
 const int SX = 48;
 const int SY = 32;
 const int SZ = 48;
+const int BAKE_SLICES = 8; // CollisionBake.MAX_SLICES
 
 layout(std430, binding = 0) readonly buffer ParticleRead { vec4 data[]; } readBuf;
 layout(std430, binding = 1) buffer ParticleWrite { vec4 data[]; } writeBuf;
 layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; uint alphaAlive; } counter;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = 11) readonly buffer BakeMetaBuf { vec4 m[]; } bakeMeta;
+// previous frame's counter slot: its writeSlot is the read buffer's EXACT live
+// count (final value after that frame's update+emit appends)
+layout(std430, binding = 14) readonly buffer PrevCounterBuf { uint live; uint spare; uint alphaAlive; } prevCounter;
 
 layout(binding = 0) uniform sampler3D uCollision;
 
-uniform uint uAliveRead;
 uniform uint uCapacity;
 uniform float uDt;
 uniform int  uCollisionOn; // 1 = collision texture/SSBO bound & valid
@@ -35,7 +44,7 @@ bool solidAt(vec3 wp, vec3 mOrigin, int slice) {
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx >= uAliveRead)
+    if (idx >= prevCounter.live)
         return;
 
     uint base = idx * 4u;
@@ -88,13 +97,29 @@ void main() {
     // already-moved position, doubling the speed and tunnelling into blocks).
     bool swept = false;
     bool landed = false;
-    float bakeS = emitters.u[hb + 16u].x;
     float collideMode = emitters.u[hb + 7u].y;
-    if (uCollisionOn == 1 && bakeS > 0.5 && collideMode > 0.5) {
-        int slice = int(bakeS) - 1;
-        vec3 mOrigin = bakeMeta.m[slice].xyz;
-        float presence = bakeMeta.m[slice].w;
-        if (presence > 0.5) {
+    if (uCollisionOn == 1 && collideMode > 0.5) {
+        // Slice selection is position-owned, not emitter-owned: the first baked
+        // volume that CONTAINS the particle wins (presence gates unbuilt
+        // slices). Two emitters sharing one spec at distant sites can never
+        // fight over a header bake index (there is none), and a particle
+        // drifting out of its spawn volume keeps colliding inside any other
+        // site's volume it enters.
+        int slice = -1;
+        vec3 mOrigin = vec3(0.0);
+        for (int i = 0; i < BAKE_SLICES; i++) {
+            vec4 meta = bakeMeta.m[i];
+            if (meta.w < 0.5)
+                continue;
+            vec3 rel = pos - meta.xyz;
+            ivec3 tc = ivec3(floor(rel + vec3(0.0001)));
+            if (tc.x >= 0 && tc.x < SX && tc.y >= 0 && tc.y < SY && tc.z >= 0 && tc.z < SZ) {
+                slice = i;
+                mOrigin = meta.xyz;
+                break;
+            }
+        }
+        if (slice >= 0) {
             swept = true;
             float sx = vel.x * uDt;
             if (sx != 0.0) {

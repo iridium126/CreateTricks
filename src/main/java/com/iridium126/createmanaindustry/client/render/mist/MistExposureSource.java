@@ -24,6 +24,14 @@ import org.lwjgl.opengl.GL30;
  * reads. The query binds a throwaway framebuffer writing to that texture and
  * reads back the colour-attachment object name.
  * <p>
+ * Framebuffer lifecycle: query framebuffers are created through the owning
+ * {@link RenderTargets}, which registers them and destroys every tracked
+ * framebuffer when the iris pipeline is torn down. This class therefore never
+ * calls {@code destroy()} itself — on cache invalidation it only drops its
+ * references. Destroying them here would leave already-freed entries in the
+ * pack's tracked list and crash the next pipeline teardown with
+ * {@code IllegalStateException: Tried to use a destroyed GlResource}.
+ * <p>
  * All iris references are resolved lazily; callers must be on the render thread
  * with iris active ({@code IRISVEIL_ACTIVE} implies iris).
  */
@@ -57,10 +65,11 @@ public final class MistExposureSource {
         int height = targets.getCurrentHeight();
 
         // Recreate the query framebuffers when the pipeline (pack reload) or the
-        // render-target size changes — both invalidate the old FBOs.
+        // render-target size changes — both invalidate the old FBOs. The stale
+        // ones are only dereferenced, never destroyed: their owner cleans up.
         if (mainQueryFbo == null || lastPipeline != pipeline
                 || lastWidth != width || lastHeight != height) {
-            destroyQueryFbos();
+            releaseQueryFbos();
             mainQueryFbo = targets.createFramebufferWritingToMain(new int[]{EXPOSURE_BUFFER});
             altQueryFbo = targets.createFramebufferWritingToAlt(new int[]{EXPOSURE_BUFFER});
             lastPipeline = pipeline;
@@ -80,14 +89,14 @@ public final class MistExposureSource {
         return textureId;
     }
 
-    private static void destroyQueryFbos() {
-        if (mainQueryFbo != null) {
-            mainQueryFbo.destroy();
-            mainQueryFbo = null;
-        }
-        if (altQueryFbo != null) {
-            altQueryFbo.destroy();
-            altQueryFbo = null;
-        }
+    /**
+     * Drops the cached query framebuffers without destroying them. They live in
+     * the owning {@link RenderTargets}' tracked list and are destroyed with the
+     * iris pipeline; freeing them here double-frees resources the pack still
+     * holds and crashes the next {@code RenderTargets.destroy()}.
+     */
+    private static void releaseQueryFbos() {
+        mainQueryFbo = null;
+        altQueryFbo = null;
     }
 }

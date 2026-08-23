@@ -7,6 +7,7 @@ import com.mojang.blaze3d.vertex.VertexFormat;
 import foundry.veil.api.client.render.VeilRenderSystem;
 import foundry.veil.api.client.render.shader.program.ShaderProgram;
 import net.irisshaders.iris.Iris;
+import net.irisshaders.iris.shadows.ShadowRenderTargets;
 import net.irisshaders.iris.shadows.ShadowRenderer;
 import top.leonx.irisveil.accessors.IrisRenderingPipelineAccessor;
 import net.minecraft.client.Minecraft;
@@ -19,6 +20,7 @@ import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL30;
 
 import java.nio.IntBuffer;
+import com.iridium126.createmanaindustry.client.render.shaderpack.ActivePackOptions;
 import com.iridium126.createmanaindustry.client.render.shaderpack.IrisShadowTextures;
 import com.iridium126.createmanaindustry.client.render.shaderpack.PackShadowParams;
 import com.iridium126.createmanaindustry.client.render.shaderpack.ShadowDistortionRegistry;
@@ -217,6 +219,49 @@ public final class MistIrisHook {
                 GL30.glUniform1i(shadowBoundUniform, shadowMapBound);
             if (shadowResUniform >= 0)
                 GL30.glUniform1f(shadowResUniform, shadowMapResolution);
+
+            // --- Colored translucent shadows (Bliss TRANSLUCENT_COLORED_SHADOWS):
+            // bind shadowtex1 (opaque-only depth) and shadowcolor0 so the shader
+            // can transmit the caster's colour where ONLY translucent geometry
+            // blocks the sun, mirroring the pack's own three-sample fog stage.
+            boolean coloredStage = false;
+            int opaqueDepthId = IrisShadowTextures.getOpaqueDepthTextureId();
+            if (ActivePackOptions.isEnabled("TRANSLUCENT_COLORED_SHADOWS") && opaqueDepthId >= 0) {
+                if (IrisShadowTextures.getShadowTargets()
+                        instanceof ShadowRenderTargets shadowTargets) {
+                    // shadowcolor0 is created lazily by iris exactly when a pack
+                    // references it; forcing it here matches that behaviour and
+                    // is gated on the pack option being on.
+                    var colorTarget = shadowTargets.getOrCreate(0);
+                    int shadowColorId = shadowTargets.isFlipped(0)
+                            ? colorTarget.getAltTexture()
+                            : colorTarget.getMainTexture();
+
+                    RenderSystem.activeTexture(GL13.GL_TEXTURE4);
+                    GL11.glBindTexture(GL11.GL_TEXTURE_2D, opaqueDepthId);
+                    RenderSystem.activeTexture(GL13.GL_TEXTURE5);
+                    GL11.glBindTexture(GL11.GL_TEXTURE_2D, Math.max(shadowColorId, 0));
+                    coloredStage = shadowColorId >= 0;
+                }
+            }
+            if (!coloredStage) {
+                RenderSystem.activeTexture(GL13.GL_TEXTURE4);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+                RenderSystem.activeTexture(GL13.GL_TEXTURE5);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+            }
+            int shadow1Uniform = shader.getUniformLocation("ShadowMap1");
+            if (shadow1Uniform >= 0)
+                GL30.glUniform1i(shadow1Uniform, 4);
+            int shadowColorUniform = shader.getUniformLocation("ShadowColor0");
+            if (shadowColorUniform >= 0)
+                GL30.glUniform1i(shadowColorUniform, 5);
+            int shadow1BoundUniform = shader.getUniformLocation("ShadowMap1Bound");
+            if (shadow1BoundUniform >= 0)
+                GL30.glUniform1i(shadow1BoundUniform, coloredStage ? 1 : 0);
+            var coloredUniform = shader.getUniform("ColoredShadows");
+            if (coloredUniform != null)
+                coloredUniform.setInt(coloredStage ? 1 : 0);
 
             // Exposure-compensation sampler (translucent mode): unit 3 carries the
             // pack's colortex4 whose texel (10,37).r holds the auto-exposure scalar.

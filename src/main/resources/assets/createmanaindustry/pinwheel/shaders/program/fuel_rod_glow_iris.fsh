@@ -3,6 +3,16 @@
 uniform sampler2D DiffuseSampler0;
 uniform sampler2D DiffuseDepthSampler;
 
+// Injection target: 0 = replace-style into the pack's scene-colour buffer
+// (colortex0 families), 1 = translucent-layer RMW (Bliss-family colortex2):
+// fold the glow under the sampled translucent layer at the pack's 0.1x
+// storage scale instead of re-emitting scene + glow.
+uniform int OutputMode;
+// Translucent mode only: the pack's colortex4, whose texel (10,37).r carries the
+// auto-exposure scalar its final composite multiplies the frame by.
+uniform sampler2D ExposureSampler;
+uniform int ExposureBound; // 1 when ExposureSampler is bound to the pack's colortex4
+
 uniform int RodCount;
 uniform float RodData[192]; // packed: x,y,z,maxRadius,height,intensity per rod, max 32
 uniform float RingStrength;
@@ -169,6 +179,38 @@ void main() {
     // HDR tone map: the accumulated glow may exceed 1.0 at the ring core;
     // compress it exponentially instead of clipping (scene untouched).
     glow = vec3(1.0) - exp(-glow * GLOW_EXPOSURE);
+
+    if (OutputMode == 1) {
+        // Translucent-layer RMW (Bliss colortex2): the pack stores lit translucent
+        // colour at 0.1x scale with a coverage alpha and merges it via
+        // color*(1-a) + rgb*10. The glow folds in additively at the pack's
+        // storage scale (premultiplied, alpha left untouched): it is pure
+        // emission and must not dim the frame behind it.
+        //   rgb_out = dst.rgb + glow * invExposure * 0.1
+        // Deliberately NOT weighted by (1 - dst.a): this pass runs after the
+        // mist hook, whose under-composite raises the shared buffer's coverage
+        // alpha towards 1 wherever the mist field covers the pixel — a
+        // coverage-weighted fold would cancel the ring exactly there, hiding it
+        // behind its own reactor's mist unless the camera stood inside the
+        // field next to the rod. True occlusion is already handled by the
+        // depth-based fade above; translucent-geometry cover-through is an
+        // accepted cosmetic tradeoff for an emission halo.
+        float covA = clamp(sceneColor.a, 0.0, 1.0);
+        // Bliss-family auto-exposure compensation: the pack's final composite
+        // multiplies the frame by an exposure scalar (~0.02 at high noon,
+        // approaching ~1 at night) read from colortex4 texel (10,37). Our glow
+        // radiance is calibrated for the non-exposed pipelines of the other
+        // packs, so pre-multiplying by the inverse cancels the exposure pass.
+        float sceneScale = 1.0;
+        if (ExposureBound == 1) {
+            float exposure = texelFetch(ExposureSampler, ivec2(10, 37), 0).r;
+            if (exposure > 0.001)
+                sceneScale = clamp(1.0 / exposure, 0.125, 32.0);
+        }
+        fragColor = vec4(sceneColor.rgb + glow * sceneScale * 0.1, covA);
+        gl_FragDepth = sceneDepth;
+        return;
+    }
 
     fragColor = sceneColor;
     fragColor.rgb += glow;

@@ -20,6 +20,13 @@ import java.util.regex.Pattern;
  * {@code k} and {@code d1} are plain literals and are parsed from the pack with
  * fallback to the shipped defaults; {@code d0}'s clamp expression is replicated
  * from its literal pieces against the live shadow distance.
+ * <p>
+ * Exception — the pack's user-facing {@code DISTANT_HORIZONS_SHADOWMAP} option
+ * {@code #undef}s {@code DISTORT_SHADOWMAP} at compile time, turning the xy
+ * compression off while the unconditional {@code gl_Position.z /= 6} stays.
+ * Raw-source matching cannot see that undef, so the persisted option file is
+ * consulted ({@link ActivePackOptions}) and the resolver degrades to mode 0
+ * carrying only the z scale.
  */
 final class LogShadowDistortion implements ShadowDistortionConvention {
 
@@ -33,6 +40,9 @@ final class LogShadowDistortion implements ShadowDistortionConvention {
             "const\\s+float\\s+k\\s*=\\s*([0-9.eE+-]+)\\s*;");
     private static final Pattern D1 = Pattern.compile(
             "const\\s+float\\s+d1\\s*=\\s*([0-9.eE+-]+)\\s*;");
+
+    /** Bliss option whose activation #undefs DISTORT_SHADOWMAP (settings.glsl). */
+    private static final String DH_SHADOWMAP_OPTION = "DISTANT_HORIZONS_SHADOWMAP";
 
     /** Shipped defaults, used when the literals cannot be parsed. */
     private static final float DEFAULT_K = 1.8F;
@@ -82,6 +92,16 @@ final class LogShadowDistortion implements ShadowDistortionConvention {
         float d0 = D0_BASE + Math.max(D0_THRESHOLD - sd, 0.0F) / D0_DIVISOR * D0_SLOPE;
         float a = (float) Math.exp(d0);
         float b = (float) ((Math.exp(d1Val) - a) * 150.0 / 128.0);
+
+        // The user-facing DH shadowmap option #undefs DISTORT_SHADOWMAP at
+        // compile time: xy keeps its raw clip coords while the unconditional
+        // z /= 6 still compresses depth. Report no-radial-distortion carrying
+        // only the z scale — the log curve would distort an axis the pack no
+        // longer distorts (mode 0's depth scale is applied by the mist shader;
+        // every other mode-0 caller passes 1.0 there, so this is compatible).
+        if (ActivePackOptions.isEnabled(DH_SHADOWMAP_OPTION))
+            return PackShadowParams.radial(0, 1.0F, Z_SCALE);
+
         return new PackShadowParams(glslMode(), kVal, Z_SCALE, kVal, a, b);
     }
 

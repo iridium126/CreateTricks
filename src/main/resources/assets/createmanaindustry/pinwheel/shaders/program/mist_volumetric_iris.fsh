@@ -1,5 +1,10 @@
 // Iris gbuffer variant of mist_volumetric.
 //
+// NOTE for comment writers: never start a comment word with the hash symbol
+// here — the shader preprocessor treats such tokens as injection markers, and
+// an active marker makes glsl-processor hash every node while re-serializing,
+// which crashes on this file's plain return statements (0.2.3).
+//
 // Identical to the vanilla shader (depth-based ray endpoint + march cutoff at
 // the scene surface, so solid geometry fully occludes the fog behind it), but
 // compiled as a separate program: MistIrisHook manipulates its sampler
@@ -36,11 +41,20 @@ uniform float ShadowMapResolution;   // actual shadow texture width (texels)
 // use 1.0 / 1.0. Populated from the active pack by MistIrisHook.
 uniform float ShadowDistortion;
 uniform float ShadowDepthScale;
-// 0 = no distortion (identity), 1 = quartic (Photon SHADOW_DISTORTION),
+// 0 = no radial distortion (depth scale still applies), 1 = quartic (Photon SHADOW_DISTORTION),
 // 2 = euclidean (Complementary shadowMapBias), 3 = logarithmic
 // (Bliss BiasShadowProjection — curve parameters in ShadowLogParams).
 uniform int ShadowDistortionMode;
 uniform vec4 ShadowLogParams; // mode 3 only: x = k, y = a, z = b, w = z scale
+
+// Colored translucent shadows (the pack's TRANSLUCENT_COLORED_SHADOWS option):
+// where ONLY translucent geometry blocks the sun, transmit the caster's
+// shadowcolor0 tint instead of dropping to black — mirroring the pack's own
+// three-sample fog stage (shadowtex0 / shadowtex1 / shadowcolor0).
+uniform sampler2D ShadowMap1;   // shadowtex1 — opaque-only depth (unit 4)
+uniform int ShadowMap1Bound;
+uniform sampler2D ShadowColor0; // shadowcolor0 RGBA (unit 5)
+uniform int ColoredShadows;     // pack option active and both samplers bound
 
 // Output composition target: 0 = composite over the sampled scene colour
 // (scene-colour packs' colortex0), 1 = premultiplied under-operator into the
@@ -137,7 +151,9 @@ float quartic_length(vec2 v) {
  * Bliss uses a logarithmic length compression with its own k/a/b curve and a
  * z scale of 1/6). The pack renders its shadow map with this remap baked into
  * gl_Position, so skipping it samples the wrong texels (everything reads as
- * lit). Mode 0 is the identity (pack without distortion).
+ * lit). Mode 0 carries no radial remap; its depth scale still applies (1.0 for
+ * packs without any distortion, or Bliss' optional DH shadowmap mode which
+ * removes the xy distortion while keeping the unconditional z /= 6).
  * <p>
  * Extension point: to adapt a new pack's radial-length function, add a
  * {@code ShadowDistortionMode == N} branch here (matching the glslMode returned
@@ -145,7 +161,7 @@ float quartic_length(vec2 v) {
  */
 vec3 distort_shadow_space(vec3 shadowClipPos) {
     if (ShadowDistortionMode == 0)
-        return shadowClipPos;
+        return vec3(shadowClipPos.xy, shadowClipPos.z * ShadowDepthScale);
     if (ShadowDistortionMode == 3) {
         // Bliss: distortFactor = log(len * b + a) * k; xy /= distortFactor;
         // depth is compressed separately by gl_Position.z /= 6.
@@ -161,17 +177,19 @@ vec3 distort_shadow_space(vec3 shadowClipPos) {
 }
 
 /**
- * Returns 1.0 where the sun reaches the world-space position and 0.0 where it
- * is occluded, by testing the iris shadow map. Mirrors Photon's
- * raymarch_air_fog shadow block: transform to shadow clip space (ortho
- * projection — no perspective divide), apply the pack's shadow distortion, then
- * compare the clip z against the packed depth. Out-of-bounds shadow texels are
- * treated as lit (Photon's clamp01(shadow_screen_pos) == shadow_screen_pos
- * branch), so geometry outside the shadow frustum never darkens the mist.
+ * Sun transmission at a world-space position: 1 where lit, 0 where blocked,
+ * and — when the pack's TRANSLUCENT_COLORED_SHADOWS option is active — the
+ * caster's shadowcolor0 colour where ONLY translucent geometry blocks the sun
+ * (mirrors the pack's own three-sample fog stage). Built on the iris shadow
+ * map like Photon's raymarch_air_fog shadow block: transform to shadow clip
+ * space (ortho projection — no perspective divide), apply the pack's shadow
+ * distortion, then compare the clip z against the packed depth. Out-of-bounds
+ * shadow texels are treated as lit, so geometry outside the shadow frustum
+ * never darkens the mist.
  */
-float sampleSunOcclusion(vec3 worldPos) {
+vec3 sampleSunTransmission(vec3 worldPos) {
     if (ShadowMapBound == 0 || ShadowMapResolution < 1.0)
-        return 1.0;
+        return vec3(1.0);
 
     vec3 shadowViewPos = mat3(ShadowModelView) * (worldPos - VeilCamera.CameraPosition)
                        + ShadowModelView[3].xyz;
@@ -180,10 +198,23 @@ float sampleSunOcclusion(vec3 worldPos) {
     vec3 shadowScreen = distort_shadow_space(shadowClipPos) * 0.5 + 0.5;
     vec2 inBounds = step(vec2(0.0), shadowScreen.xy) * step(shadowScreen.xy, vec2(1.0));
     if (inBounds.x * inBounds.y < 0.5)
-        return 1.0;
-    float depth = texelFetch(ShadowMap0, ivec2(clamp(shadowScreen.xy * ShadowMapResolution,
-            0.0, ShadowMapResolution - 1.0)), 0).x;
-    return step(shadowScreen.z, depth);
+        return vec3(1.0);
+    ivec2 texel = ivec2(clamp(shadowScreen.xy * ShadowMapResolution,
+            0.0, ShadowMapResolution - 1.0));
+    float depth = texelFetch(ShadowMap0, texel, 0).x;
+    float lit = step(shadowScreen.z, depth);
+    if (lit > 0.5 || ColoredShadows == 0 || ShadowMap1Bound == 0)
+        return vec3(lit);
+
+    // Occluded per shadowtex0 — is the blocker opaque (shadowtex1) or a
+    // translucent caster whose shadowcolor0 tint should transmit?
+    float opaqueDepth = texelFetch(ShadowMap1, texel, 0).x;
+    if (step(shadowScreen.z, opaqueDepth) < 0.5)
+        return vec3(0.0); // blocked by opaque geometry — fully shadowed
+    vec4 tint = texture(ShadowColor0, shadowScreen.xy);
+    if (tint.a >= 0.9)
+        return vec3(0.0); // the pack treats near-opaque alpha as blocking
+    return normalize(tint.rgb + 0.0001);
 }
 
 // ---------------------------------------------------------------------------
@@ -355,14 +386,15 @@ void main() {
             // fully cancels the luminous self-emission in shadow. Skipped for
             // non-glowing fluids (no shadow effect) unless the debug visualisation
             // is active.
-            float shadowFactor = 1.0;
+            vec3 shadowFactor = vec3(1.0);
             if (DebugShadowVisualization == 1 || emission > 0.001) {
-                float shadow = sampleSunOcclusion(pos);
+                vec3 shadow = sampleSunTransmission(pos);
 
                 // DEBUG: visualize the shadow sampling as mist color — green = lit,
                 // red = occluded — to verify the Tyndall occlusion visually.
                 if (DebugShadowVisualization == 1) {
-                    vec3 debugCol = shadow > 0.5 ? vec3(0.2, 1.0, 0.2) : vec3(1.0, 0.1, 0.1);
+                    float level = max(max(shadow.r, shadow.g), shadow.b);
+                    vec3 debugCol = level > 0.5 ? vec3(0.2, 1.0, 0.2) : vec3(1.0, 0.1, 0.1);
                     float stepDensity = density * stepSize;
                     vec4 debugSample = vec4(debugCol, density * MistOpacity);
                     debugSample.rgb *= debugSample.a;

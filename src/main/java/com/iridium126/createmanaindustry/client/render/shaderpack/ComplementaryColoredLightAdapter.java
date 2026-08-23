@@ -124,12 +124,9 @@ public final class ComplementaryColoredLightAdapter implements ShaderColoredLigh
 			return fail(label + ": anchor is not unique");
 
 		int lineStart = source.lastIndexOf('\n', first) + 1;
-		String indentEnd = source.substring(lineStart, first);
-		// Indent the insertion like the anchor line itself.
-		String insertionIndented = insertion.replace("\t", indentEnd.endsWith("\t") ? "\t" : "\t");
 
 		CreateManaIndustry.LOGGER.info("Patched Complementary {} for the molten salt fuel tank", label);
-		return source.substring(0, lineStart) + insertionIndented + source.substring(lineStart);
+		return source.substring(0, lineStart) + insertion + source.substring(lineStart);
 	}
 
 	private static String fail(String reason) {

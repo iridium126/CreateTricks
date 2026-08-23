@@ -39,6 +39,12 @@ public abstract class ShadowRendererAccessor {
     @Inject(method = "<init>", at = @At("RETURN"))
     private void createmanaindustry$captureShadowDepthTexture(CallbackInfo ci) {
         IrisShadowTextures.setShadowDepthTextureId(this.targets.getDepthTexture().getTextureId());
+        IrisShadowTextures.setOpaqueDepthTextureId(
+                this.targets.getDepthTextureNoTranslucents().getTextureId());
+        // Live handle for the lazily-created color targets (shadowcolor0 is only
+        // allocated once a pack references it); resolved on the render thread
+        // under iris only.
+        IrisShadowTextures.setShadowTargets(this.targets);
         IrisShadowTextures.setSunPathRotation(this.sunPathRotation);
     }
 }

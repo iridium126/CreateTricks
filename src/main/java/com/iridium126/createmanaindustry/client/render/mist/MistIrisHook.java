@@ -24,6 +24,7 @@ import com.iridium126.createmanaindustry.client.render.shaderpack.ActivePackOpti
 import com.iridium126.createmanaindustry.client.render.shaderpack.IrisShadowTextures;
 import com.iridium126.createmanaindustry.client.render.shaderpack.PackShadowParams;
 import com.iridium126.createmanaindustry.client.render.shaderpack.ShadowDistortionRegistry;
+import com.iridium126.createmanaindustry.client.render.shaderpack.SundialAutoExposure;
 
 /**
  * Renders the mist volumetric shader inside the Iris gbuffer while a shader
@@ -58,6 +59,7 @@ public final class MistIrisHook {
 
     private static final String HOOK_ID_SCENE = "createmanaindustry:mist";
     private static final String HOOK_ID_TRANSLUCENT = "createmanaindustry:mist_translucent";
+    private static final String HOOK_ID_HDR = "createmanaindustry:mist_hdr";
     /** Scene-colour packs: draw into colortex0, like the simulated end-sea compat hook. */
     private static final int[] DRAW_BUFFERS_SCENE = {0};
     /**
@@ -67,6 +69,13 @@ public final class MistIrisHook {
      * scene-colour draw up.
      */
     private static final int[] DRAW_BUFFERS_TRANSLUCENT = {2};
+    /**
+     * Sundial-family packs: fold into colortex3, the deferred-lit HDR scene
+     * buffer their composite chain tonemaps into the display buffer at the very
+     * end (their Composite0 zeroes colortex0.rgb outright, so scene-colour draws
+     * never reach the screen there).
+     */
+    private static final int[] DRAW_BUFFERS_HDR = {3};
 
     private static boolean registered;
 
@@ -86,14 +95,19 @@ public final class MistIrisHook {
                 MistIrisHook::shouldRenderScene,
                 (camera, gameRenderer) -> render(camera, gameRenderer,
                         MistInjectionProfiles.Profile.SCENE_COLOR));
-        // Two hooks share one registration site because the compat registry pins
+        // Three hooks share one registration site because the compat registry pins
         // the draw buffers per hook; each hook self-gates on the active profile.
-        // Only the scene hook ticks the mist — exactly one hook runs per frame.
+        // Only the scene hook ticks the mist — exactly one hook draws per frame.
         VeilCompatRegistry.registerWorldRenderHook(
                 HOOK_ID_TRANSLUCENT, DRAW_BUFFERS_TRANSLUCENT,
                 MistIrisHook::shouldRenderTranslucent,
                 (camera, gameRenderer) -> render(camera, gameRenderer,
                         MistInjectionProfiles.Profile.TRANSLUCENT_LAYER));
+        VeilCompatRegistry.registerWorldRenderHook(
+                HOOK_ID_HDR, DRAW_BUFFERS_HDR,
+                MistIrisHook::shouldRenderHdr,
+                (camera, gameRenderer) -> render(camera, gameRenderer,
+                        MistInjectionProfiles.Profile.HDR_SCENE));
     }
 
     /**
@@ -128,6 +142,12 @@ public final class MistIrisHook {
                 && MistInjectionProfiles.activeProfile() == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER;
     }
 
+    /** HDR-scene hook gate (Sundial) — no ticking (the scene hook owns that). */
+    private static boolean shouldRenderHdr() {
+        return isActivePath()
+                && MistInjectionProfiles.activeProfile() == MistInjectionProfiles.Profile.HDR_SCENE;
+    }
+
     /**
      * Draws the mist pass into the iris gbuffer. The compat gbuffer framebuffer
      * (writing to colortex0) is already bound by iris-veil-compat; the main
@@ -140,17 +160,33 @@ public final class MistIrisHook {
             if (shader == null)
                 return false;
 
-            // Translucent-layer mode: locate the pack's colortex4 (its auto-exposure
-            // scalar source). The acquisition binds its own query framebuffer and
-            // restores the vanilla main target, so the draw framebuffer must be
-            // re-bound through the compat accessor afterwards.
+            // Exposure-compensation plumbing per profile. Translucent-layer packs
+            // store their auto-exposure scalar in colortex4 texel (10,37); Sundial
+            // keeps the adapted average brightness in colortex7 texel (0,0).w and
+            // multiplies the final frame by avg^-S * 0.2 * 2^EV — the HDR fold
+            // pre-divides our added radiance by that product so the calibrated
+            // mist brightness survives the pack's auto-exposure. The acquisition
+            // binds its own query framebuffer and restores the vanilla main
+            // target, so the draw framebuffer must be re-bound through the compat
+            // accessor afterwards.
             int exposureTextureId = -1;
+            int exposureMode = 0;
+            SundialAutoExposure.Params sundialExposure = null;
             if (profile == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER) {
-                exposureTextureId = MistExposureSource.acquireExposureTexture();
+                exposureTextureId = MistExposureSource.acquireExposureTexture(4);
+                exposureMode = 1;
+            } else if (profile == MistInjectionProfiles.Profile.HDR_SCENE) {
+                exposureTextureId = MistExposureSource.acquireExposureTexture(7);
+                exposureMode = 2;
+                sundialExposure = SundialAutoExposure.resolveForCurrentPack();
+            }
+            if (exposureMode != 0) {
                 if (Iris.getPipelineManager().getPipelineNullable()
                         instanceof IrisRenderingPipelineAccessor pipelineAccessor)
                     pipelineAccessor.irisveil$bindCompatGbufferFramebuffer(
-                            DRAW_BUFFERS_TRANSLUCENT);
+                            profile == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER
+                                    ? DRAW_BUFFERS_TRANSLUCENT
+                                    : DRAW_BUFFERS_HDR);
             }
 
             // colortex0's current texture is attached to the bound framebuffer.
@@ -263,9 +299,11 @@ public final class MistIrisHook {
             if (coloredUniform != null)
                 coloredUniform.setInt(coloredStage ? 1 : 0);
 
-            // Exposure-compensation sampler (translucent mode): unit 3 carries the
-            // pack's colortex4 whose texel (10,37).r holds the auto-exposure scalar.
-            if (profile == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER) {
+            // Exposure-compensation sampler: unit 3 carries the pack's exposure
+            // buffer (colortex4 for translucent-layer packs, colortex7 for the
+            // Sundial HDR fold); ExposureMode tells the shader which texel and
+            // formula to apply.
+            if (exposureMode != 0) {
                 var exposureUniform = shader.getUniformLocation("ExposureSampler");
                 RenderSystem.activeTexture(GL13.GL_TEXTURE3);
                 GL11.glBindTexture(GL11.GL_TEXTURE_2D, Math.max(exposureTextureId, 0));
@@ -274,6 +312,15 @@ public final class MistIrisHook {
                 var exposureBoundUniform = shader.getUniform("ExposureBound");
                 if (exposureBoundUniform != null)
                     exposureBoundUniform.setInt(exposureTextureId >= 0 ? 1 : 0);
+                var exposureModeUniform = shader.getUniform("ExposureMode");
+                if (exposureModeUniform != null)
+                    exposureModeUniform.setInt(exposureMode);
+                var exposureParamsUniform = shader.getUniform("ExposureParams");
+                if (exposureParamsUniform != null)
+                    exposureParamsUniform.setVector(
+                            exposureMode == 2 && sundialExposure != null ? sundialExposure.strength() : 0.0F,
+                            exposureMode == 2 && sundialExposure != null ? sundialExposure.exposureValue() : 0.0F,
+                            0.0F, 0.0F);
             }
 
             MistClientHandler.applyMistUniforms(shader);

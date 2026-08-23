@@ -6,6 +6,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.client.render.mist.MistExposureSource;
 import com.iridium126.createmanaindustry.client.render.mist.MistInjectionProfiles;
+import com.iridium126.createmanaindustry.client.render.shaderpack.SundialAutoExposure;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.VertexFormat;
@@ -32,7 +33,7 @@ import com.iridium126.createmanaindustry.client.render.mist.MistIrisHook;
  * the shaderpack's own composite (and bloom, if it has one) then processes the
  * added glow.
  * <p>
- * Two registrations exist because the compat registry pins the draw buffers
+ * Three registrations exist because the compat registry pins the draw buffers
  * per hook; each hook self-gates on the active mist injection profile
  * ({@link MistInjectionProfiles}):
  * <ul>
@@ -59,6 +60,7 @@ public final class FuelRodBloomIrisHook {
 
     private static final String HOOK_ID = "createmanaindustry:fuel_rod_glow";
     private static final String HOOK_ID_BLISS = "createmanaindustry:fuel_rod_glow_bliss";
+    private static final String HOOK_ID_HDR = "createmanaindustry:fuel_rod_glow_hdr";
     /** Scene-colour packs: replace-style draw into colortex0, like the default mist hook. */
     private static final int[] DRAW_BUFFERS = {0};
     /**
@@ -66,6 +68,13 @@ public final class FuelRodBloomIrisHook {
      * layer their composite chain merges into the frame.
      */
     private static final int[] DRAW_BUFFERS_BLISS = {2};
+    /**
+     * Sundial-family packs: fold the glow into colortex3, the deferred-lit HDR
+     * scene buffer their composite chain tonemaps into the display buffer at the
+     * very end (their Composite0 zeroes colortex0.rgb outright, so scene-colour
+     * draws never reach the screen there).
+     */
+    private static final int[] DRAW_BUFFERS_HDR = {3};
 
     private static boolean registered;
 
@@ -90,17 +99,30 @@ public final class FuelRodBloomIrisHook {
         VeilCompatRegistry.registerWorldRenderHook(
                 HOOK_ID, DRAW_BUFFERS,
                 FuelRodBloomIrisHook::shouldRenderSceneColor,
-                (camera, gameRenderer) -> render(camera, gameRenderer, false));
+                (camera, gameRenderer) -> render(camera, gameRenderer,
+                        MistInjectionProfiles.Profile.SCENE_COLOR));
         VeilCompatRegistry.registerWorldRenderHook(
                 HOOK_ID_BLISS, DRAW_BUFFERS_BLISS,
                 FuelRodBloomIrisHook::shouldRenderBliss,
-                (camera, gameRenderer) -> render(camera, gameRenderer, true));
+                (camera, gameRenderer) -> render(camera, gameRenderer,
+                        MistInjectionProfiles.Profile.TRANSLUCENT_LAYER));
+        VeilCompatRegistry.registerWorldRenderHook(
+                HOOK_ID_HDR, DRAW_BUFFERS_HDR,
+                FuelRodBloomIrisHook::shouldRenderHdr,
+                (camera, gameRenderer) -> render(camera, gameRenderer,
+                        MistInjectionProfiles.Profile.HDR_SCENE));
     }
 
     /** Whether the active pack uses the Bliss-family translucent-layer profile. */
     private static boolean isBlissProfile() {
         return MistInjectionProfiles.activeProfile()
                 == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER;
+    }
+
+    /** Whether the active pack uses the Sundial-family HDR-scene profile. */
+    private static boolean isHdrProfile() {
+        return MistInjectionProfiles.activeProfile()
+                == MistInjectionProfiles.Profile.HDR_SCENE;
     }
 
     /**
@@ -126,7 +148,8 @@ public final class FuelRodBloomIrisHook {
     private static boolean shouldRenderSceneColor() {
         FuelRodBloomHandler.tickGlow();
         FuelRodBloomHandler.syncGlowPipeline();
-        boolean draw = isActivePath() && !isBlissProfile();
+        boolean draw = isActivePath()
+                && MistInjectionProfiles.activeProfile() == MistInjectionProfiles.Profile.SCENE_COLOR;
         if (draw)
             logFirstDraw(HOOK_ID, "replace draw into colortex0");
         return draw;
@@ -140,6 +163,14 @@ public final class FuelRodBloomIrisHook {
         return draw;
     }
 
+    /** HDR-scene hook gate (Sundial) — no ticking (the scene-colour gate owns that). */
+    private static boolean shouldRenderHdr() {
+        boolean draw = isActivePath() && isHdrProfile();
+        if (draw)
+            logFirstDraw(HOOK_ID_HDR, "hdr-scene fold into colortex3");
+        return draw;
+    }
+
     private static void logFirstDraw(String hookId, String detail) {
         if (DRAW_LOGGED.add(hookId)) {
             CreateManaIndustry.LOGGER.info("[CMI compat] drew iris fuel-rod glow pass '{}' ({})",
@@ -148,33 +179,49 @@ public final class FuelRodBloomIrisHook {
     }
 
     /**
-     * Draws the glow pass into the iris gbuffer. With {@code translucentLayer}
-     * set the compat framebuffer targets colortex2 and the shader folds the
-     * glow under the sampled translucent layer; otherwise it re-emits the
-     * sampled scene colour plus the glow (colortex0 families).
+     * Draws the glow pass into the iris gbuffer for the given injection
+     * profile: SCENE_COLOR re-emits the sampled scene colour plus the glow into
+     * colortex0, TRANSLUCENT_LAYER folds it under colortex2 (with Bliss
+     * auto-exposure compensation), HDR_SCENE folds it additively into Sundial's
+     * deferred-lit colortex3 (with Sundial auto-exposure compensation).
      */
-    private static boolean render(Object camera, Object gameRenderer, boolean translucentLayer) {
+    private static boolean render(Object camera, Object gameRenderer,
+            MistInjectionProfiles.Profile profile) {
         try {
             ShaderProgram shader = getProgram();
             if (shader == null)
                 return false;
 
-            // Translucent-layer mode: locate the pack's colortex4 auto-exposure
-            // scalar first — the acquisition binds its own query framebuffer and
-            // restores the vanilla main target, so the compat gbuffer framebuffer
-            // must be re-bound through the accessor afterwards.
+            boolean translucentLayer = profile == MistInjectionProfiles.Profile.TRANSLUCENT_LAYER;
+            boolean hdrScene = profile == MistInjectionProfiles.Profile.HDR_SCENE;
+
+            // Exposure-compensation plumbing per profile: locate the pack's
+            // auto-exposure scalar first — the acquisition binds its own query
+            // framebuffer and restores the vanilla main target, so the compat
+            // gbuffer framebuffer must be re-bound through the accessor
+            // afterwards.
             int exposureTextureId = -1;
+            int exposureMode = 0;
+            SundialAutoExposure.Params sundialExposure = null;
             if (translucentLayer) {
-                exposureTextureId = MistExposureSource.acquireExposureTexture();
+                exposureTextureId = MistExposureSource.acquireExposureTexture(4);
+                exposureMode = 1;
+            } else if (hdrScene) {
+                exposureTextureId = MistExposureSource.acquireExposureTexture(7);
+                exposureMode = 2;
+                sundialExposure = SundialAutoExposure.resolveForCurrentPack();
+            }
+            if (exposureMode != 0) {
                 if (Iris.getPipelineManager().getPipelineNullable()
                         instanceof IrisRenderingPipelineAccessor pipelineAccessor)
                     pipelineAccessor.irisveil$bindCompatGbufferFramebuffer(
-                            DRAW_BUFFERS_BLISS);
+                            translucentLayer ? DRAW_BUFFERS_BLISS : DRAW_BUFFERS_HDR);
             }
 
             // The bound framebuffer's attachment 0 is now colortex0 (scene-colour
-            // packs) or colortex2 (translucent-layer). Querying it avoids the
-            // flipped-after-translucent ambiguity of guessing main/alt.
+            // packs), colortex2 (translucent-layer) or colortex3 (HDR-scene).
+            // Querying it avoids the flipped-after-translucent ambiguity of
+            // guessing main/alt.
             int sceneTextureId = GL30.glGetFramebufferAttachmentParameteri(
                     GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0,
                     GL30.GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
@@ -208,10 +255,11 @@ public final class FuelRodBloomIrisHook {
             if (outputModeUniform != null)
                 outputModeUniform.setInt(translucentLayer ? 1 : 0);
 
-            // Translucent mode: unit 3 carries the pack's colortex4 whose texel
-            // (10,37).r holds the auto-exposure scalar its final composite
-            // multiplies the frame by.
-            if (translucentLayer) {
+            // Exposure-compensation sampler: unit 3 carries the pack's exposure
+            // buffer (colortex4 for translucent-layer packs, colortex7 for the
+            // Sundial HDR fold); ExposureMode tells the shader which texel and
+            // formula to apply.
+            if (exposureMode != 0) {
                 var exposureUniform = shader.getUniformLocation("ExposureSampler");
                 RenderSystem.activeTexture(GL13.GL_TEXTURE3);
                 GL11.glBindTexture(GL11.GL_TEXTURE_2D, Math.max(exposureTextureId, 0));
@@ -220,6 +268,15 @@ public final class FuelRodBloomIrisHook {
                 var exposureBoundUniform = shader.getUniform("ExposureBound");
                 if (exposureBoundUniform != null)
                     exposureBoundUniform.setInt(exposureTextureId >= 0 ? 1 : 0);
+                var exposureModeUniform = shader.getUniform("ExposureMode");
+                if (exposureModeUniform != null)
+                    exposureModeUniform.setInt(exposureMode);
+                var exposureParamsUniform = shader.getUniform("ExposureParams");
+                if (exposureParamsUniform != null)
+                    exposureParamsUniform.setVector(
+                            exposureMode == 2 && sundialExposure != null ? sundialExposure.strength() : 0.0F,
+                            exposureMode == 2 && sundialExposure != null ? sundialExposure.exposureValue() : 0.0F,
+                            0.0F, 0.0F);
             }
 
             FuelRodBloomHandler.applyGlowUniforms(shader);

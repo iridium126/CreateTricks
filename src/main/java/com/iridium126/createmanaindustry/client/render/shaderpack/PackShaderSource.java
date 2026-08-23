@@ -36,7 +36,10 @@ public interface PackShaderSource {
         private static final String[] CANDIDATES = {
                 "shaders/settings.glsl", "shaders/shaders.properties", "shaders.properties",
                 // Bliss-style packs keep their distortion math in dedicated lib files.
-                "shaders/lib/Shadow_Params.glsl", "shaders/lib/Shadows.glsl" };
+                "shaders/lib/Shadow_Params.glsl", "shaders/lib/Shadows.glsl",
+                // Sundial keeps its option constants (shadow distortion strength)
+                // in a capitalized settings-directory file.
+                "shaders/settings/GlobalSettings.glsl" };
 
         @Override
         public List<String> candidateTexts() {
@@ -76,8 +79,13 @@ public interface PackShaderSource {
                     if (!n.startsWith("shaders/"))
                         continue;
                     String lower = n.toLowerCase(java.util.Locale.ROOT);
-                    boolean settingsLike = n.endsWith(".properties") || n.endsWith("settings.glsl")
-                            || n.endsWith("settings.vsh") || n.endsWith("common.glsl");
+                    // Case-insensitive tails — packs capitalize their settings
+                    // files (Sundial: settings/GlobalSettings.glsl) — plus the
+                    // dedicated settings directories some packs ship their option
+                    // constants in.
+                    boolean settingsLike = n.endsWith(".properties") || lower.endsWith("settings.glsl")
+                            || lower.endsWith("settings.vsh") || lower.endsWith("common.glsl")
+                            || lower.contains("/settings/");
                     // Distortion math often lives in dedicated lib files (Bliss:
                     // lib/Shadows.glsl, lib/Shadow_Params.glsl).
                     boolean shadowGlsl = lower.endsWith(".glsl") && lower.contains("shadow");
@@ -107,7 +115,8 @@ public interface PackShaderSource {
         }
 
         private static int priority(String name) {
-            if (name.endsWith("settings.glsl") || name.endsWith("common.glsl"))
+            String lower = name.toLowerCase(java.util.Locale.ROOT);
+            if (lower.endsWith("settings.glsl") || lower.endsWith("common.glsl"))
                 return 2;
             if (name.toLowerCase(java.util.Locale.ROOT).contains("shadow"))
                 return 1;

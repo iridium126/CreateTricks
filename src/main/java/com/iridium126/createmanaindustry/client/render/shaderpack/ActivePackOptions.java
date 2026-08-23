@@ -35,10 +35,14 @@ public final class ActivePackOptions {
     /** One boolean {@code KEY=value} line of an Iris option overrides file. */
     private static final Pattern FLAG = Pattern.compile(
             "^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(true|false)\\s*$");
+    /** One numeric {@code KEY=value} line of an Iris option overrides file. */
+    private static final Pattern NUMERIC = Pattern.compile(
+            "^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*([-+]?[0-9][0-9.eE+-]*)\\s*$");
 
     private static String lastName = null;
     private static long lastOptionsMtime = -1L;
     private static Map<String, Boolean> flags = Map.of();
+    private static Map<String, Double> numerics = Map.of();
 
     private ActivePackOptions() {}
 
@@ -52,6 +56,18 @@ public final class ActivePackOptions {
         return flags.getOrDefault(key, false);
     }
 
+    /**
+     * The numeric value the user overrode the given pack option to, or
+     * {@code fallback} when the option was never changed from its shipped
+     * value (the shipped literals live in the pack's own shaders and are
+     * parsed by the callers that need them).
+     */
+    public static double doubleValue(String key, double fallback) {
+        refreshIfNeeded();
+        Double value = numerics.get(key);
+        return value != null ? value : fallback;
+    }
+
     private static void refreshIfNeeded() {
         String name = ShaderColoredLightAdapters.activePackName();
         long optionsMtime = optionsMtime(name);
@@ -59,7 +75,25 @@ public final class ActivePackOptions {
             return;
         lastName = name;
         lastOptionsMtime = optionsMtime;
-        flags = load(name);
+        Map<String, Boolean> loadedFlags = new HashMap<>();
+        Map<String, Double> loadedNumerics = new HashMap<>();
+        for (String line : lines(name)) {
+            Matcher flag = FLAG.matcher(line);
+            if (flag.matches()) {
+                loadedFlags.put(flag.group(1), Boolean.parseBoolean(flag.group(2)));
+                continue;
+            }
+            Matcher numeric = NUMERIC.matcher(line);
+            if (numeric.matches()) {
+                try {
+                    loadedNumerics.put(numeric.group(1), Double.parseDouble(numeric.group(2)));
+                } catch (NumberFormatException ignored) {
+                    // malformed number — leave the shipped default in charge
+                }
+            }
+        }
+        flags = Map.copyOf(loadedFlags);
+        numerics = Map.copyOf(loadedNumerics);
     }
 
     /** The option file's last-modified time, or {@code -1L} when unavailable. */
@@ -75,21 +109,15 @@ public final class ActivePackOptions {
         }
     }
 
-    private static Map<String, Boolean> load(String packName) {
+    private static java.util.List<String> lines(String packName) {
         Path options = optionsPath(packName);
         if (options == null)
-            return Map.of();
+            return java.util.List.of();
         try {
-            Map<String, Boolean> parsed = new HashMap<>();
-            for (String line : Files.readAllLines(options, StandardCharsets.UTF_8)) {
-                Matcher m = FLAG.matcher(line);
-                if (m.matches())
-                    parsed.put(m.group(1), Boolean.parseBoolean(m.group(2)));
-            }
-            return Map.copyOf(parsed);
+            return Files.readAllLines(options, StandardCharsets.UTF_8);
         } catch (IOException | RuntimeException | LinkageError e) {
             CreateManaIndustry.LOGGER.warn("Could not read shaderpack option overrides", e);
-            return Map.of();
+            return java.util.List.of();
         }
     }
 

@@ -43,7 +43,8 @@ uniform float ShadowDistortion;
 uniform float ShadowDepthScale;
 // 0 = no radial distortion (depth scale still applies), 1 = quartic (Photon SHADOW_DISTORTION),
 // 2 = euclidean (Complementary shadowMapBias), 3 = logarithmic
-// (Bliss BiasShadowProjection — curve parameters in ShadowLogParams).
+// (Bliss BiasShadowProjection — curve parameters in ShadowLogParams),
+// 4 = Sundial log-tile (SHADOW_DISTORTION_STRENGTH in ShadowDistortion).
 uniform int ShadowDistortionMode;
 uniform vec4 ShadowLogParams; // mode 3 only: x = k, y = a, z = b, w = z scale
 
@@ -61,9 +62,17 @@ uniform int ColoredShadows;     // pack option active and both samplers bound
 // translucent layer (Bliss-family colortex2, stored at 0.1x with coverage alpha).
 uniform int MistTargetMode;
 // Translucent mode only: the pack's colortex4, whose texel (10,37).r carries the
-// auto-exposure scalar its final composite multiplies the frame by.
+// auto-exposure scalar its final composite multiplies the frame by. The Sundial
+// HDR fold instead binds colortex7, whose texel (0,0).w holds the adapted
+// average brightness its final composite multiplies by.
 uniform sampler2D ExposureSampler;
-uniform int ExposureBound; // 1 when ExposureSampler is bound to the pack's colortex4
+uniform int ExposureBound; // 1 when ExposureSampler is bound to the pack's exposure buffer
+// Exposure compensation formula selector: 0 = none (scene-colour packs),
+// 1 = Bliss translucent-layer RMW (texel (10,37).r reciprocal), 2 = Sundial
+// HDR fold (final composite multiplies by avg^-S * 0.2 * 2^EV with S =
+// ExposureParams.x and EV = ExposureParams.y; our added radiance pre-divides).
+uniform int ExposureMode;
+uniform vec4 ExposureParams;
 
 // DEBUG: when 1, mist is colored by the shadow sample (green = lit, red =
 // occluded) so the Tyndall occlusion can be verified visually.
@@ -168,6 +177,17 @@ vec3 distort_shadow_space(vec3 shadowClipPos) {
         float logFactor = log(length(shadowClipPos.xy) * ShadowLogParams.z + ShadowLogParams.y)
                 * ShadowLogParams.x;
         return vec3(shadowClipPos.xy / logFactor, shadowClipPos.z * ShadowLogParams.w);
+    }
+    if (ShadowDistortionMode == 4) {
+        // Sundial: curve = log(S*len + 1)/log(S + 1), S = exp(strength) - 1. The
+        // pack renders its opaque shadow tile at screen.xy = dir*curve*0.25 + 0.75
+        // and compresses depth to z*0.1 + 0.5; expressed back in clip space (the
+        // caller remaps with *0.5 + 0.5) that is dir*curve*0.5 + 0.5 and z*0.2.
+        // Zero-length coords land on the tile centre, like the pack's own helper.
+        float len = length(shadowClipPos.xy);
+        float curve = log(ShadowDistortion * len + 1.0) / log(ShadowDistortion + 1.0);
+        vec2 direction = len > 1e-5 ? shadowClipPos.xy / len : vec2(0.0);
+        return vec3(direction * curve * 0.5 + 0.5, shadowClipPos.z * ShadowDepthScale);
     }
     float l = ShadowDistortionMode == 2
             ? length(shadowClipPos.xy)
@@ -453,7 +473,18 @@ void main() {
         return;
     }
 
-    fragColor = sceneColor * transmittance + accumulatedMist;
+    // Sundial HDR fold (mode 2): pre-divide only OUR added radiance by the
+    // pack's final auto-exposure product so the calibrated mist brightness
+    // survives; the native scene part must stay untouched.
+    vec3 mistRadiance = accumulatedMist.rgb;
+    if (ExposureMode == 2 && ExposureBound == 1) {
+        float averageBrightness =
+                max(texelFetch(ExposureSampler, ivec2(0, 0), 0).w, 1e-5);
+        float exposure = exp2(-log2(averageBrightness) * ExposureParams.x)
+                * 0.2 * exp2(ExposureParams.y);
+        mistRadiance *= clamp(1.0 / exposure, 0.125, 64.0);
+    }
+    fragColor = sceneColor * transmittance + vec4(mistRadiance, accumulatedMist.a);
     fragColor.a = sceneColor.a;
     gl_FragDepth = sceneDepth;
 }

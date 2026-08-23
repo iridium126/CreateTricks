@@ -1,5 +1,8 @@
 package com.iridium126.createmanaindustry.client.render.mist;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import com.google.common.collect.ImmutableSet;
 
 import com.iridium126.createmanaindustry.mixin.iris.IrisRenderingPipelineTargetsAccessor;
@@ -13,10 +16,12 @@ import net.minecraft.client.Minecraft;
 import org.lwjgl.opengl.GL30;
 
 /**
- * Locates the active shaderpack's colortex4 GL texture so the translucent-layer
- * mist mode can read the pack's auto-exposure scalar. Bliss (and chocapic-family
- * packs generally) keep that scalar in colortex4 texel {@code (10, 37)} — the
- * same value their final composite multiplies the frame by.
+ * Locates an active shaderpack's colour-buffer GL texture so injection modes
+ * that need it can read the pack's auto-exposure scalar. Which buffer carries
+ * the scalar is pack-specific: Bliss (and chocapic-family packs generally)
+ * keep it in colortex4 texel {@code (10, 37)}, while Sundial keeps its adapted
+ * average brightness in colortex7 texel {@code (0, 0)}.{@code w} — in both
+ * cases the same value their final composite multiplies the frame by.
  * <p>
  * colortex4 is written only during the deferred stage, so from the
  * after-translucent point onward it is never re-flipped: whichever texture the
@@ -37,24 +42,22 @@ import org.lwjgl.opengl.GL30;
  */
 public final class MistExposureSource {
 
-    /** The colour buffer holding the pack's exposure scalar (colortex4). */
-    private static final int EXPOSURE_BUFFER = 4;
-
     private static Object lastPipeline;
     private static int lastWidth = -1;
     private static int lastHeight = -1;
-    private static GlFramebuffer mainQueryFbo;
-    private static GlFramebuffer altQueryFbo;
+    /** Query framebuffers per requested colour-buffer index, created lazily. */
+    private static final Map<Integer, GlFramebuffer> MAIN_QUERY_FBOS = new HashMap<>();
+    private static final Map<Integer, GlFramebuffer> ALT_QUERY_FBOS = new HashMap<>();
 
     private MistExposureSource() {}
 
     /**
-     * Binds a query framebuffer for colortex4 and returns its texture id, or
-     * {@code -1} when iris/pipeline is unavailable. Restores the vanilla main
-     * render target afterwards — the caller must re-bind its draw framebuffer
-     * before drawing.
+     * Binds a query framebuffer for the given colour buffer and returns its
+     * texture id, or {@code -1} when iris/pipeline is unavailable. Restores the
+     * vanilla main render target afterwards — the caller must re-bind its draw
+     * framebuffer before drawing.
      */
-    public static int acquireExposureTexture() {
+    public static int acquireExposureTexture(int bufferIndex) {
         if (!(Iris.getPipelineManager().getPipelineNullable()
                 instanceof IrisRenderingPipelineTargetsAccessor accessor))
             return -1;
@@ -67,18 +70,21 @@ public final class MistExposureSource {
         // Recreate the query framebuffers when the pipeline (pack reload) or the
         // render-target size changes — both invalidate the old FBOs. The stale
         // ones are only dereferenced, never destroyed: their owner cleans up.
-        if (mainQueryFbo == null || lastPipeline != pipeline
+        if (MAIN_QUERY_FBOS.isEmpty() || lastPipeline != pipeline
                 || lastWidth != width || lastHeight != height) {
             releaseQueryFbos();
-            mainQueryFbo = targets.createFramebufferWritingToMain(new int[]{EXPOSURE_BUFFER});
-            altQueryFbo = targets.createFramebufferWritingToAlt(new int[]{EXPOSURE_BUFFER});
             lastPipeline = pipeline;
             lastWidth = width;
             lastHeight = height;
         }
 
+        GlFramebuffer mainQueryFbo = MAIN_QUERY_FBOS.computeIfAbsent(bufferIndex,
+                index -> targets.createFramebufferWritingToMain(new int[]{index}));
+        GlFramebuffer altQueryFbo = ALT_QUERY_FBOS.computeIfAbsent(bufferIndex,
+                index -> targets.createFramebufferWritingToAlt(new int[]{index}));
+
         ImmutableSet<Integer> flipped = accessor.cmi$getFlippedAfterTranslucent();
-        GlFramebuffer query = flipped != null && flipped.contains(EXPOSURE_BUFFER)
+        GlFramebuffer query = flipped != null && flipped.contains(bufferIndex)
                 ? altQueryFbo
                 : mainQueryFbo;
         query.bind();
@@ -96,7 +102,7 @@ public final class MistExposureSource {
      * holds and crashes the next {@code RenderTargets.destroy()}.
      */
     private static void releaseQueryFbos() {
-        mainQueryFbo = null;
-        altQueryFbo = null;
+        MAIN_QUERY_FBOS.clear();
+        ALT_QUERY_FBOS.clear();
     }
 }

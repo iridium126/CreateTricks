@@ -22,7 +22,8 @@ public final class ShadowDistortionRegistry {
     private static final List<ShadowDistortionConvention> CONVENTIONS = List.of(
             new QuarticShadowDistortion(),
             new EuclideanShadowDistortion(),
-            new LogShadowDistortion());
+            new LogShadowDistortion(),
+            new SundialShadowDistortion());
 
     private static String lastSignature = "";
     private static PackShadowParams lastParams = PackShadowParams.NONE;

@@ -18,8 +18,17 @@ import com.iridium126.createmanaindustry.client.render.shaderpack.ShaderColoredL
  * there never reaches the screen. Those packs get the translucent-layer
  * profile instead: the mist is composed into {@code colortex2}, the translucent
  * colour layer their composite chain merges into the frame.</li>
+ * <li>Sundial rebuilds the visible image even further from the source: its
+ * deferred stage accumulates the lit scene into {@code colortex3}, and
+ * {@code Composite0} zeroes {@code colortex0.rgb} outright (only the weather
+ * alpha survives there) before {@code Composite14} tonemaps {@code colortex3}
+ * into the display buffer. A scene-colour draw is therefore dead on arrival;
+ * the HDR-scene profile folds the mist into {@code colortex3} instead, where
+ * the pack's own cloud compositing, SSR, TAA, bloom and tonemapping process it
+ * exactly like native scene radiance.</li>
  * </ul>
- * Detection is name-based for now ({@code bliss}), cached per pack name.
+ * Detection is name-based for now ({@code bliss}, {@code sundial}), cached per
+ * pack name.
  */
 public final class MistInjectionProfiles {
 
@@ -27,7 +36,9 @@ public final class MistInjectionProfiles {
         /** Draw into colortex0 and composite over the scene colour (default). */
         SCENE_COLOR,
         /** Draw into colortex2 with premultiplied under-operator semantics. */
-        TRANSLUCENT_LAYER
+        TRANSLUCENT_LAYER,
+        /** Fold into the deferred-lit HDR scene buffer (Sundial colortex3). */
+        HDR_SCENE
     }
 
     private static String lastPackName;
@@ -40,11 +51,20 @@ public final class MistInjectionProfiles {
         String name = ShaderColoredLightAdapters.activePackName();
         if (name.equals(lastPackName))
             return lastProfile;
-        Profile profile = name.toLowerCase(Locale.ROOT).contains("bliss")
-                ? Profile.TRANSLUCENT_LAYER
-                : Profile.SCENE_COLOR;
+        String lower = name.toLowerCase(Locale.ROOT);
+        Profile profile;
+        if (lower.contains("bliss"))
+            profile = Profile.TRANSLUCENT_LAYER;
+        else if (lower.contains("sundial"))
+            profile = Profile.HDR_SCENE;
+        else
+            profile = Profile.SCENE_COLOR;
         CreateManaIndustry.LOGGER.info("Mist injection profile for shaderpack '{}': {}", name,
-                profile == Profile.TRANSLUCENT_LAYER ? "translucent-layer (Bliss-family)" : "scene-color");
+                switch (profile) {
+                    case TRANSLUCENT_LAYER -> "translucent-layer (Bliss-family)";
+                    case HDR_SCENE -> "hdr-scene (Sundial-family)";
+                    case SCENE_COLOR -> "scene-color";
+                });
         lastPackName = name;
         lastProfile = profile;
         return profile;

@@ -155,6 +155,7 @@ public final class CMIParticleEngine {
     /** Scratch Proj*View and its 6 normalized frustum planes (keygen cull test). */
     private final Matrix4f projView = new Matrix4f();
     private final float[] frustumPlanes = new float[24];
+    private final org.joml.Vector4f planeScratch = new org.joml.Vector4f();
 
     private CMIParticleEngine() {
     }
@@ -662,6 +663,7 @@ public final class CMIParticleEngine {
         GL20.glUseProgram(prog);
         this.gpu.bindParticleWrite(1);
         this.gpu.bindEmitters(5);
+        this.gpu.bindModelGeo(); // unbindShaders() clears binding 12 every frame
         this.gpu.bindVao();
 
         setMat4Uniform(prog, "ModelViewMat", view);
@@ -762,30 +764,31 @@ public final class CMIParticleEngine {
     }
 
     /**
-     * Extracts the six normalized Gribb–Hartmann frustum planes of Proj*View
-     * into {@link #frustumPlanes} for keygen's per-particle sphere test. The
-     * view matrix is the camera rotation, so plane distances are measured
-     * against camera-relative positions — matching the shader convention
+     * Extracts the six frustum planes of Proj*View into {@link #frustumPlanes}
+     * for keygen's per-particle sphere test, using JOML's built-in
+     * Gribb–Hartmann extraction (PLANE_NX..PLANE_PZ; inside points satisfy
+     * dot(n,p)+d >= 0). Hand-rolling this with mAB() accessors is a convention
+     * trap — JOML's mAB is column-A/row-B, and mixing up rows/columns yields
+     * garbage planes that cull everything. The view matrix is the camera
+     * rotation, so plane distances are measured against camera-relative
+     * positions — matching the shader convention
      * {@code uView * vec4(worldPos - uCamPos, 1)}.
      */
     private void extractFrustum(Matrix4fc projectionMatrix, Matrix4fc view) {
         Matrix4f m = this.projView.set(projectionMatrix).mul(view);
-        plane(0, m.m30() + m.m00(), m.m31() + m.m01(), m.m32() + m.m02(), m.m33() + m.m03()); // left
-        plane(1, m.m30() - m.m00(), m.m31() - m.m01(), m.m32() - m.m02(), m.m33() - m.m03()); // right
-        plane(2, m.m30() + m.m10(), m.m31() + m.m11(), m.m32() + m.m12(), m.m33() + m.m13()); // bottom
-        plane(3, m.m30() - m.m10(), m.m31() - m.m11(), m.m32() - m.m12(), m.m33() - m.m13()); // top
-        plane(4, m.m30() + m.m20(), m.m31() + m.m21(), m.m32() + m.m22(), m.m33() + m.m23()); // near
-        plane(5, m.m30() - m.m20(), m.m31() - m.m21(), m.m32() - m.m22(), m.m33() - m.m23()); // far
-    }
-
-    /** Normalizes one plane (a,b,c,d) into its flat uniform-array slot. */
-    private void plane(int i, float a, float b, float c, float d) {
-        float inv = 1f / (float) Math.sqrt(a * a + b * b + c * c);
-        int o = i * 4;
-        this.frustumPlanes[o] = a * inv;
-        this.frustumPlanes[o + 1] = b * inv;
-        this.frustumPlanes[o + 2] = c * inv;
-        this.frustumPlanes[o + 3] = d * inv;
+        for (int i = 0; i < 6; i++) {
+            m.frustumPlane(i, this.planeScratch);
+            float a = this.planeScratch.x;
+            float b = this.planeScratch.y;
+            float c = this.planeScratch.z;
+            float d = this.planeScratch.w;
+            float inv = 1f / (float) Math.sqrt(a * a + b * b + c * c);
+            int o = i * 4;
+            this.frustumPlanes[o] = a * inv;
+            this.frustumPlanes[o + 1] = b * inv;
+            this.frustumPlanes[o + 2] = c * inv;
+            this.frustumPlanes[o + 3] = d * inv;
+        }
     }
 
     /** Allocates (or returns) the GPU emitter header id for a spec, cached by equals. */

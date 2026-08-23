@@ -91,9 +91,10 @@ public final class ParticleBuffers {
     private float[] emitterMirror;
     private boolean emittersDirty = false;
 
-    // Reusable scratch for tiny uploads: indirect commands (8 ints = 32 B) and
-    // counter pair (2 ints); 32 bytes covers both safely.
-    private final ByteBuffer tmp4 = BufferUtils.createByteBuffer(32);
+    // Reusable scratch for tiny uploads: the initial indirect payload is the
+    // largest writer (INDIRECT_COMMANDS x 16 B = 48 B); 64 B covers it and the
+    // counter pairs with headroom.
+    private final ByteBuffer tmp4 = BufferUtils.createByteBuffer(64);
     private final ByteBuffer zero1024 = BufferUtils.createByteBuffer(1024);
     /** Matches the "major.minor" prefix of a GL_VERSION string. */
     private static final java.util.regex.Pattern GL_VERSION_PATTERN =
@@ -266,6 +267,11 @@ public final class ParticleBuffers {
     /** Binds the model-permutation buffer at its fixed binding for keygen/draw. */
     public void bindOrderModel() {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, ORDERMODEL_BINDING, this.orderModelSSBO);
+    }
+
+    /** Binds the static model geometry for the model draw pass (must be re-bound every frame — see {@link #unbindShaders()}). */
+    public void bindModelGeo() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, MODELGEO_BINDING, this.modelGeoSSBO);
     }
 
     /**

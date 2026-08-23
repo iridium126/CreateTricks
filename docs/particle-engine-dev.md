@@ -165,6 +165,9 @@
 19. **审查修复：`enabled` 配置是死开关** → `renderFrame` 从未读取；现在关闭即清池停止渲染。另加 GL 4.3 版本检查（老 GPU 明确禁用而非静默失败）
 20. **审查修复：节流器测的是 CPU 提交耗时** → dispatch 异步、GPU 真实开销不可见；改用 `GL_TIME_ELAPSED` 查询环（4 深、读 3 帧前样本、不阻塞），首查完成前回退 CPU 耗时
 21. **审查修复：emit 每线程线性扫命令表**（≤256 次 SSBO 读）→ CPU 把排他前缀偏移写进命令 b.z，GPU 二分定位（O(log N)）；顺带修 CONE 轴平行守卫（先 normalize 再判长度是死代码）与 cherry 自旋加速度换算（deg/tick² 应 ×400 而非 ×20）
+22. **回归：`INDIRECT_COMMANDS` 2→3 后 `tmp4`（32 B）写 3×16=48 B 初始命令 → `BufferOverflowException`、GPU init 失败**（踩坑 #1 同款：容量常量与命令数解耦）。`tmp4` 扩至 64 B；教训：`tmp4` 容量必须 ≥ `INDIRECT_COMMANDS × 16`
+23. **症状"所有粒子不可见"（live 正常、`gpu≈0.0x ms`）：手写 Gribb–Hartmann 平面提取取错了 JOML 矩阵元素**——`mAB()` 是**列 A 行 B**约定，取"第 3 行"应读 `m03/m13/m23/m33`，误取了第 3 列 `m30/m31/m32/m33`（平移列）→ 垃圾平面把所有粒子判为屏幕外，keygen 全部剔除（实例数 0）。改用 JOML 内置 `Matrix4f.frustumPlane(i, Vector4f)`（同算法、约定免疫）+ 手动归一化。**诊断特征**：存活计数正常但 GPU 耗时趋近于零 = 剔除/绘制段产出为零
+24. **症状"仅 MODEL 不可见（首帧闪现后消失）"：模型几何 SSBO（binding 12）只在 init 上传时绑定过一次，而 `unbindShaders()` 每帧把 binding 0..13 全清**——其余绑定（粒子池/发射器头/orderAdd/orderModel/sort）都在各自 pass 每帧重绑，唯独几何漏了 → 第 2 帧起顶点拉取落空、draw 静默失败。修复：`drawModels` 每帧 `bindModelGeo()`。**纪律**：新增任何常驻 SSBO 绑定，必须在消费它的 pass 里每帧重绑（`unbindShaders` 全清是卫生约定）
 
 ---
 

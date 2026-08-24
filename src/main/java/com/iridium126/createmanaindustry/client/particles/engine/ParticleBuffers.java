@@ -33,7 +33,13 @@ public final class ParticleBuffers {
     /** Bytes per particle in the double-buffered particle SSBOs (4 vec4 × 4 floats × 4 B). */
     public static final int BYTES_PER_PARTICLE = VEC4_PER_PARTICLE * 4 * 4; // 64 B
     public static final int MAX_EMIT_COMMANDS = 256;
-    public static final int EMIT_RING_SIZE = 3;
+    /**
+     * Emit-command ring depth. Deliberately aligned with {@link #COUNTER_RING}
+     * (4): unlike the counter ring this ring has NO fence guarding the reuse of
+     * its oldest slot, so its margin against a CPU run-ahead overwriting a slot
+     * the GPU is still reading must not be smaller than the counter ring's.
+     */
+    public static final int EMIT_RING_SIZE = 4;
     /** Emitter header in vec4 — mirrors EmitterSpec.VEC4_PER_EMITTER. */
     public static final int VEC4_PER_EMITTER = EmitterSpec.VEC4_PER_EMITTER;
     /**
@@ -323,10 +329,16 @@ public final class ParticleBuffers {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, binding, this.counterSSBOs[slot % COUNTER_RING]);
     }
 
-    /** Binds the PREVIOUS frame's counter slot read-only (update.comp's exact live-count source). */
+    /**
+     * Binds the given counter slot read-only as update.comp's exact live-count
+     * source. The CALLER owns choosing which slot is authoritative — the engine
+     * passes {@code lastGoodSlot}, the slot of the last frame whose output pool
+     * was actually committed by a swap — so an aborted frame can never expose
+     * its own partially-written counters as the read pool's live count.
+     */
     public void bindPrevCounter(int binding, int slot) {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, binding,
-                this.counterSSBOs[(slot + COUNTER_RING - 1) % COUNTER_RING]);
+                this.counterSSBOs[slot % COUNTER_RING]);
     }
 
     public void bindEmitters(int binding) {

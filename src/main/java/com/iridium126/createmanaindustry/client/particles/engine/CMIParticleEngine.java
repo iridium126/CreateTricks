@@ -171,6 +171,20 @@ public final class CMIParticleEngine {
     private long pendingFence = 0;
     /** Counter ring slot {@link #pendingFence} covers. */
     private int pendingSlot = 0;
+    /**
+     * Counter ring slot of the last frame whose output pool was committed by a
+     * swap — the ONLY slot update.comp may trust as the read buffer's exact
+     * live count. Deriving that slot positionally ({@code current - 1}) breaks
+     * when a frame aborts mid-flight: its reset/update passes have already
+     * written a PARTIAL counter value into its own slot, and gating the next
+     * frame's compaction on that garbage would let stale pool entries beyond
+     * the true dense prefix resurrect as ghost particles. Pinning the gate to
+     * the last GOOD slot keeps it matched to whatever pool the read side
+     * actually holds. Every path that empties the pool ({@code init},
+     * {@code clearParticles}) zeroes ALL counter slots, so a stale index left
+     * behind by those paths safely reads a live count of 0.
+     */
+    private int lastGoodSlot = 0;
     private volatile int liveDisplay = 0;
     private volatile float scale = 1f;
     private volatile int streamCount = 0;
@@ -543,7 +557,8 @@ public final class CMIParticleEngine {
         //    brackets all GPU work (dispatches + draws) of this frame.
         // Upper bound on the read buffer's live count (snapshot + spawns since
         // — deaths only shrink it); update threads beyond the GPU-exact count
-        // (read from the previous counter slot, binding 14) exit immediately.
+        // (read from the LAST COMMITTED frame's counter slot, binding 14 — see
+        // lastGoodSlot) exit immediately.
         int updateBound = Math.min(cap, this.aliveKnown + this.spawnDelta + 64);
         if (!this.timerReady) {
             GL15.glGenQueries(this.timerQueries);
@@ -567,7 +582,10 @@ public final class CMIParticleEngine {
             this.gpu.bindParticleRead(0);
             this.gpu.bindParticleWrite(1);
             this.gpu.bindCounter(3, slot);
-            this.gpu.bindPrevCounter(ParticleBuffers.PREVCOUNTER_BINDING, slot);
+            // NOT slot - 1: an aborted previous frame leaves its own counter
+            // slot half-written; the read pool still belongs to the last
+            // swapped (good) frame, so gate compaction on THAT frame's slot.
+            this.gpu.bindPrevCounter(ParticleBuffers.PREVCOUNTER_BINDING, this.lastGoodSlot);
             this.gpu.bindEmitters(5);
             if (this.collisionBake.ready()) {
                 this.collisionBake.bind(0);
@@ -738,6 +756,12 @@ public final class CMIParticleEngine {
             // the last fully-written pool as the next frame's read source, and
             // the finally below restores the post-frame GL state instead.
             this.gpu.swap();
+            // The swap committed this frame's output as the next read source —
+            // only NOW does this frame's counter slot become the authoritative
+            // live count for update.comp (see lastGoodSlot). Assigned after the
+            // swap so an abort anywhere above can never promote a slot whose
+            // pool was discarded.
+            this.lastGoodSlot = slot;
         } finally {
             if (queryActive) {
                 // Mid-frame failure: end the partial sample so the query object

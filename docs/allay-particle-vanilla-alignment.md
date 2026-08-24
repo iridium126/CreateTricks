@@ -2,8 +2,8 @@
 
 > 范围：MODEL 材质粒子（程序化 Allay 实例渲染管线）
 > 方法：以 .refs/neoforge-21.1.227（原版反编译源码）、.refs/Iris、.refs/photon、.refs/ComplementaryReimagined 为基准逐一核对
-> 决策方式：grilling 逐项确认（Q1–Q8，Q8 为文档定稿后的性能补录），本文档为最终共识的固化
-> 状态：**分析与计划完成，代码未动**——开工与否待审阅本计划后另行决定
+> 决策方式：grilling 逐项确认（Q1–Q8，Q8 为文档定稿后的性能补录；Q9 为游戏内实测后的范围修订），本文档为最终共识的固化
+> 状态：**阶段一五项已实施落地**（法线烘焙/漫反射/爆发自旋/跳舞俯仰/图集 mip，含一项已知偏差待修，见阶段一末注）；阶段二已结案（S1 NO-GO 终审，见附录 B-4）；**范围修订（Q9）：游戏内实测确认现有自绘管线在任意光影包下均稳定兼容**——后续光影包适配收敛为仅 MODEL 粒子，精灵类粒子冻结不动
 
 ---
 
@@ -16,11 +16,21 @@
 | Photon · 投影 | ✅ 精确可达 | L2a 自绘深度进阴影通道 | 高 |
 | Complementary · 投影 | ✅ 精确可达 | 同 L2a（畸变更简单，成本最低） | 高 |
 | Complementary · 表面受光 | ⚠️ 仅观感近似 | C2 复刻其净效果；**缓办** | 中 |
+| 精灵类粒子（加色/贴图）× 任意包 | ➖ 无需对齐 | **维持现状（Q9 实测定案）**：稳定叠加渲染，无包效果即预期形态 | 高 |
 
 核心发现："原版悦灵的自发光感"在两包中的机制完全不同且都无特殊魔法：
 
 - **Photon**（延迟渲染）：悦灵签名是 G-buffer 光照等级通道恒写 (1.0, sky)（来自 getBlockLightLevel=15），延迟 pass 据此给满方块光响应。**契约可镜像**。
 - **Complementary**（前向渲染）：悦灵只是被钳到方块光 0.8 的普通受光实体（entityId 50080 分支），洞里呈暖色火光染色而非白亮。**没有中间契约可写**，只能近似。
+
+### 0.1 范围修订（Q9，游戏内实测）
+
+实测结论：现有自绘管线（加色精灵、贴图 ALPHA/OPAQUE 精灵、MODEL 模型三类全部）在**任意光影包**下均稳定渲染——自绘绘制既不被包捕获、也不破坏包的合成，等效于一个干净的"未受包效果叠加层"，无任何兼容性瑕疵。
+
+据此修订范围：
+
+- **精灵类粒子（ADDITIVE / ALPHA / OPAQUE）冻结现状**，永久不做光影包适配。理由：加色混合本就近似自发光（无受光可谈）；OPAQUE cutout 写深度，与包的深度消费交互良好；"没有叠加包效果"即这类粒子的预期形态。任何接入尝试都只有成本没有收益；
+- **光影包适配的全部剩余工作收敛到 MODEL（悦灵）粒子**两条线：表面受光（G-self 路线，附录 B-3/B-4）与投影（阶段三 L2a）。本文档其余部分的 Photon/Complementary 解剖继续有效，但适用对象自此仅为 MODEL。
 
 ---
 
@@ -114,6 +124,8 @@ ShadowDistortionRegistry + 各包参数解析｜ShadowRendererAccessor mixin 先
 
 **验证矩阵（并排 /summon minecraft:allay 截图对比）**：正午户外 / 夜晚地表 / 全暗洞穴 / dance / spin / hold / 近景(4格) / 中景(32格) / 远景(96格淡出缘)。通过标准：静止帧普通玩家不可分辨（D6 运动自由度除外）。
 
+**实施记录**：五项均已落地（`AllayModelGeometry` stride 7 + 法线轴表、`model.fsh` 双方向光 + BASE_BRIGHTNESS 校准口、`model.vsh` SPIN_CYCLE_S/SPIN_WINDOW_FRACTION 爆发节奏、dance 分支 headXRot 归零、`ParticleAtlas.ALLAY` mipmap）。**已知偏差已修复**：步骤 1.2 初版漫反射相对原版 `minecraft_mix_light` 少乘了 MINECRAFT_LIGHT_POWER（0.6）（对照 `.refs/neoforge-21.1.227/.../shaders/include/light.glsl`）——中间角度受光面偏亮（侧面 0.966 vs 原版 0.740）、立体感被压平；已按原版公式补齐（model.fsh，POWER/AMBIENT 常量命名与 light.glsl 对齐）。待办：BASE_BRIGHTNESS=0.97 的目测校准基于带缺陷的公式，重跑上述验证矩阵时确认是否需上调。
+
 ### 阶段二：光影包 spike（判定性实验，先行）
 1. 在 RenderLevelStageEvent.AFTER_ENTITIES 时点以调试纯色画一个 MODEL 实例，Photon 启用状态下检查：写入是否幸存至合成、附件绑定是否为 gbuffer MRT、TAAU 坐标换算是否正确
 2. 若 AFTER_ENTITIES 不落窗口 → 备选：小型 Iris mixin（项目已有 iris mixins 先例）
@@ -204,15 +216,15 @@ ShadowDistortionRegistry + 各包参数解析｜ShadowRendererAccessor mixin 先
 
 **G-self 形态据此精确化**：① 编译链替换——ParticlePrograms 产物经 AST 合并包上下文后以 Iris ShaderInstance 存在；② 执行点 mixin——进入被追踪调用流（参考其 IrisInstancedDrawManager）；③ 十万实例 SSBO 管线原样保留。spike 探针保留为诊断工具（`/cmip spike`）。
 
-### 阶段三：L2a 阴影自绘（两包共享）
+### 阶段三：L2a 阴影自绘（两包共享；**仅 MODEL 粒子**，精灵类不参与投影——Q9 定案）
 - 新 mixin：挂 ShadowRenderer 取绘制窗口（实体 endBatch 后、半透明地形之前——与不透明遮挡体同窗；源码注释明确警告此后绘制会被包按半透明彩影语义处理，纯深度写入虽不受染色，仍宜对齐）
 - 新着色器变体 model_shadow.{vsh,fsh}：阴影 MVP + 畸变（参数取自 PackShadowParams）+ 仅深度输出 + polygon offset 防 acne
 - ParticlePrograms 注册变体；Complementary 先行（畸变参数已有解析设施），Photon 届时按 shadow.glsl 同法核对
-- 剔除策略（性能定案）：keygen 对 MODEL/半透明项放宽为距离界（≤淡出距+余量，默认 120 格，与典型阴影半平面 128 格基本重合；超出淡出界的粒子本身不可见，其远端长影属可接受近似），additive/OPAQUE 精灵仍走相机视锥严格剔除——排序数组增量极小，主路径效率基本不变，屏外粒子影子不再消失
+- 剔除策略（性能定案）：keygen 仅对 MODEL 项放宽为距离界——Q9 定案后仅 MODEL 有投影路径，ALPHA 精灵虽属半透明排序但不进阴影、维持视锥严格剔除（距离界 ≤淡出距+余量，默认 120 格，与典型阴影半平面 128 格基本重合；超出淡出界的粒子本身不可见，其远端长影属可接受近似），additive/OPAQUE 精灵仍走相机视锥严格剔除——排序数组增量极小，主路径效率基本不变，屏外粒子影子不再消失
 - 计时补盲（性能定案）：每个钩子点挂独立 GL_TIME_ELAPSED query 环（沿用 TIMER_RING 轮询模式，零超时非阻塞），下一帧并入节流 EMA——消除光影包下新增成本的度量盲区
 - 验收：晴天地面出现悦灵影子、随时间方向正确、SHADOW_QUALITY 低配档不崩；高角度俯视机位无缺影；/cmip stats 显示的 gpu 值含钩子贡献
 
-### 阶段四：Photon S1 契约镜像
+### 阶段四：Photon S1 契约镜像（**仅 MODEL**；精灵类不进包管线——Q9 定案）
 - 新变体 model_photon_gbuffer.{vsh,fsh}：照抄 include/utility 打包函数 + material_mask 取实体值 + light_levels 恒 (1.0, sky近似) + TAAU 坐标处理
 - 按 ShaderColoredLightAdapters 同构模式建 GbufferContractAdapters（Photon 首发，后续包各一份布局适配器）
 - **渲染路径仲裁**：S1 激活帧跳过 drawModels() 主模型段（MODEL 已进 Photon 光照管线，双绘既翻倍顶点成本又导致 colortex 叠加发亮）；additive/贴图精灵路径不受影响
@@ -231,7 +243,7 @@ ShadowDistortionRegistry + 各包参数解析｜ShadowRendererAccessor mixin 先
 ParticlePrograms 编译时拼接（PRELUDE 机制的自然扩展）。禁止任何形式的拷贝复用。
 
 ### 明确不做（含理由存档）
-L1 手动采样受光（被 S1 取代）｜Complementary C1 真实接管（需放弃 SSBO 顶点拉取改喂 #version130 传统属性，动摇引擎根基）｜L2b 走包实体程序（架构不可达）｜S2 HDR 伪发光（神似非一致）｜贴地阴影 / 手持物品 / OVERLAY（见 Q5）。
+精灵类粒子（ADDITIVE/ALPHA/OPAQUE）的光影包效果适配——Q9 实测定案：现有路径任意包稳定叠加渲染，无包效果即预期形态，改动零收益｜L1 手动采样受光（被 S1 取代）｜Complementary C1 真实接管（需放弃 SSBO 顶点拉取改喂 #version130 传统属性，动摇引擎根基）｜L2b 走包实体程序（架构不可达）｜S2 HDR 伪发光（神似非一致）｜贴地阴影 / 手持物品 / OVERLAY（见 Q5）。
 
 ---
 
@@ -239,7 +251,7 @@ L1 手动采样受光（被 S1 取代）｜Complementary C1 真实接管（需�
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| Spike 判定 AFTER_ENTITIES 不在窗口内 | 阶段四延期 | 备选 mixin 路径已明确；最坏退化为 L0+C2 |
+| Spike 判定 AFTER_ENTITIES 不在窗口内 | 阶段四延期 | 备选 mixin 路线已明确（G-self / X2）；最坏退化为 L0+C2——Q9 实测确认 L0 基线任意包稳定，可长期接受 |
 | 包版本漂移（entityId 表 / gbuffer 布局 / 打包函数变动） | 适配器失效 | 适配器启动时校验签名（仿 ShadowDistortionRegistry.lastSignature 机制），失配即降级 L0 并告警 |
 | 近白基色校准主观性 | 验收争议 | 校准口做成编译期常量，以验证矩阵截图为准 |
 | 三变体性能叠加 | GPU 时间上升 | 各变体仅在各自窗口/有实例时分派；现有预算节流覆盖 |
@@ -249,4 +261,4 @@ L1 手动采样受光（被 S1 取代）｜Complementary C1 真实接管（需�
 
 ## 6. 决策记录索引
 
-Q1 验收=B 观感对齐｜Q2 光照=法线漫反射+近白基色｜Q3 自旋=复刻爆发节奏｜Q4 mip=仅 ALLAY 图集｜Q5 排除三项｜Q6 分包=L2a+S1(Photon) 核心、C2 缓办、余排除｜工程约束=源码组装去重｜Q7 交付=报告+计划（本文档），开工另批。Q8 性能定案=MODEL 项 keygen 剔除放宽至距离界（精灵类保持视锥严格剔除）＋各钩子点独立 timer query 环并入节流＋S1 激活帧跳过主模型段。
+Q1 验收=B 观感对齐｜Q2 光照=法线漫反射+近白基色｜Q3 自旋=复刻爆发节奏｜Q4 mip=仅 ALLAY 图集｜Q5 排除三项｜Q6 分包=L2a+S1(Photon) 核心、C2 缓办、余排除｜工程约束=源码组装去重｜Q7 交付=报告+计划（本文档），开工另批。Q8 性能定案=MODEL 项 keygen 剔除放宽至距离界（精灵类保持视锥严格剔除）＋各钩子点独立 timer query 环并入节流＋S1 激活帧跳过主模型段。Q9 范围修订（游戏内实测）=现有自绘管线在任意光影包下兼容（正确渲染、仅不叠加包效果）；光影包适配收敛为仅 MODEL 粒子（表面受光 G-self ＋ 投影 L2a），ADDITIVE/ALPHA/OPAQUE 精灵类冻结不动。

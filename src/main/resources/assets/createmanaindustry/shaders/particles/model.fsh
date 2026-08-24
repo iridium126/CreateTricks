@@ -29,9 +29,13 @@ out vec4 fragColor;
 // 0.4 ambient floor ('overall darker, higher contrast' symptom).
 const vec3 LIGHT0_DIR = vec3(0.16169, 0.80845, -0.56594);
 const vec3 LIGHT1_DIR = vec3(-0.16169, 0.80845, 0.56594);
+// vanilla light.glsl coefficients, kept verbatim (names included) so future
+// parity checks diff against the reference rather than re-derived constants
+#define MINECRAFT_LIGHT_POWER   (0.6)
+#define MINECRAFT_AMBIENT_LIGHT (0.4)
 // near-white base standing in for the lightmap at block light 15; calibration
 // port for parity tuning (docs/allay-particle-vanilla-alignment.md step 1.2)
-const float BASE_BRIGHTNESS = 0.97;
+const float BASE_BRIGHTNESS = 1.0;
 
 void main() {
     vec4 tex = texture(uSprite, vUv);
@@ -41,8 +45,13 @@ void main() {
     vec3 n = normalize(vNormalView);
     if (!gl_FrontFacing)
         n = -n;
-    float diffuse = clamp(0.4 + max(dot(LIGHT0_DIR, n), 0.0)
-                              + max(dot(LIGHT1_DIR, n), 0.0), 0.0, 1.0);
+    // minecraft_mix_light verbatim (light.glsl): (l0 + l1) * POWER + AMBIENT.
+    // Terms are non-negative, so like vanilla only the upper clamp is needed.
+    // POWER was missing until the Q9-era review caught it: mid-angle faces
+    // rendered ~0.97 where vanilla gives ~0.74 (flattened shading).
+    float diffuse = min(1.0, (max(dot(LIGHT0_DIR, n), 0.0)
+                            + max(dot(LIGHT1_DIR, n), 0.0)) * MINECRAFT_LIGHT_POWER
+                            + MINECRAFT_AMBIENT_LIGHT);
     vec3 shaded = tex.rgb * vColor * (BASE_BRIGHTNESS * diffuse);
     if (vSeg < 0.5) {
         if (tex.a * farFade < 0.5)

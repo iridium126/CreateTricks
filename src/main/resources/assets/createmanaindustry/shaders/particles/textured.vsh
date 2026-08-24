@@ -1,7 +1,10 @@
 // Textured billboard particle vertex shader, two modes selected by uMode:
 //   0 — ALPHA blended: walks the COMBINED translucent sort array (depth-sorted
-//       back-to-front together with the MODEL translucent parts) and clips the
-//       model-type items (they belong to the model translucent draw).
+//       back-to-front together with the MODEL translucent parts). Its draw
+//       command's instanceCount is the COMBINED item total -- keygen writes
+//       the same value into BOTH translucent commands' count fields -- so
+//       clipping non-sprite items here (payload type != 0) is required, not
+//       defensive.
 //   1 — OPAQUE cutout: walks the dense orderOpaque permutation, no sorting.
 // Per-particle data is fetched from the particle SSBO; texture frame, spin and
 // tint are derived from the per-particle seed / emitter header.
@@ -14,10 +17,10 @@ uniform float uAtlasCols;
 uniform float uAtlasRows;
 uniform int uMode; // 0 = blended (sorted walk), 1 = opaque cutout permutation
 
-layout(std430, binding = 1) readonly buffer ParticleRead { vec4 data[]; } particles;
-layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
-layout(std430, binding = 7) readonly buffer SortBuf { uvec2 kv[]; } sort;
-layout(std430, binding = 15) readonly buffer OrderOpaqueBuf { uint order[]; } orderOpaque;
+layout(std430, binding = BIND_POOL_WRITE) readonly buffer ParticleRead { vec4 data[]; } particles; // freshly written pool
+layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+layout(std430, binding = BIND_SORT_WRITE) readonly buffer SortBuf { uvec2 kv[]; } sort;
+layout(std430, binding = BIND_ORDER_OPAQUE) readonly buffer OrderOpaqueBuf { uint order[]; } orderOpaque;
 
 out vec2 vUv;      // atlas-space UV
 out vec3 vColor;
@@ -65,7 +68,7 @@ void main() {
 
     float life = clamp(p3.x / max(p3.y, 1e-5), 0.0, 1.0);
     uint eid = floatBitsToUint(p3.w);
-    uint hb = eid * 20u; // VEC4_PER_EMITTER (must match EmitterSpec.VEC4_PER_EMITTER)
+    uint hb = eid * VEC4_PER_EMITTER;
 
     float sizeStart = emitters.u[hb + 5u].z;
     float sizeEnd = emitters.u[hb + 5u].w;

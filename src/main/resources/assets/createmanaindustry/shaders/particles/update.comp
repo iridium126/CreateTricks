@@ -18,14 +18,14 @@ const int SY = 32;
 const int SZ = 48;
 const int BAKE_SLICES = 8; // CollisionBake.MAX_SLICES
 
-layout(std430, binding = 0) readonly buffer ParticleRead { vec4 data[]; } readBuf;
-layout(std430, binding = 1) buffer ParticleWrite { vec4 data[]; } writeBuf;
-layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; uint alphaAlive; } counter;
-layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
-layout(std430, binding = 11) readonly buffer BakeMetaBuf { vec4 m[]; } bakeMeta;
+layout(std430, binding = BIND_POOL_READ) readonly buffer ParticleRead { vec4 data[]; } readBuf;
+layout(std430, binding = BIND_POOL_WRITE) buffer ParticleWrite { vec4 data[]; } writeBuf;
+layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
+layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+layout(std430, binding = BIND_BAKEMETA) readonly buffer BakeMetaBuf { vec4 m[]; } bakeMeta;
 // previous frame's counter slot: its writeSlot is the read buffer's EXACT live
 // count (final value after that frame's update+emit appends)
-layout(std430, binding = 14) readonly buffer PrevCounterBuf { uint live; uint spare; uint alphaAlive; } prevCounter;
+layout(std430, binding = BIND_PREV_COUNTER) readonly buffer PrevCounterBuf { uint live; uint spare; uint translucentCensus; } prevCounter;
 
 layout(binding = 0) uniform sampler3D uCollision;
 
@@ -59,7 +59,7 @@ void main() {
         return; // dead -> drops out of the compacted output
 
     uint eid = floatBitsToUint(p3.w);
-    uint hb = eid * 20u; // VEC4_PER_EMITTER (must match EmitterSpec.VEC4_PER_EMITTER)
+    uint hb = eid * VEC4_PER_EMITTER;
     vec3 gravity = emitters.u[hb + 2u].xyz;
     float drag = emitters.u[hb + 2u].w;
     vec3 accel = emitters.u[hb + 3u].xyz;

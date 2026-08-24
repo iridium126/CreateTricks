@@ -42,18 +42,21 @@ import org.lwjgl.system.MemoryStack;
  * <p>
  * Two draw paths:
  * <ul>
- *   <li><b>Fast</b> (no ALPHA particles alive): {@code keygen} still runs
- *       every frame as the cull pass — GPU frustum culling plus the additive
- *       permutation — but the counting sort and the textured alpha draw are
+ *   <li><b>Fast</b> (no translucent particles alive): {@code keygen} still runs
+ *       every frame as the cull pass — GPU frustum culling plus permutation
+ *       partitioning — but the counting sort and the two sorted draws are
  *       skipped.</li>
- *   <li><b>Sorted</b> (any ALPHA particles): {@code keygen} also writes
- *       (key,index) pairs into the sort buffer — inverted, logarithmically
+ *   <li><b>Sorted</b> (any ALPHA/MODEL particles): {@code keygen} also writes
+ *       (key,payload) pairs into the sort buffer — inverted, logarithmically
  *       quantized view-depth bands (constant relative resolution, far drawn
- *       first) — and a single-pass GPU counting sort (histogram/scan/scatter)
- *       orders the alpha permutation back-to-front. The pool is drawn in two
- *       frustum-culled ranges (additive first, then alpha). ALPHA particles
- *       sample a sprite atlas; colliding emitters also resolve against a 3D
- *       occupancy bake in the update pass.</li>
+ *       first) with the item type riding in the payload — and a single-pass
+ *       GPU counting sort (histogram/scan/scatter) orders the COMBINED
+ *       translucent items back-to-front; the model ghost segment and the ALPHA
+ *       sprites both walk that array, each filtering to its own type. Draw
+ *       order groups all depth writers first (OPAQUE cutout sprites, model
+ *       multi-draw), then the sorted translucent passes, additive last.
+ *       Textured sprites sample an atlas; colliding emitters also resolve
+ *       against a 3D occupancy bake in the update pass.</li>
  * </ul>
  * All GL programs are created from the mod's bundled GLSL with raw LWJGL
  * ({@link ParticlePrograms}) — no dependency on Veil's shader manager.
@@ -66,7 +69,7 @@ public final class CMIParticleEngine {
     private static final int SAFETY_MARGIN = 2048;
     /**
      * Width of the distance fade ramp past the configured fade distance
-     * (blocks); must match the literal in additive.fsh / alpha.fsh.
+     * (blocks); must match the literal in additive.fsh / textured.fsh.
      */
     private static final float FADE_RAMP_BLOCKS = 24.0f;
     /** Counting-sort passes over the 8-bit depth-band key (one, by design). */
@@ -666,28 +669,33 @@ public final class CMIParticleEngine {
             }
         }
 
-        // 7. Draw. Model opaque segment first (cutout + depth writes), then
-        //    additive, then the OPAQUE cutout sprites (also depth-writing, so
-        //    unsorted); when translucent items exist, the combined sort runs
-        //    and the two translucent draws follow back-to-front: MODEL parts
-        //    (blend + depth write — ghost surfaces occlude like tinted glass)
-        //    before the ALPHA sprites (blend, no depth write).
+        // 7. Draw. Every DEPTH-WRITING pass first (OPAQUE cutout sprites, then
+        //    ONE merged model multi-draw: opaque cutout segment -> translucent
+        //    ghost segment), so early-Z rejects occluded fragments of all later
+        //    blended passes. When translucent items exist, the combined sort
+        //    runs and the ALPHA sprites follow back-to-front (blend, no depth
+        //    write; ghosts before sprites is the documented tradeoff). Additive
+        //    draws LAST: it is order-independent, so position costs nothing but
+        //    lets ghost depth occlude glow behind cloaks.
         if (aliveEstimate > 0 || entryCount > 0) {
-            this.gpu.bindOrderModel();
-            drawModels(view, projectionMatrix, camera, false);
-            this.gpu.bindOrderAdd();
-            drawPass(0, view, projectionMatrix, camera);
+            // Bind the FINAL sorted permutation up front: both translucent
+            // segments (model ghost segment here, ALPHA sprites below) walk it.
+            // On the fast path nothing reads it, but the programs statically
+            // declare the sort SSBO, so keep a valid buffer bound regardless.
+            this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING,
+                    sorted ? finalPerm : this.gpu.sortBuffer(0));
             this.gpu.bindOrderOpaque();
             drawPass(1, view, projectionMatrix, camera);
+            this.gpu.bindOrderModel();
+            drawModels(view, projectionMatrix, camera);
             if (sorted) {
-                this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, finalPerm);
-                this.gpu.bindOrderModel();
-                drawModels(view, projectionMatrix, camera, true);
                 drawPass(2, view, projectionMatrix, camera);
             }
+            this.gpu.bindOrderAdd();
+            drawPass(0, view, projectionMatrix, camera);
         }
 
-        // 8. Capture this frame's UNculled alpha census (counter.alphaAlive,
+        // 8. Capture this frame's UNculled translucent census (counter.translucentCensus,
         //    maintained by keygen before the frustum test) into the counter
         //    ring spare, then fence the frame: next frame POLLS the fence and
         //    only reads the counters once the GPU has finished writing them
@@ -725,20 +733,21 @@ public final class CMIParticleEngine {
     }
 
     /**
-     * Draws one MODEL sub-pass through the element-indexed geometry: the
-     * opaque segment (cutout + depth writes, dense permutation) or the
-     * translucent segment (cloak + wings) walking the COMBINED translucent
-     * sort array. The translucent pass blends WITH depth writes: the sorted
-     * back-to-front order makes overlapping ghosts composite correctly, and
-     * within one allay the depth writes resolve part order geometrically
-     * (closer parts win) while giving the double-wound shell single blend per
-     * pixel from BOTH sides. Ghost surfaces therefore occlude later translucent
-     * draws (sprites behind a cloak are hidden rather than seen through it) —
-     * the documented tradeoff. Winding follows vanilla {@code ModelPart.Cube}
-     * order; if a future geometry bake flips it, swap {@code glFrontFace} — do
-     * not reorder the data.
+     * Draws BOTH MODEL segments through ONE glMultiDrawElementsIndirect: the
+     * opaque segment (cutout + depth writes) then the translucent cloak+wings
+     * segment. Per-command selection arrives through baseInstance addressing of
+     * the two-entry mode attribute (see {@link ParticleBuffers#uploadModelGeometry}),
+     * so the pair needs no uniform and cannot drift out of state. The
+     * translucent segment walks the COMBINED translucent sort array and blends
+     * WITH depth writes: within one allay the depth writes resolve part order
+     * geometrically while giving the double-wound shell a single blend per
+     * pixel from BOTH sides; across draws, ghost surfaces occlude later
+     * translucent passes (sprites behind a cloak are hidden rather than seen
+     * through it) — the documented tradeoff. Winding follows vanilla {@code
+     * ModelPart.Cube} order; if a future geometry bake flips it, swap {@code
+     * glFrontFace} — do not reorder the data.
      */
-    private void drawModels(Matrix4fc view, Matrix4fc projectionMatrix, Camera camera, boolean translucent) {
+    private void drawModels(Matrix4fc view, Matrix4fc projectionMatrix, Camera camera) {
         int prog = this.programs.modelRender();
         if (prog == 0)
             return;
@@ -753,7 +762,6 @@ public final class CMIParticleEngine {
         Vec3 pos = camera.getPosition();
         setFloatUniform(prog, "uCamPos", (float) pos.x, (float) pos.y, (float) pos.z);
         setFloatUniform(prog, "uFadeDist", (float) ClientConfig.particleFadeDistance);
-        setIntUniform(prog, "uMode", translucent ? 1 : 0);
         this.allayAtlas.bind(1);
         setIntUniform(prog, "uSprite", 1);
 
@@ -768,7 +776,7 @@ public final class CMIParticleEngine {
         RenderSystem.depthMask(true);
 
         this.gpu.bindDrawIndirect();
-        this.gpu.drawIndirectElements(translucent ? 3 : 2);
+        this.gpu.drawModelSegments();
 
         RenderSystem.depthMask(true);
         RenderSystem.defaultBlendFunc();
@@ -778,14 +786,16 @@ public final class CMIParticleEngine {
     }
 
     /**
-     * Draws one billboard bucket: 0 = additive (soft circle, unsorted), 1 =
-     * OPAQUE cutout sprite (depth write, unsorted), 2 = ALPHA blended sprite
-     * (walks the combined translucent sort array, no depth write).
+     * Draws one billboard bucket: 0 = additive (soft circle, unsorted, drawn
+     * LAST), 1 = OPAQUE cutout sprite (depth write, unsorted), 2 = ALPHA
+     * blended sprite (walks the combined translucent sort array, no depth
+     * write). Bucket 1 runs before every blended pass so its depth writes feed
+     * early-Z; buckets 0/2 never write depth.
      */
     private void drawPass(int mode,
             Matrix4fc view, Matrix4fc projectionMatrix, Camera camera) {
         boolean textured = mode != 0;
-        int prog = textured ? this.programs.alphaRender() : this.programs.render();
+        int prog = textured ? this.programs.texturedRender() : this.programs.render();
         if (prog == 0)
             return;
         GL20.glUseProgram(prog);
@@ -858,7 +868,7 @@ public final class CMIParticleEngine {
      * Fence-polled counter snapshot. The pending fence covers the newest frame
      * whose counters we have not read; polling with a zero timeout never
      * stalls. When the GPU has finished that frame, {@code {writeSlot, spare}}
-     * = {@code {exact live count, unculled alpha census}} becomes the fresh
+     * = {@code {exact live count, unculled translucent census}} becomes the fresh
      * snapshot and the CPU-side spawn deltas reset. Otherwise the stale
      * snapshot stands and the deltas keep every dispatch bound conservative
      * (deaths only ever shrink the live pool, so snapshot + delta is always a

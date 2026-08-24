@@ -1,20 +1,20 @@
 // Counting-sort histogram pass over the COMBINED translucent items (ALPHA
-// sprites + MODEL translucent parts; item type rides in the payload, not the
-// key). The element count is the GPU-written total (indirect.cmd[16]).
+// sprites + MODEL translucent parts; the item type rides in the payload, not
+// the key). The element count is the GPU-written combined total -- the SAME
+// value feeds BOTH translucent draw commands (IDX_CNT_XLU / IDX_CNT_ALPHA).
 layout(local_size_x = 64) in;
 
-// 20-byte-stride indirect commands; translucent item total = cmd[5*3 + 1] = cmd[16]
-layout(std430, binding = 2) buffer IndirectBuf { uint cmd[25]; } indirect;
-layout(std430, binding = 6) readonly buffer SortRead { uvec2 kv[]; } sortIn;
-layout(std430, binding = 9) buffer HistBuf { uint h[256]; } hist;
+layout(std430, binding = BIND_INDIRECT) buffer IndirectBuf { uint cmd[INDIRECT_UINTS]; } indirect;
+layout(std430, binding = BIND_SORT_READ) readonly buffer SortRead { uvec2 kv[]; } sortIn;
+layout(std430, binding = BIND_HIST) buffer HistBuf { uint h[RADIX_BINS]; } hist;
 
 uniform uint uShift;
 
 void main() {
     uint g = gl_GlobalInvocationID.x;
-    if (g >= indirect.cmd[16])
+    if (g >= indirect.cmd[IDX_CNT_XLU])
         return;
     uint k = sortIn.kv[g].x;
-    uint bin = (k >> uShift) & 255u;
+    uint bin = (k >> uShift) & (RADIX_BINS - 1u);
     atomicAdd(hist.h[bin], 1u);
 }

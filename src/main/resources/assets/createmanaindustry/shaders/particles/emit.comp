@@ -7,10 +7,10 @@ struct EmitEntry {
     vec4 b; // emitterId, seed, prefixOffset (exclusive), 0
 };
 
-layout(std430, binding = 1) buffer ParticleWrite { vec4 data[]; } writeBuf;
-layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; uint alphaAlive; } counter;
-layout(std430, binding = 4) readonly buffer EmitCmdBuf { EmitEntry entries[]; } emitCmd;
-layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+layout(std430, binding = BIND_POOL_WRITE) buffer ParticleWrite { vec4 data[]; } writeBuf;
+layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
+layout(std430, binding = BIND_EMITCMD) readonly buffer EmitCmdBuf { EmitEntry entries[]; } emitCmd;
+layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 
 uniform uint uTotalSpawn;
 uniform uint uEmitCount;
@@ -56,7 +56,7 @@ void main() {
     uint eid = uint(et.b.x);
     float seed = et.b.y + float(inner) * 0.0001;
 
-    uint hb = eid * 20u; // VEC4_PER_EMITTER (must match EmitterSpec.VEC4_PER_EMITTER)
+    uint hb = eid * VEC4_PER_EMITTER;
     float shape = emitters.u[hb + 1u].x;
     float speedMin = emitters.u[hb + 1u].y;
     float speedMax = emitters.u[hb + 1u].z;

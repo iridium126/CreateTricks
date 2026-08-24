@@ -5,14 +5,17 @@
 // vertex-pulls the static indexed geometry (binding 12, float stride 6:
 // pos.xyz units / uv normalised / partId) — gl_VertexID is the element index.
 //
-// The mesh renders as TWO sub-draws, selected by uMode: 0 = opaque segment
-// (head/skin/arms — cutout + depth write in fsh) walking the dense orderModel
-// permutation; 1 = translucent segment (cloak + wings — alpha blend WITH depth
-// writes so ghost surfaces occlude like tinted glass) walking the COMBINED
-// translucent sort array (payload = particleIndex<<2 | itemType, type 1 =
-// model), depth-sorted together with the ALPHA sprites. Vertices of the other
-// segment are clipped away before any animation math, and only the ONE part
-// matrix this vertex actually needs is built.
+// The mesh renders as TWO sub-draws issued by ONE glMultiDrawElementsIndirect,
+// selected per command through the baseInstance-driven mode attribute aSegment
+// (a divisor-1 vertex attribute fed from a tiny {0, 1} buffer; each element
+// command's baseInstance field picks its entry): segment 0 = opaque cutout
+// (head/skin/arms -- cutout + depth write in fsh) walking the dense orderModel
+// permutation; segment 1 = translucent blended segment (cloak + wings --
+// alpha blend WITH depth writes so ghost surfaces occlude like tinted glass)
+// walking the COMBINED translucent sort array (payload = particleIndex<<2 |
+// itemType, type 1 = model), depth-sorted together with the ALPHA sprites.
+// Vertices of the other segment are clipped away before any animation math,
+// and only the ONE part matrix this vertex actually needs is built.
 //
 // Transform chain replicates vanilla LivingEntityRenderer:
 //   world = feet + Ry(pi - yaw) * S(-1,-1,1) * T(0,-1.501,0) * partChain / 16
@@ -24,17 +27,22 @@ uniform mat4 ModelViewMat;
 uniform mat4 ProjMat;
 uniform vec3 uCamPos;
 uniform float uFadeDist;
-uniform int uMode; // 0 = opaque cutout segment, 1 = translucent blended segment
 
-layout(std430, binding = 1) readonly buffer ParticleRead { vec4 data[]; } particles;
-layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
-layout(std430, binding = 13) readonly buffer OrderModelBuf { uint order[]; } orderModel;
-layout(std430, binding = 7) readonly buffer SortBuf { uvec2 kv[]; } sortedKv;
-layout(std430, binding = 12) readonly buffer ModelGeo { float v[]; } geo;
+// Per-command segment selector: fixed-function attribute addressing resolves
+// modeBuffer[baseInstance + gl_InstanceID] (divisor 1), so the multi-draw's
+// two element commands see 0 / 1 without any uniform or shader extension.
+layout(location = 0) in float aSegment;
+
+layout(std430, binding = BIND_POOL_WRITE) readonly buffer ParticleRead { vec4 data[]; } particles; // freshly written pool
+layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+layout(std430, binding = BIND_ORDER_MODEL) readonly buffer OrderModelBuf { uint order[]; } orderModel;
+layout(std430, binding = BIND_SORT_WRITE) readonly buffer SortBuf { uvec2 kv[]; } sortedKv;
+layout(std430, binding = BIND_MODELGEO) readonly buffer ModelGeo { float v[]; } geo;
 
 out vec2 vUv;
 out vec3 vColor;
 out float vDist;
+flat out float vSeg; // segment selector handed to model.fsh
 
 const float PI = 3.14159265;
 const float SPIN_PERIOD = 1.0;  // seconds per looped 4-turn spin (vanilla: 15t one-shot)
@@ -57,6 +65,9 @@ mat4 part(vec3 pivot, float xr, float yr, float zr) {
 }
 
 void main() {
+    vSeg = aSegment;
+    int mode = int(aSegment + 0.5);
+
     // pull the vertex's part id FIRST — segment filtering and per-part matrix
     // branching both key off it, and filtered-out vertices cost nothing more
     uint vb = uint(gl_VertexID) * 6u;
@@ -64,7 +75,7 @@ void main() {
 
     // parts 4/5 (wings) and 6 (cloak) live in the translucent index range
     bool transluc = (pid >= 4);
-    if ((uMode == 1) != transluc) {
+    if ((mode == 1) != transluc) {
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // beyond far plane -> clipped
         return;
     }
@@ -72,7 +83,7 @@ void main() {
     // resolve this instance's particle: opaque walks the dense permutation,
     // translucent walks the combined sort array and clips non-model items
     uint inst;
-    if (uMode == 1) {
+    if (mode == 1) {
         uvec2 item = sortedKv.kv[gl_InstanceID];
         if ((item.y & 3u) != 1u) { // sprite-type item — belongs to the other draw
             gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
@@ -97,7 +108,7 @@ void main() {
 
     float life = clamp(p3.x / max(p3.y, 1e-5), 0.0, 1.0);
     uint eid = floatBitsToUint(p3.w);
-    uint hb = eid * 20u; // VEC4_PER_EMITTER (must match EmitterSpec.VEC4_PER_EMITTER)
+    uint hb = eid * VEC4_PER_EMITTER;
 
     float sizeStart = emitters.u[hb + 5u].z;
     float sizeEnd = emitters.u[hb + 5u].w;

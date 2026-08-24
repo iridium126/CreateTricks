@@ -10,9 +10,9 @@ uniform vec3 uCamPos;
 uniform vec3 uCamRight;
 uniform vec3 uCamUp;
 
-layout(std430, binding = 1) readonly buffer ParticleRead { vec4 data[]; } particles;
-layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
-layout(std430, binding = 8) readonly buffer OrderAddBuf { uint order[]; } orderAdd;
+layout(std430, binding = BIND_POOL_WRITE) readonly buffer ParticleRead { vec4 data[]; } particles; // freshly written pool
+layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+layout(std430, binding = BIND_ORDER_ADD) readonly buffer OrderAddBuf { uint order[]; } orderAdd;
 
 out vec2 vUv;
 out vec3 vColor;
@@ -40,7 +40,7 @@ void main() {
 
     float life = clamp(p3.x / max(p3.y, 1e-5), 0.0, 1.0);
     uint eid = floatBitsToUint(p3.w);
-    uint hb = eid * 20u; // VEC4_PER_EMITTER (must match EmitterSpec.VEC4_PER_EMITTER)
+    uint hb = eid * VEC4_PER_EMITTER;
 
     // size over lifetime (analytic curve, eased)
     float sizeStart = emitters.u[hb + 5u].z;

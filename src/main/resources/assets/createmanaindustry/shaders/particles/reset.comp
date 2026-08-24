@@ -1,29 +1,35 @@
 layout(local_size_x = 1) in;
 
-// 5 commands x 5 uints at a uniform 20-byte stride (DrawElementsIndirectCommand
-// layout; arrays commands read only the first 16 bytes). Field j of command i
-// is cmd[5*i + j]; the per-frame reset clears the instanceCount fields:
-//   cmd[1]  additive billboards          (cmd0)
-//   cmd[6]  OPAQUE cutout billboards     (cmd1)
-//   cmd[11] model opaque segment         (cmd2)
-//   cmd[16] combined translucent items   (cmd3 model translucent + cmd4 ALPHA
-//           blended — both walk the SAME sorted array, filtering by item type)
-layout(std430, binding = 2) buffer IndirectBuf {
-    uint cmd[25];
+// INDIRECT_COMMANDS commands x INDIRECT_STRIDE bytes at a uniform stride
+// (DrawElementsIndirectCommand layout; arrays commands read only the first
+// 16 bytes). Field j of command i is cmd[5*i + j]; the per-frame reset clears
+// every instanceCount field:
+//   IDX_CNT_ADD      additive billboards
+//   IDX_CNT_SPRITE   OPAQUE cutout billboards
+//   IDX_CNT_MODELOP  model opaque segment
+//   IDX_CNT_XLU      model translucent segment -- receives the COMBINED
+//                    translucent item total (model parts + ALPHA sprites,
+//                    one item per particle)
+//   IDX_CNT_ALPHA    ALPHA blended billboards -- SAME combined total; both
+//                    commands walk the ONE sorted array and filter by the
+//                    item type riding in the payload
+layout(std430, binding = BIND_INDIRECT) buffer IndirectBuf {
+    uint cmd[INDIRECT_UINTS];
 } indirect;
 
-layout(std430, binding = 3) buffer CounterBuf {
-    uint writeSlot; // live-particle compaction cursor (update/emit atomicAdd)
-    uint spare;     // end-of-frame capture slot (see capture.comp)
-    uint alphaAlive; // unculled translucent census: ALPHA + MODEL (keygen)
+layout(std430, binding = BIND_COUNTER) buffer CounterBuf {
+    uint writeSlot;          // live-particle compaction cursor (update/emit atomicAdd)
+    uint spare;              // end-of-frame capture slot (see capture.comp)
+    uint translucentCensus;  // unculled translucent census: ALPHA + MODEL (keygen)
 } counter;
 
 void main() {
     counter.writeSlot = 0u;
     counter.spare = 0u;
-    counter.alphaAlive = 0u;
-    indirect.cmd[1] = 0u;
-    indirect.cmd[6] = 0u;
-    indirect.cmd[11] = 0u;
-    indirect.cmd[16] = 0u;
+    counter.translucentCensus = 0u;
+    indirect.cmd[IDX_CNT_ADD] = 0u;
+    indirect.cmd[IDX_CNT_SPRITE] = 0u;
+    indirect.cmd[IDX_CNT_MODELOP] = 0u;
+    indirect.cmd[IDX_CNT_XLU] = 0u;
+    indirect.cmd[IDX_CNT_ALPHA] = 0u;
 }

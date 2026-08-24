@@ -1,13 +1,13 @@
-// End-of-frame capture: record this frame's UNculled alpha census (keygen
-// counts every live alpha particle before the frustum test) into the counter
-// ring slot's spare. The next frame reads it back as the lagged alpha count
-// for dual-mode selection and radix dispatch sizing — deliberately unculled
-// so a camera swing that reveals hidden alpha particles can never undersize
-// the sort dispatch.
+// End-of-frame capture: record this frame's UNculled translucent census (keygen
+// counts every live ALPHA/MODEL particle before the frustum test) into the
+// counter ring slot's spare. The next frame reads it back as the lagged
+// translucent count for dual-mode selection and radix dispatch sizing --
+// deliberately unculled so a camera swing that reveals hidden translucent
+// particles can never undersize the sort dispatch.
 layout(local_size_x = 1) in;
 
-layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; uint alphaAlive; } counter;
+layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
 
 void main() {
-    counter.spare = counter.alphaAlive;
+    counter.spare = counter.translucentCensus;
 }

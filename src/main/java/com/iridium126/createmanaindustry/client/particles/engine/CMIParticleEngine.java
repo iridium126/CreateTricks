@@ -602,7 +602,6 @@ public final class CMIParticleEngine {
             this.gpu.bindCounter(3, slot);
             this.gpu.bindEmitters(5);
             this.gpu.bindOrderAdd();
-            this.gpu.bindOrderModel();
             this.gpu.bindOrderOpaque();
             this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, this.gpu.sortBuffer(0));
             setUIntUniform(kg, "uUpper", sortUpper);
@@ -686,7 +685,6 @@ public final class CMIParticleEngine {
                     sorted ? finalPerm : this.gpu.sortBuffer(0));
             this.gpu.bindOrderOpaque();
             drawPass(1, view, projectionMatrix, camera);
-            this.gpu.bindOrderModel();
             drawModels(view, projectionMatrix, camera);
             if (sorted) {
                 drawPass(2, view, projectionMatrix, camera);
@@ -735,17 +733,20 @@ public final class CMIParticleEngine {
     /**
      * Draws BOTH MODEL segments through ONE glMultiDrawElementsIndirect: the
      * opaque segment (cutout + depth writes) then the translucent cloak+wings
-     * segment. Per-command selection arrives through baseInstance addressing of
-     * the two-entry mode attribute (see {@link ParticleBuffers#uploadModelGeometry}),
-     * so the pair needs no uniform and cannot drift out of state. The
-     * translucent segment walks the COMBINED translucent sort array and blends
-     * WITH depth writes: within one allay the depth writes resolve part order
-     * geometrically while giving the double-wound shell a single blend per
-     * pixel from BOTH sides; across draws, ghost surfaces occlude later
-     * translucent passes (sprites behind a cloak are hidden rather than seen
-     * through it) — the documented tradeoff. Winding follows vanilla {@code
-     * ModelPart.Cube} order; if a future geometry bake flips it, swap {@code
-     * glFrontFace} — do not reorder the data.
+     * segment. Both commands resolve instances identically — the COMBINED
+     * translucent sort array filtered to model items — and differ only in
+     * their element-buffer index range, so no per-draw uniform or attribute is
+     * needed (a baseInstance/divisor-1 selector was tried here and REJECTED:
+     * instanced attribute fetch walks baseInstance + instanceID, so with more
+     * than one model particle later instances read wrong/OOB entries and lose
+     * their geometry). The translucent segment blends WITH depth writes:
+     * within one allay the depth writes resolve part order geometrically while
+     * giving the double-wound shell a single blend per pixel from BOTH sides;
+     * across draws, ghost surfaces occlude later translucent passes (sprites
+     * behind a cloak are hidden rather than seen through it) — the documented
+     * tradeoff. Winding follows vanilla {@code ModelPart.Cube} order; if a
+     * future geometry bake flips it, swap {@code glFrontFace} — do not reorder
+     * the data.
      */
     private void drawModels(Matrix4fc view, Matrix4fc projectionMatrix, Camera camera) {
         int prog = this.programs.modelRender();

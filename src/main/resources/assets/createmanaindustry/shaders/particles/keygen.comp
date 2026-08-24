@@ -1,10 +1,11 @@
 // Partition pass for the draw permutations -- runs EVERY frame (it is also the
-// fast path's cull pass). Four buckets:
-//   - ADDITIVE particles   -> orderAdd[]   (dense uint permutation, unsorted)
-//   - OPAQUE cutout sprites-> orderOpaque[](dense uint permutation, unsorted)
-//   - ALPHA blended sprites-> sortData[]   (uvec2 item: depth key, payload)
-//   - MODEL particles      -> orderModel[] (opaque segment) AND one sortData[]
-//                             item for the translucent segment
+// fast path's cull pass). Three buckets:
+//   - ADDITIVE particles    -> orderAdd[]   (dense uint permutation, unsorted)
+//   - OPAQUE cutout sprites -> orderOpaque[](dense uint permutation, unsorted)
+//   - translucent particles -> sortData[]   one item EACH: ALPHA sprites
+//                             (type 0) and MODEL particles (type 1); BOTH
+//                             model segments walk this array filtered to
+//                             type 1, so no separate model permutation exists
 // Every particle first passes a GPU frustum test (sphere vs 6 normalized
 // planes extracted on the CPU from Proj*View), so off-screen particles never
 // reach vertex shading. The GPU counts live in the flat indirect array
@@ -15,11 +16,13 @@
 // frame. Item payload = (particleIndex << 2) | itemType (0 = sprite, 1 = model)
 // -- the type rides in the payload, not the key, so the sort stays a single
 // 8-bit pass; both translucent draws then walk the SAME sorted array and clip
-// the other type's instances in their vertex shaders. BOTH translucent
-// commands' instanceCount fields receive the SAME combined total: keygen
-// increments IDX_CNT_XLU *and* IDX_CNT_ALPHA for every translucent item.
-// GL reads each command's count from its own buffer offset, so sharing a
-// value means writing it twice -- one field can never alias another.
+// the other type's instances in their vertex shaders. ALL THREE model/
+// sprite translucent commands' instanceCount fields receive the SAME
+// combined total: keygen increments IDX_CNT_XLU *and* IDX_CNT_ALPHA for
+// every translucent item, and IDX_CNT_MODELOP additionally on MODEL items
+// (its opaque-segment command walks the same full array). GL reads each
+// command's count from its own buffer offset, so sharing a value means
+// writing it several times -- one field can never alias another.
 //
 // Depth key: logarithmically quantized 8-bit bands over [1, uMaxDepth] blocks,
 // giving ~constant RELATIVE depth resolution (~2% per band). FAR bands get
@@ -36,7 +39,6 @@ layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint 
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = BIND_SORT_WRITE) buffer SortWrite { uvec2 kv[]; } sortOut;
 layout(std430, binding = BIND_ORDER_ADD) buffer OrderAddW { uint order[]; } orderAdd;
-layout(std430, binding = BIND_ORDER_MODEL) buffer OrderModelW { uint order[]; } orderModel;
 layout(std430, binding = BIND_ORDER_OPAQUE) buffer OrderOpaqueW { uint order[]; } orderOpaque;
 
 uniform uint uUpper;      // CPU-side safe upper bound (aliveRead + spawns + margin)
@@ -108,13 +110,13 @@ void main() {
         sortOut.kv[pos] = uvec2(depthKey(p0.xyz), (g << 2) | 0u);
         pos = atomicAdd(indirect.cmd[IDX_CNT_ALPHA], 1u);
     } else {
-        // MODEL: opaque segment walks orderModel; the translucent segment
-        // (cloak + wings, one item per particle) joins the combined sort as
-        // item type 1 -- both translucent draws share the sorted array
-        uint pos = atomicAdd(indirect.cmd[IDX_CNT_MODELOP], 1u);
-        orderModel.order[pos] = g;
-        pos = atomicAdd(indirect.cmd[IDX_CNT_XLU], 1u);
+        // MODEL: one sortData item (type 1); BOTH model segments walk the
+        // combined array filtered to this type, so their commands also count
+        // the full combined total -- the model-opaque command additionally
+        // needs it in its own field, hence the third atomic here.
+        uint pos = atomicAdd(indirect.cmd[IDX_CNT_XLU], 1u);
         sortOut.kv[pos] = uvec2(depthKey(p0.xyz), (g << 2) | 1u);
         pos = atomicAdd(indirect.cmd[IDX_CNT_ALPHA], 1u);
+        pos = atomicAdd(indirect.cmd[IDX_CNT_MODELOP], 1u);
     }
 }

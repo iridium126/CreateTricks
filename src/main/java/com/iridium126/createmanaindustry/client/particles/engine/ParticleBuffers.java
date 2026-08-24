@@ -11,7 +11,6 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
-import org.lwjgl.opengl.GL33;
 import org.lwjgl.opengl.GL40;
 import org.lwjgl.opengl.GL43;
 
@@ -87,8 +86,9 @@ public final class ParticleBuffers {
     public static final int BAKEMETA_BINDING = 11;
     /** Static baked model geometry (flat float array, MODEL particles). */
     public static final int MODELGEO_BINDING = 12;
-    /** Dense permutation of visible MODEL particles (keygen's third bucket). */
-    public static final int ORDERMODEL_BINDING = 13;
+    // 13 = RETIRED (former dense MODEL permutation; both model segments now
+    // walk the combined sort array). The slot stays unused rather than
+    // renumbered so existing bindings/docs keep their values.
     /** Previous frame's counter slot, read by update.comp for the GPU-exact live count. */
     public static final int PREVCOUNTER_BINDING = 14;
     /** Dense permutation of visible OPAQUE cutout billboards (keygen's fourth bucket). */
@@ -111,7 +111,12 @@ public final class ParticleBuffers {
     public static final int IDX_CNT_ADD = cmdField(0, 1);
     /** instanceCount of cmd1 — OPAQUE cutout billboards. */
     public static final int IDX_CNT_SPRITE = cmdField(1, 1);
-    /** instanceCount of cmd2 — model opaque segment. */
+    /**
+     * instanceCount of cmd2 — model opaque segment. Carries the COMBINED
+     * translucent item total (like {@link #IDX_CNT_XLU}): both model segments
+     * walk the full sorted array filtered to model items, so their counts are
+     * identical by construction.
+     */
     public static final int IDX_CNT_MODELOP = cmdField(2, 1);
     /**
      * instanceCount of cmd3 — model translucent segment. Keygen writes the
@@ -128,9 +133,6 @@ public final class ParticleBuffers {
     /** Logarithmic quantization lower bound in blocks. */
     public static final float BAND_NEAR = 1.0f;
 
-    /** VAO attribute location of the model multi-draw's per-command segment selector. */
-    public static final int MODE_ATTR_LOCATION = 0;
-
     private final int[] particleSSBOs = new int[2];
     private final int[] emitSSBOs = new int[EMIT_RING_SIZE];
     private final int[] counterSSBOs = new int[COUNTER_RING];
@@ -142,12 +144,9 @@ public final class ParticleBuffers {
     private int offsetSSBO = -1;
     private int bakeMetaSSBO = -1;
     private int modelGeoSSBO = -1;
-    private int orderModelSSBO = -1;
     private int orderOpaqueSSBO = -1;
     /** Static element indices for the MODEL sub-draws (bound into the VAO). */
     private int modelIndexBuffer = -1;
-    /** Two-float {0, 1} segment selector fed to the model multi-draw via baseInstance addressing. */
-    private int modeAttrBuffer = -1;
     private int vao = -1;
 
     private int readIndex = 0;
@@ -224,8 +223,6 @@ public final class ParticleBuffers {
         }
         // Additive permutation (dense, uint per additive particle).
         this.orderAddSSBO = createBuffer(cap * 4L, null);
-        // Model permutation (dense, uint per visible MODEL particle).
-        this.orderModelSSBO = createBuffer(cap * 4L, null);
         // OPAQUE cutout-billboard permutation (dense, uint per particle).
         this.orderOpaqueSSBO = createBuffer(cap * 4L, null);
         this.histSSBO = createBuffer((long) RADIX_BINS * 4, null);
@@ -341,11 +338,6 @@ public final class ParticleBuffers {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, ORDERADD_BINDING, this.orderAddSSBO);
     }
 
-    /** Binds the model-permutation buffer at its fixed binding for keygen/draw. */
-    public void bindOrderModel() {
-        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, ORDERMODEL_BINDING, this.orderModelSSBO);
-    }
-
     /** Binds the OPAQUE cutout-billboard permutation at its fixed binding. */
     public void bindOrderOpaque() {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, ORDEROPAQUE_BINDING, this.orderOpaqueSSBO);
@@ -359,13 +351,13 @@ public final class ParticleBuffers {
     /**
      * Uploads the static indexed model geometry (see {@link AllayModelGeometry}:
      * {@code VERTEX_FLOATS} stride) once after init: vertices go to the geo
-     * SSBO, indices and the per-command segment selector go into buffers bound
-     * in the engine's VAO (harmless for the unindexed particle draws), and draw
-     * commands 2/3 are rewritten as element commands — cmd2 = opaque cutout
-     * segment from index 0 with {@code baseInstance 0}, cmd3 = translucent
-     * blended segment starting at {@code opaqueIndexCount} with {@code
-     * baseInstance 1}. The baseInstance values address the two-entry selector
-     * buffer, so one multi-draw renders both segments without a uniform.
+     * SSBO, indices to an element buffer bound into the engine's VAO (harmless
+     * for the unindexed particle draws), and draw commands 2/3 are rewritten as
+     * element commands — cmd2 = opaque cutout segment from index 0, cmd3 =
+     * translucent blended segment starting at {@code opaqueIndexCount}. Both
+     * commands' instanceCounts stay GPU-written each frame (keygen sets them to
+     * the same combined translucent total; the disjoint element ranges make the
+     * segment id derivable from partId alone).
      */
     public void uploadModelGeometry(float[] vertices, int[] indices, int opaqueIndexCount) {
         try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
@@ -376,7 +368,6 @@ public final class ParticleBuffers {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, MODELGEO_BINDING, this.modelGeoSSBO);
 
         this.modelIndexBuffer = GL15.glGenBuffers();
-        this.modeAttrBuffer = GL15.glGenBuffers();
         GL30.glBindVertexArray(this.vao);
         GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, this.modelIndexBuffer);
         try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
@@ -384,27 +375,15 @@ public final class ParticleBuffers {
             ib.put(indices).flip();
             GL15.glBufferData(GL15.GL_ELEMENT_ARRAY_BUFFER, ib, GL15.GL_STATIC_DRAW);
         }
-        // segment selector: modeBuffer[baseInstance + instanceID] via divisor-1
-        // addressing — fixed function, no shader extension required.
-        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.modeAttrBuffer);
-        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
-            FloatBuffer mb = stack.mallocFloat(2);
-            mb.put(0f).put(1f).flip();
-            GL15.glBufferData(GL15.GL_ARRAY_BUFFER, mb, GL15.GL_STATIC_DRAW);
-        }
-        GL30.glEnableVertexAttribArray(MODE_ATTR_LOCATION);
-        GL20.glVertexAttribPointer(MODE_ATTR_LOCATION, 1, GL11.GL_FLOAT, false, 4, 0L);
-        GL33.glVertexAttribDivisor(MODE_ATTR_LOCATION, 1);
-        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
         GL30.glBindVertexArray(0);
 
         // two full 20-byte element commands (indexCount, instanceCount=0,
-        // firstIndex, baseVertex=0, baseInstance): cmd2 = opaque cutout
-        // segment from index 0 (selector value 0), cmd3 = translucent blended
-        // segment starting at opaqueIndexCount (selector value 1)
+        // firstIndex, baseVertex=0, baseInstance=0): cmd2 = opaque cutout
+        // segment from index 0, cmd3 = translucent blended segment starting
+        // at opaqueIndexCount
         this.tmp4.clear();
         this.tmp4.putInt(opaqueIndexCount).putInt(0).putInt(0).putInt(0).putInt(0);
-        this.tmp4.putInt(indices.length - opaqueIndexCount).putInt(0).putInt(opaqueIndexCount).putInt(0).putInt(1);
+        this.tmp4.putInt(indices.length - opaqueIndexCount).putInt(0).putInt(opaqueIndexCount).putInt(0).putInt(0);
         this.tmp4.flip();
         GL30.glBindBuffer(GL40.GL_DRAW_INDIRECT_BUFFER, this.indirectSSBO);
         GL15.glBufferSubData(GL40.GL_DRAW_INDIRECT_BUFFER, 2L * INDIRECT_STRIDE, this.tmp4);
@@ -546,19 +525,14 @@ public final class ParticleBuffers {
     }
 
     public void free() {
-        if (this.modelIndexBuffer > 0 || this.modeAttrBuffer > 0) {
-            // detach both bindings from the VAO before deleting (ELEMENT_ARRAY
-            // and vertex-attrib buffer associations are VAO state)
+        if (this.modelIndexBuffer > 0) {
+            // detach the element binding from the VAO before deleting (the
+            // ELEMENT_ARRAY binding is VAO state)
             if (this.vao >= 0)
                 GL30.glBindVertexArray(this.vao);
             GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, 0);
-            GL30.glDisableVertexAttribArray(MODE_ATTR_LOCATION);
-            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
             GL30.glBindVertexArray(0);
-            if (this.modelIndexBuffer > 0)
-                GL15.glDeleteBuffers(this.modelIndexBuffer);
-            if (this.modeAttrBuffer > 0)
-                GL15.glDeleteBuffers(this.modeAttrBuffer);
+            GL15.glDeleteBuffers(this.modelIndexBuffer);
         }
         if (this.vao >= 0)
             GL30.glDeleteVertexArrays(this.vao);
@@ -580,8 +554,6 @@ public final class ParticleBuffers {
                 GL15.glDeleteBuffers(id);
         if (this.orderAddSSBO > 0)
             GL15.glDeleteBuffers(this.orderAddSSBO);
-        if (this.orderModelSSBO > 0)
-            GL15.glDeleteBuffers(this.orderModelSSBO);
         if (this.orderOpaqueSSBO > 0)
             GL15.glDeleteBuffers(this.orderOpaqueSSBO);
         if (this.modelGeoSSBO > 0)

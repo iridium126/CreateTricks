@@ -83,6 +83,8 @@ public final class ParticlePrograms {
         sb.append("#define RADIX_BINS ").append(ParticleBuffers.RADIX_BINS).append("u\n");
         sb.append("#define DEPTH_BANDS ").append(ParticleBuffers.DEPTH_BANDS).append("u\n");
         sb.append("#define BAND_NEAR ").append(ParticleBuffers.BAND_NEAR).append('\n');
+        // bit position of the type bit inside the 9-bit sort key (8 = low byte is the depth band)
+        sb.append("#define SORT_KEY_TYPE_SHIFT ").append(ParticleBuffers.SORT_TYPE_SHIFT).append("u\n");
         sb.append("#define MODEL_VERTEX_FLOATS ").append(AllayModelGeometry.VERTEX_FLOATS).append('\n');
         return sb.toString();
     }

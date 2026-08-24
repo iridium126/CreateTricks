@@ -2,40 +2,48 @@
 // fast path's cull pass). Three buckets:
 //   - ADDITIVE particles    -> orderAdd[]   (dense uint permutation, unsorted)
 //   - OPAQUE cutout sprites -> orderOpaque[](dense uint permutation, unsorted)
-//   - translucent particles -> sortData[]   one item EACH: ALPHA sprites
-//                             (type 0) and MODEL particles (type 1); BOTH
-//                             model segments walk this array filtered to
-//                             type 1, so no separate model permutation exists
+//   - translucent particles -> sortData[]   one item EACH: MODEL particles
+//                             (sort-type 0) and ALPHA sprites (sort-type 1)
 // Every particle first passes a GPU frustum test (sphere vs 6 normalized
 // planes extracted on the CPU from Proj*View), so off-screen particles never
 // reach vertex shading. The GPU counts live in the flat indirect array
 // (field j of command i = cmd[5*i+j]); keygen owns them exclusively.
 //
 // Translucent sorting (user-visible correctness): ALPHA sprites and the MODEL
-// translucent parts (cloak + wings) go through ONE combined counting sort per
-// frame. Item payload = (particleIndex << 2) | itemType (0 = sprite, 1 = model)
-// -- the type rides in the payload, not the key, so the sort stays a single
-// 8-bit pass; both translucent draws then walk the SAME sorted array and clip
-// the other type's instances in their vertex shaders. ALL THREE model/
-// sprite translucent commands' instanceCount fields receive the SAME
-// combined total: keygen increments IDX_CNT_XLU *and* IDX_CNT_ALPHA for
-// every translucent item, and IDX_CNT_MODELOP additionally on MODEL items
-// (its opaque-segment command walks the same full array). GL reads each
-// command's count from its own buffer offset, so sharing a value means
-// writing it several times -- one field can never alias another.
+// translucent parts (cloak + wings) go through ONE counting sort per frame.
+// The 9-bit sort key carries the TYPE IN ITS HIGH BIT (SORT_KEY_TYPE_SHIFT):
+//   key = (sortType << SORT_KEY_TYPE_SHIFT) | invertedDepthBand
+// so the scatter partitions the sorted array by type -- MODEL items occupy
+// [0, N_model), ALPHA items [N_model, N_total). Each draw therefore gets an
+// EXACT instanceCount and reads only its own contiguous slice:
+//   cmd2/cmd3 instanceCount = IDX_CNT_MODELOP / IDX_CNT_XLU = N_model
+//     (model.vsh reads sortedKv[gl_InstanceID])
+//   cmd4  instanceCount     = IDX_CNT_ALPHA        = N_alpha
+//     (textured.vsh mode 0 reads sortedKv[N_model + gl_InstanceID]; the
+//     partition start IS the model count, taken from the indirect SSBO)
+// No vertex invocations are launched for foreign-type items anymore.
+// Item payload still = (particleIndex << 2) | sortType; the in-shader type
+// filters remain as pure defense against corruption (they can never fire on
+// a healthy partition).
+// Initial compaction uses counter.sortItems (a plain append cursor -- the
+// radix scatter determines final placement), NOT the per-type draw counts.
 //
 // Depth key: logarithmically quantized 8-bit bands over [1, uMaxDepth] blocks,
 // giving ~constant RELATIVE depth resolution (~2% per band). FAR bands get
 // the SMALL key, so the ascending counting sort orders far items first --
-// back-to-front compositing. Within one band the order is arbitrary; because
-// the two translucent draws render type-batched (all model items, then all
-// sprite items), cross-type compositing is decided by the draw sequence alone
-// and stays deterministic regardless of intra-band arrival order.
+// back-to-front compositing within each type partition. Within one band the
+// order is arbitrary; because the two translucent draws render type-batched
+// (all model items, then all sprite items), cross-type compositing is decided
+// by the draw sequence alone and stays deterministic regardless of intra-band
+// arrival order.
 layout(local_size_x = 64) in;
 
 layout(std430, binding = BIND_POOL_READ) readonly buffer ParticleRead { vec4 data[]; } pool;
 layout(std430, binding = BIND_INDIRECT) buffer IndirectBuf { uint cmd[INDIRECT_UINTS]; } indirect;
-layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
+// 4th word sortItems = translucent-item append cursor for THIS frame's initial
+// sort array (the other compute passes declare only the first three members;
+// offsets of those are unchanged by appending a 4th).
+layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; uint sortItems; } counter;
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = BIND_SORT_WRITE) buffer SortWrite { uvec2 kv[]; } sortOut;
 layout(std430, binding = BIND_ORDER_ADD) buffer OrderAddW { uint order[]; } orderAdd;
@@ -104,19 +112,21 @@ void main() {
         uint pos = atomicAdd(indirect.cmd[IDX_CNT_SPRITE], 1u);
         orderOpaque.order[pos] = g;
     } else if (matId < 1.5) {
-        // ALPHA blended sprite -> combined translucent sort, item type 0.
-        // Feeds BOTH translucent commands' counts (see header note).
-        uint pos = atomicAdd(indirect.cmd[IDX_CNT_XLU], 1u);
-        sortOut.kv[pos] = uvec2(depthKey(p0.xyz), (g << 2) | 0u);
-        pos = atomicAdd(indirect.cmd[IDX_CNT_ALPHA], 1u);
+        // ALPHA blended sprite -> sort-type 1 (upper partition). The append
+        // cursor only compacts the initial array; the scatter decides final
+        // placement from the key's type bit. cmd4 gets its exact count.
+        uint slot = atomicAdd(counter.sortItems, 1u);
+        sortOut.kv[slot] = uvec2((1u << SORT_KEY_TYPE_SHIFT) | depthKey(p0.xyz),
+                                 (g << 2) | 1u);
+        atomicAdd(indirect.cmd[IDX_CNT_ALPHA], 1u);
     } else {
-        // MODEL: one sortData item (type 1); BOTH model segments walk the
-        // combined array filtered to this type, so their commands also count
-        // the full combined total -- the model-opaque command additionally
-        // needs it in its own field, hence the third atomic here.
-        uint pos = atomicAdd(indirect.cmd[IDX_CNT_XLU], 1u);
-        sortOut.kv[pos] = uvec2(depthKey(p0.xyz), (g << 2) | 1u);
-        pos = atomicAdd(indirect.cmd[IDX_CNT_ALPHA], 1u);
-        pos = atomicAdd(indirect.cmd[IDX_CNT_MODELOP], 1u);
+        // MODEL -> sort-type 0 (lower partition). Both model segments cover
+        // this same partition (only their element ranges differ), so both
+        // count fields receive N_model; textured.vsh also reads IDX_CNT_MODELOP
+        // as its partition start offset.
+        uint slot = atomicAdd(counter.sortItems, 1u);
+        sortOut.kv[slot] = uvec2(depthKey(p0.xyz), (g << 2) | 0u);
+        atomicAdd(indirect.cmd[IDX_CNT_XLU], 1u);
+        atomicAdd(indirect.cmd[IDX_CNT_MODELOP], 1u);
     }
 }

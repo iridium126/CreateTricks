@@ -3,16 +3,12 @@ layout(local_size_x = 1) in;
 // INDIRECT_COMMANDS commands x INDIRECT_STRIDE bytes at a uniform stride
 // (DrawElementsIndirectCommand layout; arrays commands read only the first
 // 16 bytes). Field j of command i is cmd[5*i + j]; the per-frame reset clears
-// every instanceCount field:
-//   IDX_CNT_ADD      additive billboards
-//   IDX_CNT_SPRITE   OPAQUE cutout billboards
-//   IDX_CNT_MODELOP  model opaque segment
-//   IDX_CNT_XLU      model translucent segment -- receives the COMBINED
-//                    translucent item total (model parts + ALPHA sprites,
-//                    one item per particle)
-//   IDX_CNT_ALPHA    ALPHA blended billboards -- SAME combined total; both
-//                    commands walk the ONE sorted array and filter by the
-//                    item type riding in the payload
+// every instanceCount field. The sorted array is TYPE-PARTITIONED (MODEL at
+// [0, N_model), ALPHA at [N_model, N_total)), so each count is EXACT:
+//   IDX_CNT_MODELOP / IDX_CNT_XLU = N_model (both model segments cover the
+//                   same model partition; MODELOP doubles as the ALPHA
+//                   partition's start offset for textured.vsh)
+//   IDX_CNT_ALPHA   = N_alpha (the sprite partition's exact item count)
 layout(std430, binding = BIND_INDIRECT) buffer IndirectBuf {
     uint cmd[INDIRECT_UINTS];
 } indirect;
@@ -21,12 +17,14 @@ layout(std430, binding = BIND_COUNTER) buffer CounterBuf {
     uint writeSlot;          // live-particle compaction cursor (update/emit atomicAdd)
     uint spare;              // end-of-frame capture slot (see capture.comp)
     uint translucentCensus;  // unculled translucent census: ALPHA + MODEL (keygen)
+    uint sortItems;          // initial-sort-array append cursor (keygen only)
 } counter;
 
 void main() {
     counter.writeSlot = 0u;
     counter.spare = 0u;
     counter.translucentCensus = 0u;
+    counter.sortItems = 0u;
     indirect.cmd[IDX_CNT_ADD] = 0u;
     indirect.cmd[IDX_CNT_SPRITE] = 0u;
     indirect.cmd[IDX_CNT_MODELOP] = 0u;

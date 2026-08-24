@@ -1,7 +1,8 @@
-// Counting-sort histogram pass over the COMBINED translucent items (ALPHA
-// sprites + MODEL translucent parts; the item type rides in the payload, not
-// the key). The element count is the GPU-written combined total -- the SAME
-// value feeds BOTH translucent draw commands (IDX_CNT_XLU / IDX_CNT_ALPHA).
+// Counting-sort histogram pass over ALL translucent items (MODEL parts +
+// ALPHA sprites). The 9-bit key carries the type in bit SORT_KEY_TYPE_SHIFT
+// and the depth band in the low byte; RADIX_BINS == 512 covers type x band,
+// so the scan/scatter place each type in its own contiguous partition.
+// Element count = exact per-type counts summed (cmd[XLU] + cmd[ALPHA]).
 layout(local_size_x = 64) in;
 
 layout(std430, binding = BIND_INDIRECT) buffer IndirectBuf { uint cmd[INDIRECT_UINTS]; } indirect;
@@ -12,7 +13,7 @@ uniform uint uShift;
 
 void main() {
     uint g = gl_GlobalInvocationID.x;
-    if (g >= indirect.cmd[IDX_CNT_XLU])
+    if (g >= indirect.cmd[IDX_CNT_XLU] + indirect.cmd[IDX_CNT_ALPHA])
         return;
     uint k = sortIn.kv[g].x;
     uint bin = (k >> uShift) & (RADIX_BINS - 1u);

@@ -47,12 +47,14 @@ import org.lwjgl.system.MemoryStack;
  *       partitioning — but the counting sort and the two sorted draws are
  *       skipped.</li>
  *   <li><b>Sorted</b> (any ALPHA/MODEL particles): {@code keygen} also writes
- *       (key,payload) pairs into the sort buffer — inverted, logarithmically
- *       quantized view-depth bands (constant relative resolution, far drawn
- *       first) with the item type riding in the payload — and a single-pass
- *       GPU counting sort (histogram/scan/scatter) orders the COMBINED
- *       translucent items back-to-front; the model ghost segment and the ALPHA
- *       sprites both walk that array, each filtering to its own type. Draw
+ *       (key,payload) pairs into the sort buffer — a 9-bit key whose high bit
+ *       selects the item type (MODEL=0, ALPHA sprite=1) over inverted,
+ *       logarithmically quantized view-depth bands (constant relative
+ *       resolution, far drawn first) — and a single-pass GPU counting sort
+ *       orders them back-to-front WITHIN each type: the scatter partitions the
+ *       array into a MODEL slice [0, N_model) and an ALPHA slice after it, so
+ *       every translucent command carries an exact instanceCount and launches
+ *       zero foreign-type vertices. Draw
  *       order groups all depth writers first (OPAQUE cutout sprites, model
  *       multi-draw), then the sorted translucent passes, additive last.
  *       Textured sprites sample an atlas; colliding emitters also resolve
@@ -604,7 +606,8 @@ public final class CMIParticleEngine {
                 int sortUpper = Math.min(cap, Math.max(0, aliveEstimate + 64));
 
                 // keygen: additive -> orderAdd[8], opaque sprites -> orderOpaque[15],
-                // model opaque -> orderModel[13], translucent items -> sortData[7]
+                // MODEL items -> sortData[7] lower partition (type bit 0),
+                // ALPHA sprites -> sortData[7] upper partition (type bit 1)
                 int kg = this.programs.keygen();
                 GL20.glUseProgram(kg);
                 this.gpu.bindParticleWrite(0);
@@ -629,10 +632,11 @@ public final class CMIParticleEngine {
                         | GL42.GL_COMMAND_BARRIER_BIT);
 
                 if (sorted) {
-                    // single counting-sort pass over the COMBINED translucent
-                    // items (ALPHA sprites + MODEL translucent parts, one item per
-                    // particle); dispatch sized by the (possibly stale) census
-                    // plus translucent spawns since — always an upper bound
+                    // single counting-sort pass over ALL translucent items
+                    // (MODEL parts + ALPHA sprites, one item per particle); the
+                    // 9-bit key partitions the output by type as well as depth.
+                    // Dispatch sized by the (possibly stale) census plus
+                    // translucent spawns since — always an upper bound
                     int translucentUpper = Math.min(cap,
                             Math.max(0, this.translucentKnown + this.translucentSpawnDelta + 64));
                     int readId = this.gpu.sortBuffer(0);
@@ -688,9 +692,10 @@ public final class CMIParticleEngine {
             //    lets ghost depth occlude glow behind cloaks.
             if (aliveEstimate > 0 || entryCount > 0) {
                 // Bind the FINAL sorted permutation up front: both translucent
-                // segments (model ghost segment here, ALPHA sprites below) walk it.
-                // On the fast path nothing reads it, but the programs statically
-                // declare the sort SSBO, so keep a valid buffer bound regardless.
+                // draws (model ghost segment here, ALPHA sprites below) read their
+                // own contiguous partition of it. On the fast path nothing reads
+                // it, but the programs statically declare the sort SSBO, so keep a
+                // valid buffer bound regardless.
                 this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING,
                         sorted ? finalPerm : this.gpu.sortBuffer(0));
                 this.gpu.bindOrderOpaque();
@@ -782,13 +787,15 @@ public final class CMIParticleEngine {
     /**
      * Draws BOTH MODEL segments through ONE glMultiDrawElementsIndirect: the
      * opaque segment (cutout + depth writes) then the translucent cloak+wings
-     * segment. Both commands resolve instances identically — the COMBINED
-     * translucent sort array filtered to model items — and differ only in
-     * their element-buffer index range, so no per-draw uniform or attribute is
-     * needed (a baseInstance/divisor-1 selector was tried here and REJECTED:
-     * instanced attribute fetch walks baseInstance + instanceID, so with more
-     * than one model particle later instances read wrong/OOB entries and lose
-     * their geometry). The translucent segment blends WITH depth writes:
+     * segment. Both commands cover the exact MODEL partition of the sorted
+     * array (instanceCount = N_model, plain sortedKv[gl_InstanceID] fetch)
+     * and differ only in their element-buffer index range, so no per-draw
+     * uniform or attribute is needed (a baseInstance/divisor-1 selector was
+     * tried here and REJECTED: instanced attribute fetch walks baseInstance +
+     * instanceID, so with more than one model particle later instances read
+     * wrong/OOB entries — adjacent baseInstances' fetch ranges overlap, which
+     * no buffer content can disambiguate). The translucent segment blends
+     * WITH depth writes:
      * within one allay the depth writes resolve part order geometrically while
      * giving the double-wound shell a single blend per pixel from BOTH sides;
      * across draws, ghost surfaces occlude later translucent passes (sprites
@@ -838,9 +845,10 @@ public final class CMIParticleEngine {
     /**
      * Draws one billboard bucket: 0 = additive (soft circle, unsorted, drawn
      * LAST), 1 = OPAQUE cutout sprite (depth write, unsorted), 2 = ALPHA
-     * blended sprite (walks the combined translucent sort array, no depth
-     * write). Bucket 1 runs before every blended pass so its depth writes feed
-     * early-Z; buckets 0/2 never write depth.
+     * blended sprite (walks the sprite partition of the type-partitioned
+     * sort array, offset by the exact model count from cmd[IDX_CNT_MODELOP];
+     * no depth write). Bucket 1 runs before every blended pass so its depth
+     * writes feed early-Z; buckets 0/2 never write depth.
      */
     private void drawPass(int mode,
             Matrix4fc view, Matrix4fc projectionMatrix, Camera camera) {
@@ -890,6 +898,10 @@ public final class CMIParticleEngine {
             RenderSystem.depthMask(false);
         }
 
+        if (mode == 2) {
+            // textured.vsh mode 0 reads the ALPHA partition start from cmd[IDX_CNT_MODELOP]
+            this.gpu.bindIndirect(ParticleBuffers.INDIRECT_BB);
+        }
         this.gpu.bindDrawIndirect();
         if (mode == 0)
             this.gpu.drawIndirect(0);

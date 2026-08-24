@@ -1,6 +1,7 @@
 // LSD radix sort -- exclusive prefix sum of the histogram. A single
-// RADIX_BINS-thread workgroup runs a tiny serial scan (trivial cost, once per
-// pass).
+// RADIX_BINS-thread workgroup (512 = MODEL bands 0..255 then ALPHA bands
+// 0..255, so the prefix offsets already encode the type partitions) runs a
+// tiny serial scan (trivial cost, once per pass).
 layout(local_size_x = RADIX_BINS) in;
 
 layout(std430, binding = BIND_HIST) buffer HistBuf { uint h[RADIX_BINS]; } hist;

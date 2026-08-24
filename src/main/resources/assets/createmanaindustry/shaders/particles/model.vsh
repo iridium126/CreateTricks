@@ -1,19 +1,20 @@
 // MODEL particle vertex shader: instanced vanilla-allay rendering. Each
-// instance walks the COMBINED translucent sort array (filtered to model
-// items), pulls its
+// instance reads the MODEL PARTITION of the type-partitioned sort array --
+// sorted keys place all MODEL items (sort-type 0) at [0, N_model), so both
+// sub-draws resolve instances as plain sortedKv[gl_InstanceID] and their
+// commands' instanceCount is the exact N_model -- pulls its
 // particle record from the pool, computes the full vanilla AllayModel pose
 // procedurally in-shader (FLY / DANCE / SPIN / HOLD, header 17.x), and
-// vertex-pulls the static indexed geometry (binding 12, float stride 6:
-// pos.xyz units / uv normalised / partId) — gl_VertexID is the element index.
+// vertex-pulls the static indexed geometry (binding 12, float stride 7:
+// pos.xyz units / uv normalised / partId / normal axis) — gl_VertexID is the
+// element index.
 //
 // The mesh renders as TWO sub-draws issued by ONE glMultiDrawElementsIndirect.
-// BOTH commands resolve instances the same way -- the COMBINED translucent
-// sort array (payload = particleIndex<<2 | itemType, non-model items clipped)
-// -- and differ ONLY in their element-buffer index range: cmd2 references the
-// opaque parts (head/skin/arms, cutout + depth write in fsh), cmd3 the
-// translucent parts (cloak + wings, alpha blend WITH depth writes so ghost
-// surfaces occlude like tinted glass), depth-sorted together with the ALPHA
-// sprites. Because the index ranges are disjoint, the segment id is derived
+// BOTH commands cover the same partition and differ ONLY in their
+// element-buffer index range: cmd2 references the opaque parts
+// (head/skin/arms, cutout + depth write in fsh), cmd3 the translucent parts
+// (cloak + wings, alpha blend WITH depth writes so ghost surfaces occlude
+// like tinted glass), depth-sorted together with the ALPHA sprites. Because the index ranges are disjoint, the segment id is derived
 // purely from the vertex's own partId (>= 4 = translucent) and handed to the
 // fragment stage as a flat varying -- no per-draw uniform or attribute is
 // needed. Vertices are never filtered against the wrong segment (each EBO
@@ -73,11 +74,12 @@ mat4 part(vec3 pivot, float xr, float yr, float zr) {
 }
 
 void main() {
-    // dead-instance early-out FIRST: sprite items (there may be hundreds)
-    // cost exactly ONE SSBO read in these draws -- everything else below
-    // only runs for real model particles
+    // Type check kept purely as a corruption guard: the partition guarantees
+    // every item here is sort-type 0 (MODEL), so this branch never fires on a
+    // healthy frame -- unlike the pre-partition scheme, foreign-type items
+    // are never even launched into these draws.
     uvec2 item = sortedKv.kv[gl_InstanceID];
-    if ((item.y & 3u) != 1u) { // sprite-type item — belongs to the ALPHA draw
+    if ((item.y & 3u) != 0u) { // sprite-type item would mean upstream corruption
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // beyond far plane -> clipped
         return;
     }

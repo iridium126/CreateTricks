@@ -1,10 +1,10 @@
 // Textured billboard particle vertex shader, two modes selected by uMode:
-//   0 — ALPHA blended: walks the COMBINED translucent sort array (depth-sorted
-//       back-to-front together with the MODEL translucent parts). Its draw
-//       command's instanceCount is the COMBINED item total -- keygen writes
-//       the same value into BOTH translucent commands' count fields -- so
-//       clipping non-sprite items here (payload type != 0) is required, not
-//       defensive.
+//   0 — ALPHA blended: walks the ALPHA PARTITION of the type-partitioned sort
+//       array (depth-sorted back-to-front within its type; MODEL items live in
+//       the lower partition [0, N_model)). The partition start IS the model
+//       segments' exact instanceCount -- keygen increments IDX_CNT_MODELOP
+//       once per MODEL item and IDX_CNT_ALPHA once per sprite item, so every
+//       command launches exactly its own items and nothing is filtered out.
 //   1 — OPAQUE cutout: walks the dense orderOpaque permutation, no sorting.
 // Per-particle data is fetched from the particle SSBO; texture frame, spin and
 // tint are derived from the per-particle seed / emitter header.
@@ -21,6 +21,8 @@ layout(std430, binding = BIND_POOL_WRITE) readonly buffer ParticleRead { vec4 da
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = BIND_SORT_WRITE) readonly buffer SortBuf { uvec2 kv[]; } sort;
 layout(std430, binding = BIND_ORDER_OPAQUE) readonly buffer OrderOpaqueBuf { uint order[]; } orderOpaque;
+// bound only while the blended draw runs: supplies the ALPHA partition start
+layout(std430, binding = BIND_INDIRECT) readonly buffer IndirectBuf { uint cmd[INDIRECT_UINTS]; } indirect;
 
 out vec2 vUv;      // atlas-space UV
 out vec3 vColor;
@@ -53,8 +55,11 @@ void main() {
     if (uMode == 1) {
         inst = orderOpaque.order[gl_InstanceID];
     } else {
-        uvec2 item = sort.kv[gl_InstanceID];
-        if ((item.y & 3u) != 0u) { // model-type item — belongs to the other draw
+        // sprites occupy [N_model, N_total); N_model is cmd2's exact count.
+        // The type check is a corruption guard only -- on a healthy partition
+        // every item in our range is sort-type 1 (sprite).
+        uvec2 item = sort.kv[indirect.cmd[IDX_CNT_MODELOP] + gl_InstanceID];
+        if ((item.y & 3u) != 1u) { // model-type item would mean upstream corruption
             gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
             return;
         }

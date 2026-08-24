@@ -48,13 +48,13 @@
 | `reset.comp` | 1 线程：计数器归零（含半透明普查）+ 五条间接绘制实例数全部归零 |
 | `update.comp` | 物理积分（重力/恒加速度/风/阻力/`flutter` 飘摇）、寿命、致密化回收、**块碰撞（占用纹理，积分前轴分离 sweep，bakeMeta 每粒子切片扫描）**、原子追加；存活数由 GPU 从上一帧计数槽（binding 14）直读早退 |
 | `emit.comp` | 读 CPU 发射命令（按 b.z 前缀偏移二分定位），按形状/随机初始化新粒子 |
-| `keygen.comp` | **每帧运行**（兼作快路径的剔除 pass）：先做 **GPU 视锥剔除**（粒子球 vs CPU 从 Proj×View 提取的 6 归一化平面），再按材质**三桶**分派：additive→`orderAdd`、OPAQUE 贴图→`orderOpaque`、半透明（ALPHA 精灵 + MODEL 粒子）→各写一项 `sortData`；排序项 payload=`粒子索引<<2|类型`，`key = 255 − 对数深度带`（远带小 key → 升序即远→近）；原子累计间接实例数——**每个半透明项同时累加 `IDX_CNT_XLU` 与 `IDX_CNT_ALPHA`，MODEL 项再额外累加 `IDX_CNT_MODELOP`**（三条命令的 instanceCount 都等于合并总数：模型两段都遍历全量排序数组过滤本类型；GL 从各自偏移读字段，共享一个值只能靠多次写入，不存在字段别名）+ 未剔除半透明普查（`counter.translucentCensus`，ALPHA+MODEL） |
-| `radix_hist.comp` / `radix_scan.comp` / `radix_scatter.comp` | **单趟 8-bit 深度带计数排序**三阶段（直方图 → RADIX_BINS 线程排他前缀和 → 散列），以合并总项数为守；同带内乱序只影响同类重叠项的混合次序（带内深度差 <~2%，视觉无碍） |
+| `keygen.comp` | **每帧运行**（兼作快路径的剔除 pass）：先做 **GPU 视锥剔除**（粒子球 vs CPU 从 Proj×View 提取的 6 归一化平面），再按材质**三桶**分派：additive→`orderAdd`、OPAQUE 贴图→`orderOpaque`、半透明（ALPHA 精灵 + MODEL 粒子）→各写一项 `sortData`；排序项 payload=`粒子索引<<2|类型`，`key = 255 − 对数深度带`（远带小 key → 升序即远→近）；**9-bit 类型分区键**：`key = (排序类型 << SORT_KEY_TYPE_SHIFT) | (255 − 对数深度带)`，排序类型 **MODEL=0、ALPHA 精灵=1**；初始数组经 `counter.sortItems` 追加游标致密化，随后按类型累加**精确**计数——MODEL 项加 `IDX_CNT_XLU`+`IDX_CNT_MODELOP`（=N_model，两段同用），ALPHA 项加 `IDX_CNT_ALPHA`（=N_alpha）；散射后数组按类型分区（MODEL 在 `[0,N_model)`、ALPHA 在其后），每条命令只启动自己的实例 + 未剔除半透明普查（`counter.translucentCensus`，ALPHA+MODEL） |
+| `radix_hist.comp` / `radix_scan.comp` / `radix_scatter.comp` | **单趟 9-bit 分区计数排序**三阶段（直方图 → RADIX_BINS=512 线程排他前缀和 → 散列），以两类精确计数之和为守；bin 空间 = 类型位×256 深度带，散列天然把 MODEL 写入 `[0,N_model)`、ALPHA 写入其后（各分区内远→近）。同带内乱序只影响同类重叠项的混合次序（带内深度差 <~2%，视觉无碍） |
 | `additive.vsh` | `gl_InstanceID` 经 orderAdd 排列（keygen 视锥剔除后的可见加法粒子集）从粒子 SSBO 取数、相机朝向 billboard、尺寸/颜色/透明度关键帧、每发射器 glow |
 | `additive.fsh` | 软圆衰减 + 距离淡出 + 叠加输出 |
-| `textured.vsh` | 纹理牌面双模式（uMode）：0=ALPHA 混合——走**合并排序数组**取粒子（其命令实例数=合并总数，按 payload 类型过滤掉 MODEL 项是**必要**逻辑而非防御）、按 seed 选 sprite 帧、vanilla 自旋（roll0+ωt+½αt²）；1=OPAQUE cutout——走 orderOpaque 稠密排列 |
+| `textured.vsh` | 纹理牌面双模式（uMode）：0=ALPHA 混合——走**排序数组的 ALPHA 分区**取粒子（起点 = cmd[IDX_CNT_MODELOP] 即精确 N_model，从 indirect SSBO 直读；命令实例数=N_alpha，vsh 类型检查仅剩防损坏哨兵）、按 seed 选 sprite 帧、vanilla 自旋（roll0+ωt+½αt²）；1=OPAQUE cutout——走 orderOpaque 稠密排列 |
 | `textured.fsh` | 双模式：0=采样 sprite 图集、贴花 alpha 混合、远淡出；1=硬 cutout（0.5 丢弃）+ 不透明输出（配合写深度，免排序） |
-| `model.vsh` | **MODEL（Allay）顶点器**：一次 `glMultiDrawElementsIndirect` 渲染两段——**两段的实例解析完全一致**：都遍历合并排序数组并过滤出 MODEL 项（type 1），差异仅在 element 索引区间（cmd2 只引用不透明部件顶点、cmd3 只引用斗篷+翅膀顶点），因此**段 id 可从 partId 自身推导**（`pid>=4` 即半透明，flat varying 传给 fsh），无 per-draw uniform/attribute；先取 partId → 过滤非 MODEL 实例 → **实例级远距早退** → 程序化推导动画输入（速度→limbSwingAmount/朝向/头部俯仰，seed 相位）→ **GLSL 移植 `AllayModel.setupAnim`**（FLY/DANCE/SPIN/HOLD 四姿势）→ **按 partId 只构建所需的那一个部件矩阵**（6→1）→ 原版变换（`Ry(π−yaw)·S(−1,−1,1)·T(0,−1.501,0)`）→ 经 EBO 索引拉取顶点输出；高度=2×size |
+| `model.vsh` | **MODEL（Allay）顶点器**：一次 `glMultiDrawElementsIndirect` 渲染两段——**两段的实例解析完全一致**：都遍历排序数组的 MODEL 分区 `[0, N_model)`（sort-type 0，instanceCount=N_model 精确），差异仅在 element 索引区间（cmd2 只引用不透明部件顶点、cmd3 只引用斗篷+翅膀顶点），因此**段 id 可从 partId 自身推导**（`pid>=4` 即半透明，flat varying 传给 fsh），无 per-draw uniform/attribute；先取 partId → 过滤非 MODEL 实例 → **实例级远距早退** → 程序化推导动画输入（速度→limbSwingAmount/朝向/头部俯仰，seed 相位）→ **GLSL 移植 `AllayModel.setupAnim`**（FLY/DANCE/SPIN/HOLD 四姿势）→ **按 partId 只构建所需的那一个部件矩阵**（6→1）→ 原版变换（`Ry(π−yaw)·S(−1,−1,1)·T(0,−1.501,0)`）→ 经 EBO 索引拉取顶点输出；高度=2×size |
 | `model.fsh` | 双段（flat varying `vSeg` 承接模式属性）：**不透明段**全亮 cutout（贴图 × tint，alpha×远淡出 <0.5 丢弃，不混合、写深度，自遮挡正确）；**半透明段**（斗篷 alpha=160 + 翅膀边缘）alpha 混合、测深度**且写深度**、alpha<0.02 丢弃 |
 
 （着色器已迁出 Veil 的 `pinwheel/`，与 Veil 完全解耦；Veil 仅继续服务雾墙/后处理。）
@@ -75,9 +75,9 @@
 `origin(占位)` / `shape,speed,radius` / `gravity,drag` / `accel,windStrength` / `windDir,rotation` / `life,sizeStart,sizeEnd` / `sizeEase,coneTanHalf,colorCount,glow` / `material(0 ADD/1 ALPHA/2 MODEL/3 OPAQUE),collideMode,flutter,spin` / `8×RGBA 颜色关键帧` / `bakeIndex,spriteCount,0,0` / `animation(0 FLY..3 HOLD),0,0,0` / 保留
 
 ### 发射命令（32 B / 条，环 ×3）：`origin.xyz + count` / `emitterId + seed`
-### 间接命令（5×20 B 统一步长，总 100 B）：cmd0/1/4 为 arrays 命令（读前 16 B：`count=6, instanceCount(GPU原子累计), first=0, baseInstance=0`，cmd0=additive、cmd1=OPAQUE 贴图、cmd4=ALPHA 混合，第 5 uint 为填充）；cmd2/3 为 **element 命令**（读满 20 B：`indexCount, instanceCount, firstIndex=段起始索引, baseVertex=0, baseInstance=0`；两段的实例解析一致——都遍历合并排序数组过滤 MODEL 项——仅 element 区间不同，故一次 multi-draw 渲染两段）。着色器 SSBO 视图为扁平 `uint cmd[25]`（命令 i 字段 j = `cmd[5i+j]`；instanceCount 索引以命名常量 `IDX_CNT_ADD/SPRITE/MODELOP/XLU/ALPHA` = 1/6/11/16/21 引用）。**GL 从每条命令各自的偏移读各自的字段——字段之间不存在别名**：keygen 对每个半透明项同时累加 `IDX_CNT_XLU` 与 `IDX_CNT_ALPHA`、对 MODEL 项再加 `IDX_CNT_MODELOP`，使 cmd2/cmd3/cmd4 都等于**合并排序项总数**，各绘制在 vsh 里过滤非本类型项
-### 计数器（16 B / 槽，环 ×4）：`writeSlot, spare, translucentCensus`（spare 由 capture 记录上一帧**未剔除**半透明普查；translucentCensus 由 keygen 在剔除测试前累加，ALPHA+MODEL）
-### 排序数据（双缓冲，按半透明项数紧凑使用）：`sortData` 8 B/项 = `(key, 粒子索引<<2|类型)`（类型 0=ALPHA 牌面、1=MODEL 半透明段，两项合入**同一趟排序**）；`orderAdd` 4 B/粒子 = additive 排列；`orderOpaque` 4 B/粒子 = OPAQUE 贴图排列（MODEL 无独立排列——两段共用合并排序数组）；直方图/偏移 各 256×uint；模型几何 SSBO 静态（~136 顶点 × 24 B + EBO，binding 12）
+### 间接命令（5×20 B 统一步长，总 100 B）：cmd0/1/4 为 arrays 命令（读前 16 B：`count=6, instanceCount(GPU原子累计), first=0, baseInstance=0`，cmd0=additive、cmd1=OPAQUE 贴图、cmd4=ALPHA 混合，第 5 uint 为填充）；cmd2/3 为 **element 命令**（读满 20 B：`indexCount, instanceCount, firstIndex=段起始索引, baseVertex=0, baseInstance=0`；两段覆盖同一 MODEL 分区、instanceCount 均为精确 N_model——仅 element 区间不同，故一次 multi-draw 渲染两段）。着色器 SSBO 视图为扁平 `uint cmd[25]`（命令 i 字段 j = `cmd[5i+j]`；instanceCount 索引以命名常量 `IDX_CNT_ADD/SPRITE/MODELOP/XLU/ALPHA` = 1/6/11/16/21 引用）。**计数全部精确**：keygen 对 MODEL 项累加 `IDX_CNT_XLU` 与 `IDX_CNT_MODELOP`、对 ALPHA 项累加 `IDX_CNT_ALPHA`——类型分区排序保证各命令 instanceCount 恰等于自身实例数，无空转顶点；textured.vsh 另从 `cmd[IDX_CNT_MODELOP]` 读 ALPHA 分区起点
+### 计数器（16 B / 槽，环 ×4）：`writeSlot, spare, translucentCensus, sortItems`（spare 由 capture 记录上一帧**未剔除**半透明普查；translucentCensus 由 keygen 在剔除测试前累加，ALPHA+MODEL；sortItems 为本帧初始排序数组的追加游标，仅 reset/keygen 声明并使用，其余 compute 的结构体声明保持前三成员不变——成员偏移不受追加影响）
+### 排序数据（双缓冲，按半透明项数紧凑使用）：`sortData` 8 B/项 = `(9-bit 键 = 排序类型<<8 | 反转深度带, 粒子索引<<2|排序类型)`（排序类型 **0=MODEL 半透明段、1=ALPHA 牌面**；散射后按类型连续分区）；`orderAdd` 4 B/粒子 = additive 排列；`orderOpaque` 4 B/粒子 = OPAQUE 贴图排列（MODEL 无独立排列——两段共用 MODEL 分区）；直方图/偏移 各 512×uint；模型几何 SSBO 静态（~136 顶点 × 24 B + EBO，binding 12）
 ### 碰撞纹理（GL_TEXTURE_3D R8）：`48 × 32 × (48×K)`，K=8 个 3D 切片堆叠；bakeMeta（每槽 origin.xyz + presence）
 
 ---
@@ -107,18 +107,21 @@
 1..5. 同快速路径；update 额外做 flutter 飘摇 + 块碰撞（update/emit 恒不累加
    间接实例数——keygen 独占计数）
 6. keygen=partition(sortUpper 上界)：视锥剔除后三桶——additive→orderAdd[IDX_CNT_ADD]、
-   OPAQUE→orderOpaque[IDX_CNT_SPRITE]、半透明各写 sortData 项 (255−对数深度带,
-   g<<2|类型)（ALPHA=0 / MODEL=1）；每半透明项累加 IDX_CNT_XLU+IDX_CNT_ALPHA，
-   MODEL 项再加 IDX_CNT_MODELOP（三条命令同用合并总数）；剔除测试前给
-   counter.translucentCensus 累加未剔除半透明（ALPHA+MODEL）普查
-7. 若 translucentUpper = min(cap, 普查+增量+余量) > 0：**单趟 8-bit 深度带计数排序**
-   （hist→scan→scatter 以 GPU 的合并总项数 IDX_CNT_XLU 为守；key 已反转，升序即远→近；
-   类型在 payload 不在 key。两个半透明绘制**按类型分批**执行——先鬼影段后精灵段——
-   跨类型合成由绘制序列唯一决定，与带内到达顺序无关，完全确定）
+   OPAQUE→orderOpaque[IDX_CNT_SPRITE]、半透明各写 sortData 项
+   ((类型<<8)|(255−对数深度带), g<<2|排序类型)（排序类型 MODEL=0 / ALPHA=1），
+   写入位置来自 counter.sortItems 追加游标；计数按类精确——MODEL 项加
+   IDX_CNT_XLU+IDX_CNT_MODELOP（=N_model），ALPHA 项加 IDX_CNT_ALPHA（=N_alpha）；
+   剔除测试前给 counter.translucentCensus 累加未剔除半透明（ALPHA+MODEL）普查
+7. 若 translucentUpper = min(cap, 普查+增量+余量) > 0：**单趟 9-bit 类型分区计数排序**
+   （hist→scan→scatter 以两类精确计数之和为守；bin = 类型位×深度带 → 散射把数组
+   分区为 MODEL [0,N_model) 与 ALPHA [N_model,N_total)，分区内 key 已反转、升序即远→近。
+   两个半透明绘制**按类型分批**执行——先鬼影段后精灵段——跨类型合成由绘制序列唯一
+   决定，与带内到达顺序无关，完全确定）
 8. draw（全部深度写入者先行）：OPAQUE 贴图（cmd1，cutout+写深度）→ 模型 multi-draw
-   （一次调用渲染两段；两段实例解析一致——遍历合并排序数组过滤 MODEL 项，仅 EBO
+   （一次调用渲染两段；两段实例解析一致——都遍历 MODEL 分区 [0,N_model)，仅 EBO
    区间不同，段 id 由 partId 推导：cmd2 不透明段写深度 → cmd3 鬼影段**写深度的混合**）
-   → ALPHA 牌面（cmd4，混合不写深度，走排序数组按类型过滤）→ additive（cmd0，**末位**：
+   → ALPHA 牌面（cmd4，混合不写深度，走 ALPHA 分区 [N_model,N_total)，起点直读
+   cmd[IDX_CNT_MODELOP]）→ additive（cmd0，**末位**：
    顺序无关的加法混合放最后零成本，且鬼影已写的深度会挡住其后的辉光——磨砂玻璃语义）
 9. capture(1线程) 把普查写入本帧 counter 槽 spare（供下帧非阻塞读取）；fence 入队 → swap ping-pong（仅成功帧）；状态恢复统一走 finally
 ```
@@ -127,10 +130,10 @@
 - 存活计数走**原子计数器环**（×4）：本帧写 `simFrame%4`；CPU 不再逐帧阻塞回读——帧末 `glFenceSync`，下帧零超时轮询，就绪才读该槽 `{writeSlot, spare}`（消除"读-再-改同一缓冲"竞态的同时消除 CPU-GPU 流水线停等）。GPU 侧 update.comp 经 binding 14 直读上一帧槽的 writeSlot 做精确早退，CPU 只需"快照 + 发射增量"上界派发（死亡只减不增，上界恒安全）
 - 发射线程用 `g >= uTotalSpawn` 提前返回；`atomicAdd` 分配槽位，`slot >= uCapacity` 丢弃（CPU 侧已预留 2048 安全余量，理论上不触发）
 - **双模回退**：`sorted = translucentLatched`（发射 ALPHA/MODEL 置位，仅新鲜快照普查为 0 清位），普查为**未剔除**半透明计数（相机转开再转回不会欠派发）；无半透明时跳过 radix/两个半透明绘制——keygen 本身两条路径都跑（快路径的剔除 pass）
-- **合并半透明排序**：ALPHA 牌面与 MODEL 半透明段作为同一排序项集（每粒子一项，payload 带类型），一趟 radix 完成跨材质深度排序；两个半透明绘制共用排序数组、vsh 首行过滤非本类型实例（代价 = 异类型实例数 × 一次 SSBO 读）。**深度语义**：排序项之间真混合（远→近逐个叠加）；MODEL 半透明段**写深度**——项内部部件顺序由深度几何解决（斗篷/翅膀双绕序 + 写深度使壳体任意视角单次混合、内侧可见），且对后续绘制的半透明牌面表现为"玻璃式遮挡"（后面的牌面被挡住而非透过变暗）。花瓣在斗篷前→正确混合、在后→被遮挡；两斗篷之间因排序仍是真混合
-- 排序 key 为 **8-bit 对数深度带**（[1, far] 上量化，far = ceil(fade+24) 取 2 的幂，随 `fadeDistance` 配置自适应；~2%/带相对分辨率，近细远粗与感知一致）；计数排序只排半透明项，real work ∝ 项数；同带内乱序只影响**同类**重叠项的混合次序（跨类型顺序由按类型分批的绘制序列固定）→ 无需 LSD 多趟与稳定性
+- **类型分区半透明排序**：ALPHA 牌面与 MODEL 半透明段作为同一排序项集（每粒子一项，类型进键高位），一趟 radix 同时完成分区内深度排序与跨类型分区；每条命令的 instanceCount 精确等于自身项数（N_model / N_alpha），**零空转顶点**（旧方案三命令同写合并总数、vsh 过滤异类型实例，代价 = 异类型实例数 × 6 顶点线程）。vsh 的类型检查保留为防损坏哨兵。**深度语义**：排序项之间真混合（远→近逐个叠加）；MODEL 半透明段**写深度**——项内部部件顺序由深度几何解决（斗篷/翅膀双绕序 + 写深度使壳体任意视角单次混合、内侧可见），且对后续绘制的半透明牌面表现为"玻璃式遮挡"（后面的牌面被挡住而非透过变暗）。花瓣在斗篷前→正确混合、在后→被遮挡；两斗篷之间因排序仍是真混合
+- 排序 key 为 **9-bit：类型位×对数深度带**（低 8 位在 [1, far] 上量化，far = ceil(fade+24) 取 2 的幂，随 `fadeDistance` 配置自适应；~2%/带相对分辨率，近细远粗与感知一致）；计数排序只排半透明项，real work ∝ 项数；同带内乱序只影响**同类**重叠项的混合次序（跨类型顺序由按类型分批的绘制序列固定）→ 无需 LSD 多趟与稳定性
 - **常量单一来源**：全部 SSBO 绑定号、间接布局索引（`IDX_CNT_*`）、结构尺寸由 `ParticleBuffers` 的 Java 常量经 `ParticlePrograms.PRELUDE` 生成 `#define` 前注入每个着色器源（`#version` 之后）——用宏而非 `const` 是为了在 `layout(binding=N)` 里保持纯文本替换的驱动兼容性；改布局只需动 Java 一处，F3+T 生效
-- **模型双段合并 multi-draw**：cmd2/cmd3 物理相邻、同程序同状态、**实例解析一致**（都遍历合并排序数组过滤 MODEL 项），差异只剩 EBO 索引区间——段 id 因此可从 partId 推导（`pid>=4`=半透明），flat varying 传给 fsh；一次 `glMultiDrawElementsIndirect` 渲染两段，零实例命令 GPU 自动跳过，快慢路径同一调用。**踩坑教训**：最初用 baseInstance 寻址的 divisor=1 `{0,1}` 模式属性选段——实例属性取址为 `baseInstance + gl_InstanceID/divisor`，多粒子时后面的实例读到错误/越界项，表现为"两个悦灵靠近只渲染一个"；该技巧只对单实例绘制成立，已废弃并删除该属性（binding 13 的 orderModel 排列随之退役）
+- **模型双段合并 multi-draw**：cmd2/cmd3 物理相邻、同程序同状态、**实例解析一致**（都遍历排序数组的 MODEL 分区 [0,N_model)，instanceCount 精确），差异只剩 EBO 索引区间——段 id 因此可从 partId 推导（`pid>=4`=半透明），flat varying 传给 fsh；一次 `glMultiDrawElementsIndirect` 渲染两段，零实例命令 GPU 自动跳过，快慢路径同一调用。**踩坑教训**：最初用 baseInstance 寻址的 divisor=1 `{0,1}` 模式属性选段——实例属性取址为 `baseInstance + gl_InstanceID/divisor`，多粒子时后面的实例读到错误/越界项，表现为"两个悦灵靠近只渲染一个"；该技巧只对单实例绘制成立，已废弃并删除该属性（binding 13 的 orderModel 排列随之退役）
 - **GPU 视锥剔除**：keygen 内对每粒子做球测试（保守半径 = max(sizeStart,sizeEnd)×尺寸倍数），平面由 CPU 从 Proj×View 按 Gribb–Hartmann 提取并归一化上传；屏幕外粒子不进排列、不进顶点着色（典型省 50–75% 实例）
 
 ---

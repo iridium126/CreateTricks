@@ -59,10 +59,18 @@ public final class ParticleBuffers {
      * view (field j of command i = index {@code 5*i + j}) trivially aligned.
      */
     public static final int INDIRECT_STRIDE = 20;
-    /** Counting-sort passes over the 8-bit depth-band key (one, by design). */
+    /** Counting-sort passes over the 9-bit key (one, by design). */
     public static final int RADIX_PASSES = 1;
-    /** Radix digit size (bins). */
-    public static final int RADIX_BINS = 256;
+    /**
+     * Radix bin count. The sort key is 9 bits: bit {@link #SORT_TYPE_SHIFT}
+     * selects the translucent item type (0 = MODEL, 1 = ALPHA sprite) and the
+     * low byte carries the inverted log depth band. Binning over all 9 bits
+     * makes the scatter place each type in its own CONTIGUOUS partition --
+     * MODEL items at [0, N_model), ALPHA items at [N_model, N_total) -- so
+     * every translucent draw command gets an exact instanceCount and no
+     * vertex invocations are wasted filtering foreign-type items.
+     */
+    public static final int RADIX_BINS = 512;
 
     // The binding constants below are the SINGLE SOURCE OF TRUTH for the
     // GLSL side too: ParticlePrograms#commonPrelude generates #define lines
@@ -112,24 +120,34 @@ public final class ParticleBuffers {
     /** instanceCount of cmd1 — OPAQUE cutout billboards. */
     public static final int IDX_CNT_SPRITE = cmdField(1, 1);
     /**
-     * instanceCount of cmd2 — model opaque segment. Carries the COMBINED
-     * translucent item total (like {@link #IDX_CNT_XLU}): both model segments
-     * walk the full sorted array filtered to model items, so their counts are
-     * identical by construction.
+     * instanceCount of cmd2 — model opaque segment. EXACT count of MODEL
+     * items: the sorted array is type-partitioned (MODEL first), so this
+     * equals the model partition length. Its value also serves as the ALPHA
+     * partition's start offset (read by textured.vsh from the indirect SSBO).
      */
     public static final int IDX_CNT_MODELOP = cmdField(2, 1);
     /**
-     * instanceCount of cmd3 — model translucent segment. Keygen writes the
-     * COMBINED translucent item total here AND into {@link #IDX_CNT_ALPHA}:
-     * GL reads each command's count from its own offset, so sharing one value
-     * between two commands means writing both fields.
+     * instanceCount of cmd3 — model translucent segment. Same exact MODEL
+     * item total as {@link #IDX_CNT_MODELOP} (both segments cover the same
+     * partition, only their element ranges differ); keygen increments both.
      */
     public static final int IDX_CNT_XLU = cmdField(3, 1);
-    /** instanceCount of cmd4 — ALPHA blended billboards (same combined total, see {@link #IDX_CNT_XLU}). */
+    /** instanceCount of cmd4 — ALPHA blended billboards. EXACT sprite-item count (the upper partition). */
     public static final int IDX_CNT_ALPHA = cmdField(4, 1);
 
-    /** Depth-band count of the 8-bit sort key (one counting-sort pass). */
-    public static final int DEPTH_BANDS = RADIX_BINS;
+    /**
+     * Depth-band count of the sort key's LOW BYTE (one counting-sort pass).
+     * Deliberately DECOUPLED from {@link #RADIX_BINS}: bins = translucent
+     * types × bands, because the type bit rides above the low byte (see
+     * {@link #SORT_TYPE_SHIFT}).
+     */
+    public static final int DEPTH_BANDS = 256;
+    /**
+     * Bit offset of the type bit inside the sort key: the low byte holds one
+     * of {@link #DEPTH_BANDS} depth bands, so the type occupies the next bit.
+     * Emitted into GLSL as SORT_KEY_TYPE_SHIFT.
+     */
+    public static final int SORT_TYPE_SHIFT = Integer.numberOfTrailingZeros(DEPTH_BANDS);
     /** Logarithmic quantization lower bound in blocks. */
     public static final float BAND_NEAR = 1.0f;
 
@@ -162,7 +180,8 @@ public final class ParticleBuffers {
     // indirect payload (INDIRECT_COMMANDS x INDIRECT_STRIDE) — pitfall #22
     // discipline: keep headroom above that, not just equality.
     private final ByteBuffer tmp4 = BufferUtils.createByteBuffer(160);
-    private final ByteBuffer zero1024 = BufferUtils.createByteBuffer(1024);
+    /** Zeroes the whole radix histogram (RADIX_BINS x uint = 2 KiB). */
+    private final ByteBuffer zero2048 = BufferUtils.createByteBuffer(RADIX_BINS * 4);
     /** Matches the "major.minor" prefix of a GL_VERSION string. */
     private static final java.util.regex.Pattern GL_VERSION_PATTERN =
             java.util.regex.Pattern.compile("(\\d+)\\.(\\d+)");
@@ -217,7 +236,7 @@ public final class ParticleBuffers {
         for (int i = 0; i < COUNTER_RING; i++) {
             this.counterSSBOs[i] = createBuffer(16, null);
         }
-        // Radix sort data: (key, order) per ALPHA particle, double-buffered.
+        // Radix sort data: (key, payload) per translucent item, double-buffered.
         for (int i = 0; i < 2; i++) {
             this.sortSSBOs[i] = createBuffer(cap * 8L, null);
         }
@@ -355,9 +374,9 @@ public final class ParticleBuffers {
      * for the unindexed particle draws), and draw commands 2/3 are rewritten as
      * element commands — cmd2 = opaque cutout segment from index 0, cmd3 =
      * translucent blended segment starting at {@code opaqueIndexCount}. Both
-     * commands' instanceCounts stay GPU-written each frame (keygen sets them to
-     * the same combined translucent total; the disjoint element ranges make the
-     * segment id derivable from partId alone).
+     * commands' instanceCounts stay GPU-written each frame (keygen sets both to
+     * the exact MODEL partition length N_model; the disjoint element ranges make
+     * the segment id derivable from partId alone).
      */
     public void uploadModelGeometry(float[] vertices, int[] indices, int opaqueIndexCount) {
         try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
@@ -411,10 +430,10 @@ public final class ParticleBuffers {
         }
     }
 
-    /** Zeroes the radix histogram (1 KB) before each pass. */
+    /** Zeroes the radix histogram (2 KiB) before each pass. */
     public void clearHist() {
         GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.histSSBO);
-        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.zero1024);
+        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.zero2048);
     }
 
     /**

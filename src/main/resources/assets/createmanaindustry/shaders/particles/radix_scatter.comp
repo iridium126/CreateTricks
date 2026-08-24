@@ -1,8 +1,10 @@
-// Counting-sort scatter pass over the COMBINED translucent items (single
-// pass; bound by the GPU combined total -- the same value that feeds both
-// translucent draw commands). Within-band order is arbitrary and harmless;
-// bands are ordered far->near by the inverted key. uShift stays at 0 -- the
-// key is one byte wide.
+// Counting-sort scatter pass over all translucent items (single pass; bound
+// by the summed per-type totals). Because RADIX_BINS spans the key's type bit
+// plus depth band, bins are ordered MODEL-bands then ALPHA-bands: the scatter
+// writes each type into its own contiguous partition (MODEL at [0, N_model),
+// ALPHA at [N_model, N_total)), far->near within each. Within-band arrival
+// order is arbitrary and harmless -- cross-type compositing is fixed by the
+// type-batched draw sequence.
 layout(local_size_x = 64) in;
 
 layout(std430, binding = BIND_INDIRECT) buffer IndirectBuf { uint cmd[INDIRECT_UINTS]; } indirect;
@@ -14,7 +16,7 @@ uniform uint uShift;
 
 void main() {
     uint g = gl_GlobalInvocationID.x;
-    if (g >= indirect.cmd[IDX_CNT_XLU])
+    if (g >= indirect.cmd[IDX_CNT_XLU] + indirect.cmd[IDX_CNT_ALPHA])
         return;
     uvec2 kv = sortIn.kv[g];
     uint bin = (kv.x >> uShift) & (RADIX_BINS - 1u);

@@ -97,7 +97,7 @@
 6. draw（全部深度写入者先行）：OPAQUE 贴图 cutout（cmd1，写深度）→ 模型 multi-draw
    （cmd2 不透明段 + cmd3 半透明段；无半透明粒子时 cmd3 实例数为 0 被 GPU 跳过）
    → additive 程序经 orderAdd 排列（cmd0，**末位**）→ 叠加混合 + 深度测试（不写深度）
-7. 解绑 SSBO base 0-11；swap ping-pong；GPU 计时回读 → 节流更新
+7. swap ping-pong（**仅成功帧**）+ GPU 计时回读 → 节流更新；SSBO/纹理/program/VAO/混合状态的恢复统一放 finally，帧中途异常同样保证离场状态干净（见已修复 #32）
 ```
 
 ### 排序路径（存在半透明粒子（ALPHA/MODEL）时，由半透明闩锁判定：发射置位、新鲜普查为 0 才清位）
@@ -120,7 +120,7 @@
    区间不同，段 id 由 partId 推导：cmd2 不透明段写深度 → cmd3 鬼影段**写深度的混合**）
    → ALPHA 牌面（cmd4，混合不写深度，走排序数组按类型过滤）→ additive（cmd0，**末位**：
    顺序无关的加法混合放最后零成本，且鬼影已写的深度会挡住其后的辉光——磨砂玻璃语义）
-9. capture(1线程) 把普查写入本帧 counter 槽 spare（供下帧非阻塞读取）；解绑 SSBO 0-15 与纹理
+9. capture(1线程) 把普查写入本帧 counter 槽 spare（供下帧非阻塞读取）；fence 入队 → swap ping-pong（仅成功帧）；状态恢复统一走 finally
 ```
 
 - 致密前缀不变量：写缓冲 `[0, liveCount)` 恒为全部存活粒子；死粒子在 update 中被跳过即移除
@@ -187,6 +187,7 @@
 29. **斗篷半透明 + MODEL 性能重做** → 纹理事实：斗篷 cube（texOffs 0,16）alpha=160、翅膀 5 个边缘像素 220/243，其余全为 0/255；原版 `AllayModel` 用 `entityCutoutNoCull` 把斗篷渲染成**不透明**（cutout 0.1 阈值直通），半透明是有意忠于纹理的选择。实现：几何**索引化**（204 顶 → 136 顶 + 静态 EBO，`glDrawElementsIndirect`，顶点着色 −33%）并按材质段拆连续索引区间——不透明段（头/皮肤/双臂）cutout+写深度+背面剔除，半透明段（斗篷+双翅，partId≥4）alpha 混合、测深不写深、在所有粒子之后绘制（keygen 镜像累加 cmd2.y/cmd3.y，间接命令 3→4 条，`tmp4` 扩至 96B 防 #22 复发）；vsh 先取 partId 做段过滤（段外顶点零成本）、**按 partId 只建所需部件矩阵**（6→1，矩阵乘 ~2.5× 削减）、实例级远距早退（fade+24 外整三角形裁出）；翅膀双绕序**仅索引加倍**（同 4 顶点补反向三角）在开 cull 下保持双面——绕序若反回退 `glFrontFace` 换向
 30. **症状"翅膀和斗篷完全不可见 + `GL_INVALID_OPERATION: Bound draw indirect buffer is not large enough`"：`DrawElementsIndirectCommand` 是 5 个 uint（20 B：count/instanceCount/firstIndex/baseVertex/**baseInstance**），不是 arrays 命令的 4 个 uint/16 B** → #29 按统一 16 B 步长排布，cmd3 落在偏移 48，20 B 命令需要 [48,68) 而间接缓冲只有 4×16=64 B → 驱动拒绝整个 cmd3 绘制（半透明段恰好全在 cmd3，不透明段 [32,52) 在界内照常渲染——与"只剩身体可见"症状吻合）。修复：**全部命令统一 20 B 步长**（缓冲 4×20=80 B，arrays 命令只读前 16 B、第 5 个 uint 为填充），着色器 SSBO 视图从 `uvec4 cmd[]` 改为**扁平 `uint cmd[20]`**（命令 i 字段 j = `cmd[5*i+j]`，instanceCount=字段 1 → 索引 1/6/11/16），Java 侧初始化/清零/上传/绘制偏移全部改用 `INDIRECT_STRIDE`。**教训**：arrays 与 elements 两种 indirect 命令结构不同长，混用时步长必须按 20 B 取齐；驱动对"命令越界"是整条 draw 拒绝而非截断
 31. **翅膀/斗篷前后错序 + 斗篷内侧不可见 → 材质四分类 + 合并半透明排序**（用户方案） → 症状根因：半透明段不写深度，混合结果只由索引顺序决定，与几何远近无关。事实：樱花 12 帧全为纯 0/255（本就是 cutout 素材，整套 radix 几乎只为它存在）。重构：①新增 **OPAQUE 材质**（纹理 cutout<0.5 + 写深度，免排序，走 orderOpaque 排列），cherry 切换过去，排序路径只服务真半透明；②**合并排序**：ALPHA 牌面与 MODEL 半透明段作为同一排序项集（每粒子一项，payload=`索引<<2|类型`，类型不进 key 保持 256 bin 单趟），两个半透明绘制共用排序数组、vsh 首行过滤异类型实例；③**MODEL 半透明段写深度**：排序项之间真混合（远→近逐个叠加、两斗篷互相透视），项内部部件顺序由深度几何解决；斗篷+翅膀**双绕序 + 开 cull**（数学上等价于关 cull 单绕序：同平面正反两份只有面向相机的过剔除）+ 写深度 → 壳体任意视角**单次混合**且**内侧可见**；对后续绘制的半透明牌面表现为"玻璃式遮挡"（挡住而非透过去变暗——真·全互通混合需单 draw 交错发射，超出间接绘制能力，已知取舍）。间接命令 4→5 条（100 B，`tmp4` 第三次扩容→160 B），census 扩为 ALPHA+MODEL 未剔除计数，闩锁改名 translucentLatched
+32. **审查修复：帧中途异常留下脏 GL 状态** → `runFrame` 的 GL 工作段（计时查询 begin→end 及之后的 capture/fence/计时/swap）原先没有 finally：中途抛异常会①把计时查询留在 active 态（下帧 `glBeginQuery` 报 INVALID_OPERATION）、②SSBO 绑定 0-15/纹理单元/program/VAO/混合状态全部泄漏进后续世界渲染与 Iris 管线、③fence/swap 语义悬空。重构：查询 begin 起至帧末全部纳入 try/finally——finally **分组隔离**地结束半截查询（环游标不动，残缺样本下帧被同槽覆盖而非污染节流 EMA）、恢复 program/VAO/SSBO 0-15/纹理单元/depthMask/blend 到成功帧的离场状态（各组独立 try/catch，次级异常不掩盖原异常也不跳过其余组）；**swap 移入 try 尾部**（中断帧不翻转双缓冲，上一完整池继续作下帧读取源）；**出生增量记账提前到任何派发入队之前**——GL 命令入队后即使 Java 异常 unwind 也照常执行，增量必须先记，否则中断帧后的「快照+增量」派发上界低估、update 压实会把超出上界的存活粒子永久丢弃
 
 ---
 

@@ -502,6 +502,15 @@ public final class CMIParticleEngine {
         if (translucentSpawnTotal > 0)
             this.translucentLatched = true;
 
+        // Account for this frame's spawns BEFORE any GPU work is enqueued: GL
+        // commands already issued keep executing even when a Java exception
+        // later unwinds the frame, so the deltas must include them up front to
+        // keep the snapshot+delta dispatch bound sound on the aborted-frame
+        // path. Purely a hoist — every consumer below (updateBound,
+        // aliveEstimate, translucentUpper) already saw these spawns included.
+        this.spawnDelta += totalSpawn;
+        this.translucentSpawnDelta += translucentSpawnTotal;
+
         // 4. Upload emit commands into the next ring slot + emitters.
         int ringId = this.gpu.nextEmitBuffer();
         this.gpu.uploadDirtyEmitters();
@@ -538,196 +547,236 @@ public final class CMIParticleEngine {
             GL15.glGenQueries(this.timerQueries);
             this.timerReady = true;
         }
-        GL15.glBeginQuery(GL33.GL_TIME_ELAPSED, this.timerQueries[this.timerSlot]);
-        GL20.glUseProgram(this.programs.reset());
-        this.gpu.bindIndirect(2);
-        this.gpu.bindCounter(3, slot);
-        GL43.glDispatchCompute(1, 1, 1);
-        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
-
-        GL20.glUseProgram(this.programs.update());
-        this.gpu.bindParticleRead(0);
-        this.gpu.bindParticleWrite(1);
-        this.gpu.bindCounter(3, slot);
-        this.gpu.bindPrevCounter(ParticleBuffers.PREVCOUNTER_BINDING, slot);
-        this.gpu.bindEmitters(5);
-        if (this.collisionBake.ready()) {
-            this.collisionBake.bind(0);
-            this.gpu.bindBakeMeta();
-            setIntUniform(this.programs.update(), "uCollision", 0);
-            setIntUniform(this.programs.update(), "uCollisionOn", 1);
-        } else {
-            setIntUniform(this.programs.update(), "uCollisionOn", 0);
-        }
-        setUIntUniform(this.programs.update(), "uCapacity", cap);
-        setFloatUniform(this.programs.update(), "uDt", dt);
-        GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
-        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
-
-        if (entryCount > 0) {
-            GL20.glUseProgram(this.programs.emit());
-            this.gpu.bindParticleWrite(1);
-            this.gpu.bindCounter(3, slot);
-            this.gpu.bindEmitBuffer(4, ringId);
-            this.gpu.bindEmitters(5);
-            setUIntUniform(this.programs.emit(), "uTotalSpawn", totalSpawn);
-            setUIntUniform(this.programs.emit(), "uEmitCount", entryCount);
-            setUIntUniform(this.programs.emit(), "uCapacity", cap);
-            GL43.glDispatchCompute(Math.max(1, (totalSpawn + 63) / 64), 1, 1);
-            GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
-        }
-
-        // This frame's spawns are CPU-exact even when the counter snapshot is
-        // stale; accumulating them right away keeps every dispatch bound below
-        // conservative until the next fence poll resets the baseline.
-        this.spawnDelta += totalSpawn;
-        this.translucentSpawnDelta += translucentSpawnTotal;
-
-        // 6. keygen: GPU frustum cull + partition of both permutations. Runs in
-        //    BOTH paths (it is the fast path's cull pass); it owns the draw
-        //    counts, so update/emit never touch the indirect buffer.
-        int finalPerm = -1;
-        // spawnDelta now includes this frame's spawns; aliveEstimate is an
-        // upper bound on the freshly written pool's live count
-        int aliveEstimate = this.aliveKnown + this.spawnDelta;
-        if (aliveEstimate > 0 || entryCount > 0) {
-            int sortUpper = Math.min(cap, Math.max(0, aliveEstimate + 64));
-
-            // keygen: additive -> orderAdd[8], opaque sprites -> orderOpaque[15],
-            // model opaque -> orderModel[13], translucent items -> sortData[7]
-            int kg = this.programs.keygen();
-            GL20.glUseProgram(kg);
-            this.gpu.bindParticleWrite(0);
+        // From the timer-query begin to the end-of-frame bookkeeping everything
+        // runs under try/finally: a mid-frame failure ends the partial query,
+        // restores program/VAO/SSBO/texture/blend state, and skips the pool
+        // swap — the last fully-written pool stays the next read source.
+        boolean queryActive = false;
+        try {
+            GL15.glBeginQuery(GL33.GL_TIME_ELAPSED, this.timerQueries[this.timerSlot]);
+            queryActive = true;
+            GL20.glUseProgram(this.programs.reset());
             this.gpu.bindIndirect(2);
             this.gpu.bindCounter(3, slot);
+            GL43.glDispatchCompute(1, 1, 1);
+            GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
+
+            GL20.glUseProgram(this.programs.update());
+            this.gpu.bindParticleRead(0);
+            this.gpu.bindParticleWrite(1);
+            this.gpu.bindCounter(3, slot);
+            this.gpu.bindPrevCounter(ParticleBuffers.PREVCOUNTER_BINDING, slot);
             this.gpu.bindEmitters(5);
-            this.gpu.bindOrderAdd();
-            this.gpu.bindOrderOpaque();
-            this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, this.gpu.sortBuffer(0));
-            setUIntUniform(kg, "uUpper", sortUpper);
-            Vec3 camPos = camera.getPosition();
-            setFloatUniform(kg, "uCamPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
-            setFloatUniform(kg, "uMaxDepth", sortFarBlocks());
-            setMat4Uniform(kg, "uView", view);
-            extractFrustum(projectionMatrix, view);
-            int frustumLoc = loc(kg, "uFrustum");
-            if (frustumLoc >= 0)
-                GL20.glUniform4fv(frustumLoc, this.frustumPlanes);
-            GL43.glDispatchCompute(Math.max(1, (sortUpper + 63) / 64), 1, 1);
-            GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT
-                    | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT
-                    | GL42.GL_COMMAND_BARRIER_BIT);
+            if (this.collisionBake.ready()) {
+                this.collisionBake.bind(0);
+                this.gpu.bindBakeMeta();
+                setIntUniform(this.programs.update(), "uCollision", 0);
+                setIntUniform(this.programs.update(), "uCollisionOn", 1);
+            } else {
+                setIntUniform(this.programs.update(), "uCollisionOn", 0);
+            }
+            setUIntUniform(this.programs.update(), "uCapacity", cap);
+            setFloatUniform(this.programs.update(), "uDt", dt);
+            GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
+            GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
 
-            if (sorted) {
-                // single counting-sort pass over the COMBINED translucent
-                // items (ALPHA sprites + MODEL translucent parts, one item per
-                // particle); dispatch sized by the (possibly stale) census
-                // plus translucent spawns since — always an upper bound
-                int translucentUpper = Math.min(cap,
-                        Math.max(0, this.translucentKnown + this.translucentSpawnDelta + 64));
-                int readId = this.gpu.sortBuffer(0);
-                int writeId = this.gpu.sortBuffer(1);
-                for (int pass = 0; pass < ParticleBuffers.RADIX_PASSES; pass++) {
-                    int shift = RADIX_SHIFTS[pass];
+            if (entryCount > 0) {
+                GL20.glUseProgram(this.programs.emit());
+                this.gpu.bindParticleWrite(1);
+                this.gpu.bindCounter(3, slot);
+                this.gpu.bindEmitBuffer(4, ringId);
+                this.gpu.bindEmitters(5);
+                setUIntUniform(this.programs.emit(), "uTotalSpawn", totalSpawn);
+                setUIntUniform(this.programs.emit(), "uEmitCount", entryCount);
+                setUIntUniform(this.programs.emit(), "uCapacity", cap);
+                GL43.glDispatchCompute(Math.max(1, (totalSpawn + 63) / 64), 1, 1);
+                GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
+            }
 
-                    this.gpu.clearHist();
-                    GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+            // 6. keygen: GPU frustum cull + partition of both permutations. Runs in
+            //    BOTH paths (it is the fast path's cull pass); it owns the draw
+            //    counts, so update/emit never touch the indirect buffer.
+            int finalPerm = -1;
+            // spawnDelta now includes this frame's spawns; aliveEstimate is an
+            // upper bound on the freshly written pool's live count
+            int aliveEstimate = this.aliveKnown + this.spawnDelta;
+            if (aliveEstimate > 0 || entryCount > 0) {
+                int sortUpper = Math.min(cap, Math.max(0, aliveEstimate + 64));
 
-                    GL20.glUseProgram(this.programs.radixHist());
-                    this.gpu.bindIndirect(2);
-                    this.gpu.bindSort(ParticleBuffers.SORTREAD_BINDING, readId);
-                    this.gpu.bindHist();
-                    setUIntUniform(this.programs.radixHist(), "uShift", shift);
-                    GL43.glDispatchCompute(Math.max(1, (translucentUpper + 63) / 64), 1, 1);
-                    GL42.glMemoryBarrier(GL42.GL_ATOMIC_COUNTER_BARRIER_BIT | GL43.GL_SHADER_STORAGE_BARRIER_BIT);
-
-                    GL20.glUseProgram(this.programs.radixScan());
-                    this.gpu.bindHist();
-                    this.gpu.bindOffsets();
-                    GL43.glDispatchCompute(1, 1, 1);
-                    GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
-
-                    GL20.glUseProgram(this.programs.radixScatter());
-                    this.gpu.bindIndirect(2);
-                    this.gpu.bindSort(ParticleBuffers.SORTREAD_BINDING, readId);
-                    this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, writeId);
-                    this.gpu.bindOffsets();
-                    setUIntUniform(this.programs.radixScatter(), "uShift", shift);
-                    GL43.glDispatchCompute(Math.max(1, (translucentUpper + 63) / 64), 1, 1);
-                    GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
-
-                    int t = readId;
-                    readId = writeId;
-                    writeId = t;
-                }
-                finalPerm = readId; // last written buffer
-
+                // keygen: additive -> orderAdd[8], opaque sprites -> orderOpaque[15],
+                // model opaque -> orderModel[13], translucent items -> sortData[7]
+                int kg = this.programs.keygen();
+                GL20.glUseProgram(kg);
+                this.gpu.bindParticleWrite(0);
+                this.gpu.bindIndirect(2);
+                this.gpu.bindCounter(3, slot);
+                this.gpu.bindEmitters(5);
+                this.gpu.bindOrderAdd();
+                this.gpu.bindOrderOpaque();
+                this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, this.gpu.sortBuffer(0));
+                setUIntUniform(kg, "uUpper", sortUpper);
+                Vec3 camPos = camera.getPosition();
+                setFloatUniform(kg, "uCamPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
+                setFloatUniform(kg, "uMaxDepth", sortFarBlocks());
+                setMat4Uniform(kg, "uView", view);
+                extractFrustum(projectionMatrix, view);
+                int frustumLoc = loc(kg, "uFrustum");
+                if (frustumLoc >= 0)
+                    GL20.glUniform4fv(frustumLoc, this.frustumPlanes);
+                GL43.glDispatchCompute(Math.max(1, (sortUpper + 63) / 64), 1, 1);
                 GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT
                         | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT
                         | GL42.GL_COMMAND_BARRIER_BIT);
+
+                if (sorted) {
+                    // single counting-sort pass over the COMBINED translucent
+                    // items (ALPHA sprites + MODEL translucent parts, one item per
+                    // particle); dispatch sized by the (possibly stale) census
+                    // plus translucent spawns since — always an upper bound
+                    int translucentUpper = Math.min(cap,
+                            Math.max(0, this.translucentKnown + this.translucentSpawnDelta + 64));
+                    int readId = this.gpu.sortBuffer(0);
+                    int writeId = this.gpu.sortBuffer(1);
+                    for (int pass = 0; pass < ParticleBuffers.RADIX_PASSES; pass++) {
+                        int shift = RADIX_SHIFTS[pass];
+
+                        this.gpu.clearHist();
+                        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+
+                        GL20.glUseProgram(this.programs.radixHist());
+                        this.gpu.bindIndirect(2);
+                        this.gpu.bindSort(ParticleBuffers.SORTREAD_BINDING, readId);
+                        this.gpu.bindHist();
+                        setUIntUniform(this.programs.radixHist(), "uShift", shift);
+                        GL43.glDispatchCompute(Math.max(1, (translucentUpper + 63) / 64), 1, 1);
+                        GL42.glMemoryBarrier(GL42.GL_ATOMIC_COUNTER_BARRIER_BIT | GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+
+                        GL20.glUseProgram(this.programs.radixScan());
+                        this.gpu.bindHist();
+                        this.gpu.bindOffsets();
+                        GL43.glDispatchCompute(1, 1, 1);
+                        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
+
+                        GL20.glUseProgram(this.programs.radixScatter());
+                        this.gpu.bindIndirect(2);
+                        this.gpu.bindSort(ParticleBuffers.SORTREAD_BINDING, readId);
+                        this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, writeId);
+                        this.gpu.bindOffsets();
+                        setUIntUniform(this.programs.radixScatter(), "uShift", shift);
+                        GL43.glDispatchCompute(Math.max(1, (translucentUpper + 63) / 64), 1, 1);
+                        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
+
+                        int t = readId;
+                        readId = writeId;
+                        writeId = t;
+                    }
+                    finalPerm = readId; // last written buffer
+
+                    GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT
+                            | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT
+                            | GL42.GL_COMMAND_BARRIER_BIT);
+                }
+            }
+
+            // 7. Draw. Every DEPTH-WRITING pass first (OPAQUE cutout sprites, then
+            //    ONE merged model multi-draw: opaque cutout segment -> translucent
+            //    ghost segment), so early-Z rejects occluded fragments of all later
+            //    blended passes. When translucent items exist, the combined sort
+            //    runs and the ALPHA sprites follow back-to-front (blend, no depth
+            //    write; ghosts before sprites is the documented tradeoff). Additive
+            //    draws LAST: it is order-independent, so position costs nothing but
+            //    lets ghost depth occlude glow behind cloaks.
+            if (aliveEstimate > 0 || entryCount > 0) {
+                // Bind the FINAL sorted permutation up front: both translucent
+                // segments (model ghost segment here, ALPHA sprites below) walk it.
+                // On the fast path nothing reads it, but the programs statically
+                // declare the sort SSBO, so keep a valid buffer bound regardless.
+                this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING,
+                        sorted ? finalPerm : this.gpu.sortBuffer(0));
+                this.gpu.bindOrderOpaque();
+                drawPass(1, view, projectionMatrix, camera);
+                drawModels(view, projectionMatrix, camera);
+                if (sorted) {
+                    drawPass(2, view, projectionMatrix, camera);
+                }
+                this.gpu.bindOrderAdd();
+                drawPass(0, view, projectionMatrix, camera);
+            }
+
+            // 8. Capture this frame's UNculled translucent census (counter.translucentCensus,
+            //    maintained by keygen before the frustum test) into the counter
+            //    ring spare, then fence the frame: next frame POLLS the fence and
+            //    only reads the counters once the GPU has finished writing them
+            //    (a raw readback is a pipeline stall, however lagged the slot).
+            GL20.glUseProgram(this.programs.capture());
+            this.gpu.bindCounter(3, slot);
+            GL43.glDispatchCompute(1, 1, 1);
+            GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
+            GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
+            queryActive = false;
+            if (this.pendingFence != 0)
+                GL32.glDeleteSync(this.pendingFence);
+            this.pendingFence = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            this.pendingSlot = slot;
+
+            // Collect the oldest query in the ring (issued TIMER_RING-1 frames ago,
+            // virtually always complete): the true GPU-side cost of a frame. Never
+            // blocks — skipped when the GPU is running that far behind.
+            this.timerSlot = (this.timerSlot + 1) % TIMER_RING;
+            if (++this.timerIssued >= TIMER_RING) {
+                int oldest = this.timerQueries[this.timerSlot];
+                if (GL15.glGetQueryObjecti(oldest, GL15.GL_QUERY_RESULT_AVAILABLE) == GL11.GL_TRUE)
+                    this.lastGpuMs = (GL15.glGetQueryObjectui(oldest, GL15.GL_QUERY_RESULT) & 0xFFFFFFFFL) / 1_000_000.0;
+            }
+
+            // 9. Swap the ping-pong pool — success only: an aborted frame keeps
+            // the last fully-written pool as the next frame's read source, and
+            // the finally below restores the post-frame GL state instead.
+            this.gpu.swap();
+        } finally {
+            if (queryActive) {
+                // Mid-frame failure: end the partial sample so the query object
+                // stays reusable, and leave the ring cursor alone — the slot is
+                // simply reused (its partial result overwritten) next frame
+                // rather than feeding a bogus time into the throttle.
+                try {
+                    GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
+                } catch (RuntimeException | LinkageError ignoredCleanup) {
+                    // context is going away; nothing further to do
+                }
+            }
+            // Restore the exact post-frame state the success path leaves behind.
+            // Best-effort with each group isolated: a secondary failure here must
+            // not mask the original exception nor skip the remaining groups.
+            try {
+                GL20.glUseProgram(0);
+                GL30.glBindVertexArray(0);
+            } catch (RuntimeException | LinkageError ignoredCleanup) {
+                // see above
+            }
+            try {
+                // SSBO bases 0-15 (permutations, sort data, counters, model geo…)
+                this.gpu.unbindShaders();
+            } catch (RuntimeException | LinkageError ignoredCleanup) {
+                // see above
+            }
+            try {
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                GL11.glBindTexture(GL12.GL_TEXTURE_3D, 0);
+                GL13.glActiveTexture(GL13.GL_TEXTURE1);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+            } catch (RuntimeException | LinkageError ignoredCleanup) {
+                // see above
+            }
+            try {
+                RenderSystem.depthMask(true);
+                RenderSystem.defaultBlendFunc();
+                RenderSystem.disableBlend();
+            } catch (RuntimeException | LinkageError ignoredCleanup) {
+                // see above
             }
         }
-
-        // 7. Draw. Every DEPTH-WRITING pass first (OPAQUE cutout sprites, then
-        //    ONE merged model multi-draw: opaque cutout segment -> translucent
-        //    ghost segment), so early-Z rejects occluded fragments of all later
-        //    blended passes. When translucent items exist, the combined sort
-        //    runs and the ALPHA sprites follow back-to-front (blend, no depth
-        //    write; ghosts before sprites is the documented tradeoff). Additive
-        //    draws LAST: it is order-independent, so position costs nothing but
-        //    lets ghost depth occlude glow behind cloaks.
-        if (aliveEstimate > 0 || entryCount > 0) {
-            // Bind the FINAL sorted permutation up front: both translucent
-            // segments (model ghost segment here, ALPHA sprites below) walk it.
-            // On the fast path nothing reads it, but the programs statically
-            // declare the sort SSBO, so keep a valid buffer bound regardless.
-            this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING,
-                    sorted ? finalPerm : this.gpu.sortBuffer(0));
-            this.gpu.bindOrderOpaque();
-            drawPass(1, view, projectionMatrix, camera);
-            drawModels(view, projectionMatrix, camera);
-            if (sorted) {
-                drawPass(2, view, projectionMatrix, camera);
-            }
-            this.gpu.bindOrderAdd();
-            drawPass(0, view, projectionMatrix, camera);
-        }
-
-        // 8. Capture this frame's UNculled translucent census (counter.translucentCensus,
-        //    maintained by keygen before the frustum test) into the counter
-        //    ring spare, then fence the frame: next frame POLLS the fence and
-        //    only reads the counters once the GPU has finished writing them
-        //    (a raw readback is a pipeline stall, however lagged the slot).
-        GL20.glUseProgram(this.programs.capture());
-        this.gpu.bindCounter(3, slot);
-        GL43.glDispatchCompute(1, 1, 1);
-        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
-        GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
-        if (this.pendingFence != 0)
-            GL32.glDeleteSync(this.pendingFence);
-        this.pendingFence = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        this.pendingSlot = slot;
-
-        // Collect the oldest query in the ring (issued TIMER_RING-1 frames ago,
-        // virtually always complete): the true GPU-side cost of a frame. Never
-        // blocks — skipped when the GPU is running that far behind.
-        this.timerSlot = (this.timerSlot + 1) % TIMER_RING;
-        if (++this.timerIssued >= TIMER_RING) {
-            int oldest = this.timerQueries[this.timerSlot];
-            if (GL15.glGetQueryObjecti(oldest, GL15.GL_QUERY_RESULT_AVAILABLE) == GL11.GL_TRUE)
-                this.lastGpuMs = (GL15.glGetQueryObjectui(oldest, GL15.GL_QUERY_RESULT) & 0xFFFFFFFFL) / 1_000_000.0;
-        }
-
-        // 9. Unbind SSBO bases and release the 3D occupancy texture (unit 0) /
-        //    sprite atlas (unit 1); swap the ping-pong pool.
-        this.gpu.unbindShaders();
-        GL13.glActiveTexture(GL13.GL_TEXTURE0);
-        GL11.glBindTexture(GL12.GL_TEXTURE_3D, 0);
-        GL13.glActiveTexture(GL13.GL_TEXTURE1);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
-        GL13.glActiveTexture(GL13.GL_TEXTURE0);
-
-        this.gpu.swap();
     }
 
     /**

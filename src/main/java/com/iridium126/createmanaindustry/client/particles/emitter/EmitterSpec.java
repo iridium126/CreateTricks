@@ -40,13 +40,20 @@ public final class EmitterSpec {
     public enum Material {
         /** Existing untextured soft-circle, additive blending — order independent. */
         ADDITIVE(0),
-        /** Textured sprite, normal alpha blending — requires GPU depth sorting. */
+        /** Textured sprite, normal alpha blending — sorted together with MODEL translucent parts. */
         ALPHA(1),
         /**
          * Instanced 3D model (Allay), fullbright cutout with depth writes —
          * animation/pose computed in the vertex shader from the header.
          */
-        MODEL(2);
+        MODEL(2),
+        /**
+         * Textured sprite, hard cutout (discard &lt; 0.5) with depth writes and
+         * no blending — renders like the MODEL opaque segment, needs no
+         * sorting. For sprites whose texels are (near) pure 0/255 alpha,
+         * e.g. the vanilla cherry petals.
+         */
+        OPAQUE(3);
 
         final int index;
 
@@ -59,7 +66,7 @@ public final class EmitterSpec {
         }
 
         public static Material byIndex(int i) {
-            return i == 1 ? ALPHA : (i == 2 ? MODEL : ADDITIVE);
+            return i == 1 ? ALPHA : (i == 2 ? MODEL : (i == 3 ? OPAQUE : ADDITIVE));
         }
     }
 

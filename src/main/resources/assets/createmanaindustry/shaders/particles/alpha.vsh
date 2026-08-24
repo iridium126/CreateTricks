@@ -1,8 +1,10 @@
-// Textured (ALPHA) billboard particle vertex shader. Drawn back-to-front through
-// the sorted permutation (its index carries the particle's view depth), so the
-// fragment shader can alpha-composite overlapping petals correctly. Per-particle
-// data is fetched from the particle SSBO by the permuted instance id; texture
-// frame, spin and tint are derived from the per-particle seed / emitter header.
+// Textured billboard particle vertex shader, two modes selected by uMode:
+//   0 — ALPHA blended: walks the COMBINED translucent sort array (depth-sorted
+//       back-to-front together with the MODEL translucent parts) and clips the
+//       model-type items (they belong to the model translucent draw).
+//   1 — OPAQUE cutout: walks the dense orderOpaque permutation, no sorting.
+// Per-particle data is fetched from the particle SSBO; texture frame, spin and
+// tint are derived from the per-particle seed / emitter header.
 uniform mat4 ModelViewMat;
 uniform mat4 ProjMat;
 uniform vec3 uCamPos;
@@ -10,10 +12,12 @@ uniform vec3 uCamRight;
 uniform vec3 uCamUp;
 uniform float uAtlasCols;
 uniform float uAtlasRows;
+uniform int uMode; // 0 = blended (sorted walk), 1 = opaque cutout permutation
 
 layout(std430, binding = 1) readonly buffer ParticleRead { vec4 data[]; } particles;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = 7) readonly buffer SortBuf { uvec2 kv[]; } sort;
+layout(std430, binding = 15) readonly buffer OrderOpaqueBuf { uint order[]; } orderOpaque;
 
 out vec2 vUv;      // atlas-space UV
 out vec3 vColor;
@@ -39,8 +43,20 @@ vec2 quadCorner(int v) {
 }
 
 void main() {
-    // the sorted (far->near) ALPHA permutation is a dense standalone array
-    uint inst = sort.kv[gl_InstanceID].y;
+    // resolve this instance's particle: blended mode walks the combined
+    // translucent sort array (payload = particleIndex<<2 | itemType, type 0 =
+    // sprite); opaque mode walks the dense unsorted permutation
+    uint inst;
+    if (uMode == 1) {
+        inst = orderOpaque.order[gl_InstanceID];
+    } else {
+        uvec2 item = sort.kv[gl_InstanceID];
+        if ((item.y & 3u) != 0u) { // model-type item — belongs to the other draw
+            gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+            return;
+        }
+        inst = item.y >> 2;
+    }
     uint base = inst * 4u;
     vec4 p0 = particles.data[base + 0u];
     vec4 p1 = particles.data[base + 1u];

@@ -127,7 +127,7 @@ public final class CMIParticleEngine {
     private final Vec3[] emitOrigins = new Vec3[ParticleBuffers.MAX_EMIT_COMMANDS];
     private final int[] emitIds = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
     private final int[] emitCounts = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
-    private final boolean[] emitAlpha = new boolean[ParticleBuffers.MAX_EMIT_COMMANDS];
+    private final boolean[] emitTranslucent = new boolean[ParticleBuffers.MAX_EMIT_COMMANDS];
 
     /**
      * Uniform-location cache (program id -> name -> location). Locations are
@@ -141,10 +141,12 @@ public final class CMIParticleEngine {
     private boolean disabled = false;
     /**
      * Newest fence-signalled counter snapshot (may lag a few frames while the
-     * GPU runs behind): {@code {exact live count, unculled alpha census}}.
+     * GPU runs behind): {@code {exact live count, unculled translucent census}}
+     * — the census counts ALPHA and MODEL particles (both feed the combined
+     * translucent sort).
      */
     private int aliveKnown = 0;
-    private int alphaKnown = 0;
+    private int translucentKnown = 0;
     /**
      * Spawns requested since that snapshot (CPU-exact). They keep every
      * dispatch bound conservative between fence polls — deaths only ever
@@ -152,13 +154,14 @@ public final class CMIParticleEngine {
      * bound on the real count.
      */
     private int spawnDelta = 0;
-    private int alphaSpawnDelta = 0;
+    private int translucentSpawnDelta = 0;
     /**
-     * Latch for the sorted-path decision: set when ALPHA particles spawn,
-     * cleared only by a FRESH census reading zero — fence lag can never cause
-     * a frame where live alpha particles skip the sorted draw.
+     * Latch for the sorted-path decision: set when translucent particles
+     * (ALPHA or MODEL) spawn, cleared only by a FRESH census reading zero —
+     * fence lag can never cause a frame where live translucent items skip
+     * the sorted draw.
      */
-    private boolean alphaLatched = false;
+    private boolean translucentLatched = false;
     /** Fence over the newest un-read frame's GPU work; 0 = none pending. */
     private long pendingFence = 0;
     /** Counter ring slot {@link #pendingFence} covers. */
@@ -309,9 +312,11 @@ public final class CMIParticleEngine {
 
         if (!this.initialized) {
             try {
-                this.initialized = this.gpu.init(ClientConfig.particleMaxCount, MAX_EMITTERS);
-                if (this.initialized)
-                    this.gpu.uploadModelGeometry(AllayModelGeometry.BAKED);
+            this.initialized = this.gpu.init(ClientConfig.particleMaxCount, MAX_EMITTERS);
+            if (this.initialized)
+                this.gpu.uploadModelGeometry(
+                        AllayModelGeometry.VERTICES, AllayModelGeometry.INDICES,
+                        AllayModelGeometry.OPAQUE_INDEX_COUNT);
             } catch (RuntimeException | LinkageError e) {
                 this.initialized = false;
                 CreateManaIndustry.LOGGER.error("[CMI particles] GPU init failed", e);
@@ -361,10 +366,10 @@ public final class CMIParticleEngine {
     /** Resets the CPU-side counter snapshot bookkeeping (pool is/becomes empty). */
     private void resetPoolState() {
         this.aliveKnown = 0;
-        this.alphaKnown = 0;
+        this.translucentKnown = 0;
         this.spawnDelta = 0;
-        this.alphaSpawnDelta = 0;
-        this.alphaLatched = false;
+        this.translucentSpawnDelta = 0;
+        this.translucentLatched = false;
         this.liveDisplay = 0;
         if (this.pendingFence != 0) {
             GL32.glDeleteSync(this.pendingFence);
@@ -430,7 +435,7 @@ public final class CMIParticleEngine {
             this.emitIds[entryCount] = id;
             this.emitCounts[entryCount] = n;
             this.emitOrigins[entryCount] = b.origin;
-            this.emitAlpha[entryCount] = b.spec.material == EmitterSpec.Material.ALPHA;
+            this.emitTranslucent[entryCount] = isTranslucent(b.spec);
             totalSpawn += n;
             entryCount++;
         }
@@ -454,7 +459,7 @@ public final class CMIParticleEngine {
             this.emitIds[entryCount] = id;
             this.emitCounts[entryCount] = n;
             this.emitOrigins[entryCount] = s.origin;
-            this.emitAlpha[entryCount] = s.spec.material == EmitterSpec.Material.ALPHA;
+            this.emitTranslucent[entryCount] = isTranslucent(s.spec);
             totalSpawn += n;
             entryCount++;
         }
@@ -476,7 +481,7 @@ public final class CMIParticleEngine {
                     this.emitIds[w] = this.emitIds[i];
                     this.emitCounts[w] = n;
                     this.emitOrigins[w] = this.emitOrigins[i];
-                    this.emitAlpha[w] = this.emitAlpha[i];
+                    this.emitTranslucent[w] = this.emitTranslucent[i];
                     totalSpawn += n;
                     w++;
                 }
@@ -484,14 +489,15 @@ public final class CMIParticleEngine {
             entryCount = w;
         }
 
-        // ALPHA spawns that survived capping (CPU-exact even when the counter
-        // snapshot is stale) latch the sorted path until a fresh census reads 0.
-        int alphaSpawnTotal = 0;
+        // Translucent spawns (ALPHA sprites + MODEL parts, CPU-exact even when
+        // the snapshot is stale) latch the sorted path until a fresh census
+        // reads zero.
+        int translucentSpawnTotal = 0;
         for (int i = 0; i < entryCount; i++)
-            if (this.emitAlpha[i])
-                alphaSpawnTotal += this.emitCounts[i];
-        if (alphaSpawnTotal > 0)
-            this.alphaLatched = true;
+            if (this.emitTranslucent[i])
+                translucentSpawnTotal += this.emitCounts[i];
+        if (translucentSpawnTotal > 0)
+            this.translucentLatched = true;
 
         // 4. Upload emit commands into the next ring slot + emitters.
         int ringId = this.gpu.nextEmitBuffer();
@@ -512,12 +518,12 @@ public final class CMIParticleEngine {
             this.gpu.uploadEmits(ringId, this.emitFront);
         }
 
-        // Dual mode: the radix sort + alpha draw run only while alpha particles
-        // may exist (latched on spawn, released only by a fresh census reading
-        // zero — fence lag can never skip a frame with live alpha). keygen
+        // Dual mode: the combined translucent sort + the two sorted draws run
+        // only while translucent particles may exist (ALPHA or MODEL — latched
+        // on spawn, released only by a fresh census reading zero). keygen
         // itself runs in both paths — it is the fast path's frustum-cull pass
         // and owns the draw counts in both.
-        boolean sorted = this.alphaLatched;
+        boolean sorted = this.translucentLatched;
 
         // 5. Compute passes: reset -> update -> emit. The elapsed-time query
         //    brackets all GPU work (dispatches + draws) of this frame.
@@ -572,7 +578,7 @@ public final class CMIParticleEngine {
         // stale; accumulating them right away keeps every dispatch bound below
         // conservative until the next fence poll resets the baseline.
         this.spawnDelta += totalSpawn;
-        this.alphaSpawnDelta += alphaSpawnTotal;
+        this.translucentSpawnDelta += translucentSpawnTotal;
 
         // 6. keygen: GPU frustum cull + partition of both permutations. Runs in
         //    BOTH paths (it is the fast path's cull pass); it owns the draw
@@ -584,7 +590,8 @@ public final class CMIParticleEngine {
         if (aliveEstimate > 0 || entryCount > 0) {
             int sortUpper = Math.min(cap, Math.max(0, aliveEstimate + 64));
 
-            // keygen: additive -> orderAdd[binding 8], alpha -> compact sortData[binding 7]
+            // keygen: additive -> orderAdd[8], opaque sprites -> orderOpaque[15],
+            // model opaque -> orderModel[13], translucent items -> sortData[7]
             int kg = this.programs.keygen();
             GL20.glUseProgram(kg);
             this.gpu.bindParticleWrite(0);
@@ -593,6 +600,7 @@ public final class CMIParticleEngine {
             this.gpu.bindEmitters(5);
             this.gpu.bindOrderAdd();
             this.gpu.bindOrderModel();
+            this.gpu.bindOrderOpaque();
             this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, this.gpu.sortBuffer(0));
             setUIntUniform(kg, "uUpper", sortUpper);
             Vec3 camPos = camera.getPosition();
@@ -609,10 +617,12 @@ public final class CMIParticleEngine {
                     | GL42.GL_COMMAND_BARRIER_BIT);
 
             if (sorted) {
-                // single-pass counting sort over the alpha segment; dispatch
-                // sized by the (possibly stale) census plus alpha spawns since
-                // — always an upper bound on the real unculled alpha count
-                int alphaUpper = Math.min(cap, Math.max(0, this.alphaKnown + this.alphaSpawnDelta + 64));
+                // single counting-sort pass over the COMBINED translucent
+                // items (ALPHA sprites + MODEL translucent parts, one item per
+                // particle); dispatch sized by the (possibly stale) census
+                // plus translucent spawns since — always an upper bound
+                int translucentUpper = Math.min(cap,
+                        Math.max(0, this.translucentKnown + this.translucentSpawnDelta + 64));
                 int readId = this.gpu.sortBuffer(0);
                 int writeId = this.gpu.sortBuffer(1);
                 for (int pass = 0; pass < ParticleBuffers.RADIX_PASSES; pass++) {
@@ -626,7 +636,7 @@ public final class CMIParticleEngine {
                     this.gpu.bindSort(ParticleBuffers.SORTREAD_BINDING, readId);
                     this.gpu.bindHist();
                     setUIntUniform(this.programs.radixHist(), "uShift", shift);
-                    GL43.glDispatchCompute(Math.max(1, (alphaUpper + 63) / 64), 1, 1);
+                    GL43.glDispatchCompute(Math.max(1, (translucentUpper + 63) / 64), 1, 1);
                     GL42.glMemoryBarrier(GL42.GL_ATOMIC_COUNTER_BARRIER_BIT | GL43.GL_SHADER_STORAGE_BARRIER_BIT);
 
                     GL20.glUseProgram(this.programs.radixScan());
@@ -641,7 +651,7 @@ public final class CMIParticleEngine {
                     this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, writeId);
                     this.gpu.bindOffsets();
                     setUIntUniform(this.programs.radixScatter(), "uShift", shift);
-                    GL43.glDispatchCompute(Math.max(1, (alphaUpper + 63) / 64), 1, 1);
+                    GL43.glDispatchCompute(Math.max(1, (translucentUpper + 63) / 64), 1, 1);
                     GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
 
                     int t = readId;
@@ -656,17 +666,24 @@ public final class CMIParticleEngine {
             }
         }
 
-        // 7. Draw. Models first (opaque cutout with depth writes — correct
-        //    self-occlusion, occludes and is occluded properly), then the
-        //    additive billboards, then the sorted alpha billboards.
+        // 7. Draw. Model opaque segment first (cutout + depth writes), then
+        //    additive, then the OPAQUE cutout sprites (also depth-writing, so
+        //    unsorted); when translucent items exist, the combined sort runs
+        //    and the two translucent draws follow back-to-front: MODEL parts
+        //    (blend + depth write — ghost surfaces occlude like tinted glass)
+        //    before the ALPHA sprites (blend, no depth write).
         if (aliveEstimate > 0 || entryCount > 0) {
             this.gpu.bindOrderModel();
-            drawModels(view, projectionMatrix, camera);
+            drawModels(view, projectionMatrix, camera, false);
             this.gpu.bindOrderAdd();
-            drawPass(false, view, projectionMatrix, camera);
+            drawPass(0, view, projectionMatrix, camera);
+            this.gpu.bindOrderOpaque();
+            drawPass(1, view, projectionMatrix, camera);
             if (sorted) {
                 this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, finalPerm);
-                drawPass(true, view, projectionMatrix, camera);
+                this.gpu.bindOrderModel();
+                drawModels(view, projectionMatrix, camera, true);
+                drawPass(2, view, projectionMatrix, camera);
             }
         }
 
@@ -708,12 +725,20 @@ public final class CMIParticleEngine {
     }
 
     /**
-     * Draws the MODEL bucket: fullbright cutout with depth writes, so models
-     * self-occlude correctly and occlude the additive/alpha passes drawn
-     * after. Winding-agnostic — culling is disabled for this pass and
-     * restored to MC's default (enabled) afterwards.
+     * Draws one MODEL sub-pass through the element-indexed geometry: the
+     * opaque segment (cutout + depth writes, dense permutation) or the
+     * translucent segment (cloak + wings) walking the COMBINED translucent
+     * sort array. The translucent pass blends WITH depth writes: the sorted
+     * back-to-front order makes overlapping ghosts composite correctly, and
+     * within one allay the depth writes resolve part order geometrically
+     * (closer parts win) while giving the double-wound shell single blend per
+     * pixel from BOTH sides. Ghost surfaces therefore occlude later translucent
+     * draws (sprites behind a cloak are hidden rather than seen through it) —
+     * the documented tradeoff. Winding follows vanilla {@code ModelPart.Cube}
+     * order; if a future geometry bake flips it, swap {@code glFrontFace} — do
+     * not reorder the data.
      */
-    private void drawModels(Matrix4fc view, Matrix4fc projectionMatrix, Camera camera) {
+    private void drawModels(Matrix4fc view, Matrix4fc projectionMatrix, Camera camera, boolean translucent) {
         int prog = this.programs.modelRender();
         if (prog == 0)
             return;
@@ -728,28 +753,39 @@ public final class CMIParticleEngine {
         Vec3 pos = camera.getPosition();
         setFloatUniform(prog, "uCamPos", (float) pos.x, (float) pos.y, (float) pos.z);
         setFloatUniform(prog, "uFadeDist", (float) ClientConfig.particleFadeDistance);
+        setIntUniform(prog, "uMode", translucent ? 1 : 0);
         this.allayAtlas.bind(1);
         setIntUniform(prog, "uSprite", 1);
 
-        RenderSystem.disableBlend();
-        RenderSystem.depthMask(true);
         RenderSystem.enableDepthTest();
-        GL11.glDisable(GL11.GL_CULL_FACE);
+        GL11.glEnable(GL11.GL_CULL_FACE); // double-wound faces stay visible from both sides
+        // blend enabled for both segments (the opaque fsh outputs alpha 1.0,
+        // so blending is a no-op there); BOTH write depth — opaque by
+        // definition, translucent so ghosts occlude later translucent draws
+        RenderSystem.enableBlend();
+        RenderSystem.blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA,
+                GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        RenderSystem.depthMask(true);
 
         this.gpu.bindDrawIndirect();
-        this.gpu.drawIndirect(2);
+        this.gpu.drawIndirectElements(translucent ? 3 : 2);
 
-        GL11.glEnable(GL11.GL_CULL_FACE);
-        RenderSystem.depthMask(false);
-        RenderSystem.enableBlend();
+        RenderSystem.depthMask(true);
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableBlend();
         GL20.glUseProgram(0);
         GL30.glBindVertexArray(0);
     }
 
-    /** Draws one half of the pool (additive or alpha) through its permutation. */
-    private void drawPass(boolean alpha,
+    /**
+     * Draws one billboard bucket: 0 = additive (soft circle, unsorted), 1 =
+     * OPAQUE cutout sprite (depth write, unsorted), 2 = ALPHA blended sprite
+     * (walks the combined translucent sort array, no depth write).
+     */
+    private void drawPass(int mode,
             Matrix4fc view, Matrix4fc projectionMatrix, Camera camera) {
-        int prog = alpha ? this.programs.alphaRender() : this.programs.render();
+        boolean textured = mode != 0;
+        int prog = textured ? this.programs.alphaRender() : this.programs.render();
         if (prog == 0)
             return;
         GL20.glUseProgram(prog);
@@ -768,31 +804,39 @@ public final class CMIParticleEngine {
         setFloatUniform(prog, "uCamRight", -left.x, -left.y, -left.z);
         setFloatUniform(prog, "uCamUp", up.x, up.y, up.z);
 
-        if (alpha) {
+        if (textured) {
             this.cherryAtlas.bind(1);
             setIntUniform(prog, "uSprite", 1);
             setFloatUniform(prog, "uAtlasCols", this.cherryAtlas.cols());
             setFloatUniform(prog, "uAtlasRows", this.cherryAtlas.rows());
+            setIntUniform(prog, "uMode", mode == 1 ? 1 : 0);
         } else {
             setFloatUniform(prog, "uGlow", 1.0f);
         }
         setFloatUniform(prog, "uFadeDist", (float) ClientConfig.particleFadeDistance);
 
-        RenderSystem.enableBlend();
-        if (alpha) {
-            RenderSystem.blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA,
-                    GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA);
-        } else {
-            RenderSystem.blendFuncSeparate(GL11.GL_ONE, GL11.GL_ONE, GL11.GL_ONE, GL11.GL_ONE);
-        }
         RenderSystem.enableDepthTest();
-        RenderSystem.depthMask(false);
+        if (mode == 1) {
+            // OPAQUE cutout: no blending, depth writes — order-independent
+            RenderSystem.disableBlend();
+            RenderSystem.depthMask(true);
+        } else {
+            RenderSystem.enableBlend();
+            if (mode == 2)
+                RenderSystem.blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA,
+                        GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA);
+            else
+                RenderSystem.blendFuncSeparate(GL11.GL_ONE, GL11.GL_ONE, GL11.GL_ONE, GL11.GL_ONE);
+            RenderSystem.depthMask(false);
+        }
 
         this.gpu.bindDrawIndirect();
-        if (alpha)
+        if (mode == 0)
+            this.gpu.drawIndirect(0);
+        else if (mode == 1)
             this.gpu.drawIndirect(1);
         else
-            this.gpu.drawIndirect(0);
+            this.gpu.drawIndirect(4);
 
         RenderSystem.depthMask(true);
         RenderSystem.defaultBlendFunc();
@@ -835,16 +879,16 @@ public final class CMIParticleEngine {
         } else {
             int[] counts = this.gpu.readbackCounts(this.pendingSlot);
             int alive = counts[0];
-            int alpha = counts[1];
+            int translucent = counts[1];
             if (alive < 0 || alive > cap)
                 alive = 0;
-            if (alpha < 0 || alpha > cap)
-                alpha = 0;
+            if (translucent < 0 || translucent > cap)
+                translucent = 0;
             this.aliveKnown = alive;
-            this.alphaKnown = alpha;
+            this.translucentKnown = translucent;
             this.spawnDelta = 0;
-            this.alphaSpawnDelta = 0;
-            this.alphaLatched = alpha > 0;
+            this.translucentSpawnDelta = 0;
+            this.translucentLatched = translucent > 0;
             this.liveDisplay = alive;
         }
         GL32.glDeleteSync(this.pendingFence);
@@ -925,13 +969,18 @@ public final class CMIParticleEngine {
      * bake slice per particle, so one spec can serve many spawn sites.
      */
     private void ensureEmitterRuntime(int id, EmitterSpec spec, Vec3 origin) {
-        if (spec.material == EmitterSpec.Material.ALPHA) {
+        if (spec.material == EmitterSpec.Material.ALPHA || spec.material == EmitterSpec.Material.OPAQUE) {
             this.cherryAtlas.ensureLoaded();
         } else if (spec.material == EmitterSpec.Material.MODEL) {
             this.allayAtlas.ensureLoaded();
         }
         if (spec.collideMode != EmitterSpec.CollideMode.NONE && origin != null)
             this.collisionBake.ensure(origin);
+    }
+
+    /** Whether a spec's particles feed the combined translucent sort (ALPHA or MODEL). */
+    private static boolean isTranslucent(EmitterSpec spec) {
+        return spec.material == EmitterSpec.Material.ALPHA || spec.material == EmitterSpec.Material.MODEL;
     }
 
     private static int loc(int prog, String name) {

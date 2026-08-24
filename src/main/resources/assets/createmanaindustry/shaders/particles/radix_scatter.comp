@@ -1,10 +1,11 @@
-// Counting-sort scatter pass over the ALPHA segment only (single pass; bound
-// by the GPU alpha count, indirect.cmd[1].y). Within-band order is arbitrary
-// and harmless; bands are ordered far->near by the inverted key. uShift is
-// kept at 0 — the key is one byte wide.
+// Counting-sort scatter pass over the COMBINED translucent items (single
+// pass; bound by the GPU total, indirect.cmd[16]). Within-band order is
+// arbitrary and harmless; bands are ordered far->near by the inverted key.
+// uShift stays at 0 — the key is one byte wide.
 layout(local_size_x = 64) in;
 
-layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
+// 20-byte-stride indirect commands; translucent item total = cmd[5*3 + 1] = cmd[16]
+layout(std430, binding = 2) buffer IndirectBuf { uint cmd[25]; } indirect;
 layout(std430, binding = 6) readonly buffer SortRead { uvec2 kv[]; } sortIn;
 layout(std430, binding = 7) buffer SortWrite { uvec2 kv[]; } sortOut;
 layout(std430, binding = 10) buffer OffsBuf { uint o[256]; } offs;
@@ -13,7 +14,7 @@ uniform uint uShift;
 
 void main() {
     uint g = gl_GlobalInvocationID.x;
-    if (g >= indirect.cmd[1].y)
+    if (g >= indirect.cmd[16])
         return;
     uvec2 kv = sortIn.kv[g];
     uint bin = (kv.x >> uShift) & 255u;

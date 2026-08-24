@@ -92,6 +92,8 @@ public final class EmitterPresets {
      * blocks at full life, growing as age^1.25) and a random billboard spin
      * (velocity ±30°/t, acceleration ±5°/t², both derived per-particle from the
      * seed). Removed on ground contact just like vanilla (DIE_ON_GROUND).
+     * The sprites are pure 0/255 alpha, so the emitter uses the OPAQUE
+     * material (cutout + depth write) and never enters the sorted path.
      */
     public static final EmitterSpec CHERRY_LEAVES = EmitterSpec.builder()
             .shape(EmitterShape.POINT)
@@ -100,7 +102,7 @@ public final class EmitterPresets {
             .sizeOverLife(0.075, 0.075, 1.0)
             .gravity(0, -0.3, 0)
             .drag(0)
-            .material(EmitterSpec.Material.ALPHA)
+            .material(EmitterSpec.Material.OPAQUE)
             .collide(EmitterSpec.CollideMode.DIE_ON_GROUND)
             .flutter(2.0)
             .spin(true)

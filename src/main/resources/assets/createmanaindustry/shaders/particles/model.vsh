@@ -2,8 +2,17 @@
 // instance walks orderModel (keygen's culled model permutation), pulls its
 // particle record from the pool, computes the full vanilla AllayModel pose
 // procedurally in-shader (FLY / DANCE / SPIN / HOLD, header 17.x), and
-// vertex-pulls the static baked geometry (binding 12, float stride 6:
-// pos.xyz units / uv normalised / partId).
+// vertex-pulls the static indexed geometry (binding 12, float stride 6:
+// pos.xyz units / uv normalised / partId) — gl_VertexID is the element index.
+//
+// The mesh renders as TWO sub-draws, selected by uMode: 0 = opaque segment
+// (head/skin/arms — cutout + depth write in fsh) walking the dense orderModel
+// permutation; 1 = translucent segment (cloak + wings — alpha blend WITH depth
+// writes so ghost surfaces occlude like tinted glass) walking the COMBINED
+// translucent sort array (payload = particleIndex<<2 | itemType, type 1 =
+// model), depth-sorted together with the ALPHA sprites. Vertices of the other
+// segment are clipped away before any animation math, and only the ONE part
+// matrix this vertex actually needs is built.
 //
 // Transform chain replicates vanilla LivingEntityRenderer:
 //   world = feet + Ry(pi - yaw) * S(-1,-1,1) * T(0,-1.501,0) * partChain / 16
@@ -15,10 +24,12 @@ uniform mat4 ModelViewMat;
 uniform mat4 ProjMat;
 uniform vec3 uCamPos;
 uniform float uFadeDist;
+uniform int uMode; // 0 = opaque cutout segment, 1 = translucent blended segment
 
 layout(std430, binding = 1) readonly buffer ParticleRead { vec4 data[]; } particles;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = 13) readonly buffer OrderModelBuf { uint order[]; } orderModel;
+layout(std430, binding = 7) readonly buffer SortBuf { uvec2 kv[]; } sortedKv;
 layout(std430, binding = 12) readonly buffer ModelGeo { float v[]; } geo;
 
 out vec2 vUv;
@@ -46,12 +57,43 @@ mat4 part(vec3 pivot, float xr, float yr, float zr) {
 }
 
 void main() {
-    uint inst = orderModel.order[gl_InstanceID];
+    // pull the vertex's part id FIRST — segment filtering and per-part matrix
+    // branching both key off it, and filtered-out vertices cost nothing more
+    uint vb = uint(gl_VertexID) * 6u;
+    int pid = int(geo.v[vb + 5u]);
+
+    // parts 4/5 (wings) and 6 (cloak) live in the translucent index range
+    bool transluc = (pid >= 4);
+    if ((uMode == 1) != transluc) {
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // beyond far plane -> clipped
+        return;
+    }
+
+    // resolve this instance's particle: opaque walks the dense permutation,
+    // translucent walks the combined sort array and clips non-model items
+    uint inst;
+    if (uMode == 1) {
+        uvec2 item = sortedKv.kv[gl_InstanceID];
+        if ((item.y & 3u) != 1u) { // sprite-type item — belongs to the other draw
+            gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+            return;
+        }
+        inst = item.y >> 2;
+    } else {
+        inst = orderModel.order[gl_InstanceID];
+    }
     uint base = inst * 4u;
     vec4 p0 = particles.data[base + 0u];
     vec4 p1 = particles.data[base + 1u];
     vec4 p2 = particles.data[base + 2u];
     vec4 p3 = particles.data[base + 3u];
+
+    // per-INSTANCE fade early-out (p0 is shared by every vertex of the
+    // instance, so whole triangles drop out consistently)
+    if (distance(p0.xyz, uCamPos) > uFadeDist + 24.0) {
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+    }
 
     float life = clamp(p3.x / max(p3.y, 1e-5), 0.0, 1.0);
     uint eid = floatBitsToUint(p3.w);
@@ -106,25 +148,32 @@ void main() {
     float f13 = f5 * (1.0 - f6);
     float f14 = 0.43633232 - cos(f3 + PI * 1.5) * PI * 0.075 * f13;
 
-    // ---- part matrices (model units; pivots from createBodyLayer) ----
+    // ---- part chain: build ONLY the matrix this vertex's part needs ----
+    // (root: translate(0, 23.5+bob, 0) * Ry * Rz; pivots from createBodyLayer)
     mat4 t = mat4(1.0);
     t[3].xyz = vec3(0.0, 23.5 + rootYBob, 0.0);
     mat4 rootM = t * rotY(rootYRot) * rotZ(rootZRot);
-    mat4 headM = rootM * part(vec3(0.0, -3.99, 0.0), headXRot, headYRot, headZRot);
-    mat4 bodyM = rootM * part(vec3(0.0, -4.0, 0.0), bodyXR, 0.0, 0.0);
-    mat4 rArmM = bodyM * part(vec3(-1.75, 0.5, 0.0), f12, 0.27925268 * f6, f14);
-    mat4 lArmM = bodyM * part(vec3(1.75, 0.5, 0.0), f12, -0.27925268 * f6, -f14);
-    mat4 rWingM = bodyM * part(vec3(-0.5, 0.0, 0.6), wingXR, -PI / 4.0 + f1, 0.0);
-    mat4 lWingM = bodyM * part(vec3(0.5, 0.0, 0.6), wingXR, PI / 4.0 - f1, 0.0);
+    mat4 M;
+    if (pid == 0) {
+        M = rootM * part(vec3(0.0, -3.99, 0.0), headXRot, headYRot, headZRot);
+    } else {
+        mat4 bodyM = rootM * part(vec3(0.0, -4.0, 0.0), bodyXR, 0.0, 0.0);
+        if (pid == 1 || pid == 6) {
+            M = bodyM; // skin and the translucent cloak share the body transform
+        } else if (pid == 2) {
+            M = bodyM * part(vec3(-1.75, 0.5, 0.0), f12, 0.27925268 * f6, f14);
+        } else if (pid == 3) {
+            M = bodyM * part(vec3(1.75, 0.5, 0.0), f12, -0.27925268 * f6, -f14);
+        } else if (pid == 4) {
+            M = bodyM * part(vec3(-0.5, 0.0, 0.6), wingXR, -PI / 4.0 + f1, 0.0);
+        } else {
+            M = bodyM * part(vec3(0.5, 0.0, 0.6), wingXR, PI / 4.0 - f1, 0.0);
+        }
+    }
 
-    // ---- vertex pull + transform to world ----
-    uint vb = uint(gl_VertexID) * 6u;
+    // ---- vertex transform to world ----
     vec3 local = vec3(geo.v[vb], geo.v[vb + 1u], geo.v[vb + 2u]);
     vUv = vec2(geo.v[vb + 3u], geo.v[vb + 4u]);
-    int pid = int(geo.v[vb + 5u]);
-    mat4 M = pid == 0 ? headM : (pid == 1 ? bodyM : (pid == 2 ? rArmM
-        : (pid == 3 ? lArmM : (pid == 4 ? rWingM : lWingM))));
-
     vec3 pm = (M * vec4(local, 1.0)).xyz / 16.0;   // vanilla per-part /16
     // vanilla chain after the parts: T(0,-1.501,0) then S(-1,-1,1) then
     // Ry(180deg - yaw); combined here with the particle's world scale

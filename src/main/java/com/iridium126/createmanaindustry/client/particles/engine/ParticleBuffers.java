@@ -41,8 +41,22 @@ public final class ParticleBuffers {
      * previous frame's value plenty of margin before it is reused.
      */
     public static final int COUNTER_RING = 4;
-    /** Number of draw commands in the indirect buffer (additive, alpha, model). */
-    public static final int INDIRECT_COMMANDS = 3;
+    /**
+     * Number of draw commands in the indirect buffer: additive, OPAQUE
+     * cutout billboards, model opaque segment, model translucent segment,
+     * ALPHA blended billboards.
+     */
+    public static final int INDIRECT_COMMANDS = 5;
+    /**
+     * Uniform byte stride of every indirect command. ELEMENT commands
+     * ({@code glDrawElementsIndirect}, commands 2/3) read the full
+     * DrawElementsIndirectCommand — 5 uints: indexCount, instanceCount,
+     * firstIndex, baseVertex, baseInstance. Arrays commands (0/1) read only
+     * the first 16 bytes, so their 5th uint is padding. A uniform stride
+     * keeps both the draw offsets and the compute shaders' flat-uint SSBO
+     * view (field j of command i = index {@code 5*i + j}) trivially aligned.
+     */
+    public static final int INDIRECT_STRIDE = 20;
     /** Counting-sort passes over the 8-bit depth-band key (one, by design). */
     public static final int RADIX_PASSES = 1;
     /** Radix digit size (bins). */
@@ -69,6 +83,8 @@ public final class ParticleBuffers {
     public static final int ORDERMODEL_BINDING = 13;
     /** Previous frame's counter slot, read by update.comp for the GPU-exact live count. */
     public static final int PREVCOUNTER_BINDING = 14;
+    /** Dense permutation of visible OPAQUE cutout billboards (keygen's fourth bucket). */
+    public static final int ORDEROPAQUE_BINDING = 15;
 
     private final int[] particleSSBOs = new int[2];
     private final int[] emitSSBOs = new int[EMIT_RING_SIZE];
@@ -82,6 +98,9 @@ public final class ParticleBuffers {
     private int bakeMetaSSBO = -1;
     private int modelGeoSSBO = -1;
     private int orderModelSSBO = -1;
+    private int orderOpaqueSSBO = -1;
+    /** Static element indices for the MODEL sub-draws (bound into the VAO). */
+    private int modelIndexBuffer = -1;
     private int vao = -1;
 
     private int readIndex = 0;
@@ -93,10 +112,10 @@ public final class ParticleBuffers {
     private float[] emitterMirror;
     private boolean emittersDirty = false;
 
-    // Reusable scratch for tiny uploads: the initial indirect payload is the
-    // largest writer (INDIRECT_COMMANDS x 16 B = 48 B); 64 B covers it and the
-    // counter pairs with headroom.
-    private final ByteBuffer tmp4 = BufferUtils.createByteBuffer(64);
+    // Reusable scratch for tiny uploads. The largest writer is the initial
+    // indirect payload (INDIRECT_COMMANDS x INDIRECT_STRIDE) — pitfall #22
+    // discipline: keep headroom above that, not just equality.
+    private final ByteBuffer tmp4 = BufferUtils.createByteBuffer(160);
     private final ByteBuffer zero1024 = BufferUtils.createByteBuffer(1024);
     /** Matches the "major.minor" prefix of a GL_VERSION string. */
     private static final java.util.regex.Pattern GL_VERSION_PATTERN =
@@ -148,7 +167,7 @@ public final class ParticleBuffers {
             this.emitSSBOs[i] = createBuffer((long) MAX_EMIT_COMMANDS * 8 * 4, null);
         }
         this.emitterSSBO = createBuffer((long) maxEmitters * VEC4_PER_EMITTER * 4 * 4, null);
-        this.indirectSSBO = createBuffer((long) INDIRECT_COMMANDS * 16, null);
+        this.indirectSSBO = createBuffer((long) INDIRECT_COMMANDS * INDIRECT_STRIDE, null);
         for (int i = 0; i < COUNTER_RING; i++) {
             this.counterSSBOs[i] = createBuffer(16, null);
         }
@@ -160,14 +179,17 @@ public final class ParticleBuffers {
         this.orderAddSSBO = createBuffer(cap * 4L, null);
         // Model permutation (dense, uint per visible MODEL particle).
         this.orderModelSSBO = createBuffer(cap * 4L, null);
+        // OPAQUE cutout-billboard permutation (dense, uint per particle).
+        this.orderOpaqueSSBO = createBuffer(cap * 4L, null);
         this.histSSBO = createBuffer((long) RADIX_BINS * 4, null);
         this.offsetSSBO = createBuffer((long) RADIX_BINS * 4, null);
         this.bakeMetaSSBO = createBuffer(CollisionBake.MAX_SLICES * 16L, null);
 
-        // initial indirect payload: two draw commands (6 verts / 0 inst each)
+        // initial indirect payload: one command per slot (6 verts / 0 inst
+        // each; the 5th uint pads arrays commands to the uniform 20 B stride)
         this.tmp4.clear();
         for (int i = 0; i < INDIRECT_COMMANDS; i++) {
-            this.tmp4.putInt(6).putInt(0).putInt(0).putInt(0);
+            this.tmp4.putInt(6).putInt(0).putInt(0).putInt(0).putInt(0);
         }
         this.tmp4.flip();
         GL30.glBindBuffer(GL40.GL_DRAW_INDIRECT_BUFFER, this.indirectSSBO);
@@ -277,30 +299,51 @@ public final class ParticleBuffers {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, ORDERMODEL_BINDING, this.orderModelSSBO);
     }
 
+    /** Binds the OPAQUE cutout-billboard permutation at its fixed binding. */
+    public void bindOrderOpaque() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, ORDEROPAQUE_BINDING, this.orderOpaqueSSBO);
+    }
+
     /** Binds the static model geometry for the model draw pass (must be re-bound every frame — see {@link #unbindShaders()}). */
     public void bindModelGeo() {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, MODELGEO_BINDING, this.modelGeoSSBO);
     }
 
     /**
-     * Uploads the static baked model geometry (flat float array, see
-     * {@link AllayModelGeometry#VERTEX_FLOATS} stride) once after init, and
-     * rewrites draw command 2's vertexCount to the baked vertex count (the
-     * model pass instances a fixed mesh, not 6-vertex billboards).
+     * Uploads the static indexed model geometry (see {@link AllayModelGeometry}:
+     * {@code VERTEX_FLOATS} stride) once after init: vertices go to the geo
+     * SSBO, indices to an element buffer bound into the engine's VAO (harmless
+     * for the unindexed particle draws), and draw commands 2/3 are rewritten as
+     * element commands — cmd2 = opaque cutout segment from index 0, cmd3 =
+     * translucent blended segment starting at {@code opaqueIndexCount}.
      */
-    public void uploadModelGeometry(float[] baked) {
+    public void uploadModelGeometry(float[] vertices, int[] indices, int opaqueIndexCount) {
         try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
-            FloatBuffer buf = stack.mallocFloat(baked.length);
-            buf.put(baked).flip();
-            this.modelGeoSSBO = createBuffer(4L * baked.length, buf);
+            FloatBuffer buf = stack.mallocFloat(vertices.length);
+            buf.put(vertices).flip();
+            this.modelGeoSSBO = createBuffer(4L * vertices.length, buf);
         }
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, MODELGEO_BINDING, this.modelGeoSSBO);
 
+        this.modelIndexBuffer = GL15.glGenBuffers();
+        GL30.glBindVertexArray(this.vao);
+        GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, this.modelIndexBuffer);
+        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            java.nio.IntBuffer ib = stack.mallocInt(indices.length);
+            ib.put(indices).flip();
+            GL15.glBufferData(GL15.GL_ELEMENT_ARRAY_BUFFER, ib, GL15.GL_STATIC_DRAW);
+        }
+        GL30.glBindVertexArray(0);
+
+        // two full 20-byte element commands (indexCount, instanceCount=0,
+        // firstIndex, baseVertex=0, baseInstance=0): cmd2 = opaque cutout
+        // segment from index 0, cmd3 = translucent blended segment
         this.tmp4.clear();
-        this.tmp4.putInt(baked.length / AllayModelGeometry.VERTEX_FLOATS).putInt(0).putInt(0).putInt(0);
+        this.tmp4.putInt(opaqueIndexCount).putInt(0).putInt(0).putInt(0).putInt(0);
+        this.tmp4.putInt(indices.length - opaqueIndexCount).putInt(0).putInt(opaqueIndexCount).putInt(0).putInt(0);
         this.tmp4.flip();
         GL30.glBindBuffer(GL40.GL_DRAW_INDIRECT_BUFFER, this.indirectSSBO);
-        GL15.glBufferSubData(GL40.GL_DRAW_INDIRECT_BUFFER, 2L * 16, this.tmp4);
+        GL15.glBufferSubData(GL40.GL_DRAW_INDIRECT_BUFFER, 2L * INDIRECT_STRIDE, this.tmp4);
     }
 
     public void bindHist() {
@@ -399,7 +442,7 @@ public final class ParticleBuffers {
         this.tmp4.flip();
         GL30.glBindBuffer(GL40.GL_DRAW_INDIRECT_BUFFER, this.indirectSSBO);
         for (int i = 0; i < INDIRECT_COMMANDS; i++) {
-            GL15.glBufferSubData(GL40.GL_DRAW_INDIRECT_BUFFER, i * 16 + 4, this.tmp4);
+            GL15.glBufferSubData(GL40.GL_DRAW_INDIRECT_BUFFER, i * INDIRECT_STRIDE + 4, this.tmp4);
         }
     }
 
@@ -408,7 +451,7 @@ public final class ParticleBuffers {
      * the world's rendering after our frame.
      */
     public void unbindShaders() {
-        for (int i = 0; i <= PREVCOUNTER_BINDING; i++) {
+        for (int i = 0; i <= ORDEROPAQUE_BINDING; i++) {
             GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, i, 0);
         }
     }
@@ -419,7 +462,12 @@ public final class ParticleBuffers {
 
     /** Draws draw-command {@code cmd} (offset in the indirect buffer). */
     public void drawIndirect(int cmd) {
-        GL40.glDrawArraysIndirect(GL11.GL_TRIANGLES, cmd * 16L);
+        GL40.glDrawArraysIndirect(GL11.GL_TRIANGLES, cmd * (long) INDIRECT_STRIDE);
+    }
+
+    /** Draws element-indexed draw-command {@code cmd} (MODEL sub-draws). */
+    public void drawIndirectElements(int cmd) {
+        GL40.glDrawElementsIndirect(GL11.GL_TRIANGLES, GL11.GL_UNSIGNED_INT, cmd * (long) INDIRECT_STRIDE);
     }
 
     public void bindVao() {
@@ -427,6 +475,15 @@ public final class ParticleBuffers {
     }
 
     public void free() {
+        if (this.modelIndexBuffer > 0) {
+            // detach the element binding from the VAO before deleting (the
+            // ELEMENT_ARRAY binding is VAO state)
+            if (this.vao >= 0)
+                GL30.glBindVertexArray(this.vao);
+            GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, 0);
+            GL30.glBindVertexArray(0);
+            GL15.glDeleteBuffers(this.modelIndexBuffer);
+        }
         if (this.vao >= 0)
             GL30.glDeleteVertexArrays(this.vao);
         for (int id : this.particleSSBOs)
@@ -449,6 +506,8 @@ public final class ParticleBuffers {
             GL15.glDeleteBuffers(this.orderAddSSBO);
         if (this.orderModelSSBO > 0)
             GL15.glDeleteBuffers(this.orderModelSSBO);
+        if (this.orderOpaqueSSBO > 0)
+            GL15.glDeleteBuffers(this.orderOpaqueSSBO);
         if (this.modelGeoSSBO > 0)
             GL15.glDeleteBuffers(this.modelGeoSSBO);
         if (this.histSSBO > 0)

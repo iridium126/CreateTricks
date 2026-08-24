@@ -1,9 +1,10 @@
-// Counting-sort histogram pass over the ALPHA segment (single pass over the
-// 8-bit depth band key written by keygen.comp). The number of elements is the
-// GPU-written alpha count (indirect.cmd[1].y).
+// Counting-sort histogram pass over the COMBINED translucent items (ALPHA
+// sprites + MODEL translucent parts; item type rides in the payload, not the
+// key). The element count is the GPU-written total (indirect.cmd[16]).
 layout(local_size_x = 64) in;
 
-layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[2]; } indirect;
+// 20-byte-stride indirect commands; translucent item total = cmd[5*3 + 1] = cmd[16]
+layout(std430, binding = 2) buffer IndirectBuf { uint cmd[25]; } indirect;
 layout(std430, binding = 6) readonly buffer SortRead { uvec2 kv[]; } sortIn;
 layout(std430, binding = 9) buffer HistBuf { uint h[256]; } hist;
 
@@ -11,7 +12,7 @@ uniform uint uShift;
 
 void main() {
     uint g = gl_GlobalInvocationID.x;
-    if (g >= indirect.cmd[1].y)
+    if (g >= indirect.cmd[16])
         return;
     uint k = sortIn.kv[g].x;
     uint bin = (k >> uShift) & 255u;

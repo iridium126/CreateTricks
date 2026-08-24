@@ -1,33 +1,41 @@
-// Partition pass for the two permutation buffers — runs EVERY frame (it is
-// also the fast path's cull pass):
-//   - additive particles -> orderAdd[] (dense uint permutation, order irrelevant)
-//   - alpha particles    -> sortData[]  (compact uvec2 (depthKey, index))
+// Partition pass for the draw permutations — runs EVERY frame (it is also the
+// fast path's cull pass). Four buckets:
+//   - ADDITIVE particles   -> orderAdd[]   (dense uint permutation, unsorted)
+//   - OPAQUE cutout sprites-> orderOpaque[](dense uint permutation, unsorted)
+//   - ALPHA blended sprites-> sortData[]   (uvec2 item: depth key, payload)
+//   - MODEL particles      -> orderModel[] (opaque segment) AND one sortData[]
+//                             item for the translucent segment
 // Every particle first passes a GPU frustum test (sphere vs 6 normalized
 // planes extracted on the CPU from Proj*View), so off-screen particles never
-// reach vertex shading. The GPU counts (indirect.cmd[0].y / [1].y) are the
-// per-material DRAW counts, owned exclusively here; update/emit never touch
-// them. keygen also maintains counter.alphaAlive — the UNculled alpha census
-// used by next frame's dual-mode decision and radix dispatch sizing.
+// reach vertex shading. The GPU counts live in the flat indirect array
+// (cmd[5*i+1]); keygen owns them exclusively.
+//
+// Translucent sorting (user-visible correctness): ALPHA sprites and the MODEL
+// translucent parts (cloak + wings) go through ONE combined counting sort per
+// frame. Item payload = (particleIndex << 2) | itemType (0 = sprite, 1 = model)
+// — the type rides in the payload, not the key, so the sort stays a single
+// 8-bit pass; both translucent draws then walk the SAME sorted array and clip
+// the other type's instances in their vertex shaders.
 //
 // Depth key: logarithmically quantized 8-bit bands over [1, uMaxDepth] blocks,
-// giving ~constant RELATIVE depth resolution (~2% per band) — fine near the
-// camera, coarse far away, matching how compositing-order errors are
-// perceived. FAR bands get the SMALL key, so the ascending single-pass
-// counting sort (hist/scan/scatter) orders far particles first — back-to-front
-// compositing. Within one band the order is arbitrary (visually harmless and
-// removes any radix stability requirement).
+// giving ~constant RELATIVE depth resolution (~2% per band). FAR bands get
+// the SMALL key, so the ascending counting sort orders far items first —
+// back-to-front compositing. Within one band the order is arbitrary
+// (visually harmless, by the engine's standing tradeoff).
 layout(local_size_x = 64) in;
 
 const uint DEPTH_BANDS = 256u;
 const float BAND_NEAR = 1.0; // blocks; log quantization lower bound
 
 layout(std430, binding = 0) readonly buffer ParticleRead { vec4 data[]; } pool;
-layout(std430, binding = 2) buffer IndirectBuf { uvec4 cmd[3]; } indirect;
+// 5 commands x 5 uints, 20-byte stride; instanceCount fields at 1/6/11/16
+layout(std430, binding = 2) buffer IndirectBuf { uint cmd[25]; } indirect;
 layout(std430, binding = 3) buffer CounterBuf { uint writeSlot; uint spare; uint alphaAlive; } counter;
 layout(std430, binding = 5) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = 7) buffer SortWrite { uvec2 kv[]; } sortOut;
 layout(std430, binding = 8) buffer OrderAddW { uint order[]; } orderAdd;
 layout(std430, binding = 13) buffer OrderModelW { uint order[]; } orderModel;
+layout(std430, binding = 15) buffer OrderOpaqueW { uint order[]; } orderOpaque;
 
 uniform uint uUpper;      // CPU-side safe upper bound (aliveRead + spawns + margin)
 uniform vec3 uCamPos;
@@ -42,6 +50,15 @@ bool sphereVisible(vec3 rel, float r) {
             return false;
     }
     return true;
+}
+
+uint depthKey(vec3 worldPos) {
+    // view-space depth: negative z is in front of the camera
+    vec4 vs = uView * vec4(worldPos - uCamPos, 1.0);
+    float depth = clamp(-vs.z, BAND_NEAR, uMaxDepth);
+    float t = log2(depth / BAND_NEAR) / log2(max(uMaxDepth, 2.0) / BAND_NEAR);
+    uint band = min(DEPTH_BANDS - 1u, uint(t * float(DEPTH_BANDS)));
+    return (DEPTH_BANDS - 1u) - band; // far -> small key -> drawn first
 }
 
 void main() {
@@ -62,31 +79,37 @@ void main() {
     // partially-offscreen allay never pops at the screen edge.
     float matId = emitters.u[hb + 7u].x;
     float keySize = max(emitters.u[hb + 5u].z, emitters.u[hb + 5u].w) * p0.w;
-    float radius = matId >= 1.5 ? keySize * 1.5 : keySize;
-    bool alpha = matId >= 0.5 && matId < 1.5;
+    float radius = matId >= 1.5 && matId < 2.5 ? keySize * 1.5 : keySize;
 
-    if (alpha)
-        atomicAdd(counter.alphaAlive, 1u); // census BEFORE the cull test
+    // translucent census BEFORE the cull test: every live ALPHA/MODEL particle
+    // counts (off-screen included) so the dual-mode decision and the radix
+    // dispatch sizing can never undersize when the camera swings
+    if (matId >= 0.5 && matId < 2.5)
+        atomicAdd(counter.alphaAlive, 1u);
 
     if (!sphereVisible(p0.xyz - uCamPos, radius))
         return;
 
     if (matId < 0.5) {
         // ADDITIVE: dense permutation, order irrelevant
-        uint pos = atomicAdd(indirect.cmd[0].y, 1u);
+        uint pos = atomicAdd(indirect.cmd[1], 1u);
         orderAdd.order[pos] = g;
-    } else if (alpha) {
-        // view-space depth: negative z is in front of the camera
-        vec4 vs = uView * vec4(p0.xyz - uCamPos, 1.0);
-        float depth = clamp(-vs.z, BAND_NEAR, uMaxDepth);
-        float t = log2(depth / BAND_NEAR) / log2(max(uMaxDepth, 2.0) / BAND_NEAR);
-        uint band = min(DEPTH_BANDS - 1u, uint(t * float(DEPTH_BANDS)));
-        uint key = (DEPTH_BANDS - 1u) - band; // far -> small key -> drawn first
-        uint pos = atomicAdd(indirect.cmd[1].y, 1u);
-        sortOut.kv[pos] = uvec2(key, g);
+    } else if (matId >= 2.5) {
+        // OPAQUE cutout sprite: dense permutation, depth writes make it
+        // order-independent like the MODEL opaque segment
+        uint pos = atomicAdd(indirect.cmd[6], 1u);
+        orderOpaque.order[pos] = g;
+    } else if (matId < 1.5) {
+        // ALPHA blended sprite -> combined translucent sort, item type 0
+        uint pos = atomicAdd(indirect.cmd[16], 1u);
+        sortOut.kv[pos] = uvec2(depthKey(p0.xyz), (g << 2) | 0u);
     } else {
-        // MODEL: own bucket, drawn first with depth writes (no sort needed)
-        uint pos = atomicAdd(indirect.cmd[2].y, 1u);
+        // MODEL: opaque segment walks orderModel; the translucent segment
+        // (cloak + wings, one item per particle) joins the combined sort as
+        // item type 1 — both translucent draws share the sorted array
+        uint pos = atomicAdd(indirect.cmd[11], 1u);
         orderModel.order[pos] = g;
+        pos = atomicAdd(indirect.cmd[16], 1u);
+        sortOut.kv[pos] = uvec2(depthKey(p0.xyz), (g << 2) | 1u);
     }
 }

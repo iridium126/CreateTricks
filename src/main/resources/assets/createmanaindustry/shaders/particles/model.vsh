@@ -40,9 +40,20 @@ out vec2 vUv;
 out vec3 vColor;
 out float vDist;
 flat out float vSeg; // 0 = opaque cutout segment, 1 = translucent blended (from partId)
+flat out vec3 vNormalView; // view-space surface normal for vanilla-style diffuse
 
 const float PI = 3.14159265;
-const float SPIN_PERIOD = 1.0;  // seconds per looped 4-turn spin (vanilla: 15t one-shot)
+// vanilla spin rhythm (Allay.isSpinning): a 15-tick (0.75 s) burst inside a
+// 55-tick (2.75 s) cycle sweeps exactly 4*pi, then stays still until the next
+// cycle (4*pi mod 2*pi == identity, so the reset reads as 'still upright')
+const float SPIN_CYCLE_S = 2.75;
+const float SPIN_WINDOW_FRACTION = 15.0 / 55.0;
+// baked face-normal axis table (+X,-X,+Y,-Y,+Z,-Z), matching the axis ids in
+// AllayModelGeometry
+const vec3 FACE_NORMALS[6] = vec3[6](
+    vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0),
+    vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
+    vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0));
 
 float hash1(float p) {
     p = fract(p * 0.1031);
@@ -77,8 +88,9 @@ void main() {
     // branching both key off it. The two sub-draws' element ranges are
     // disjoint (cmd2 only reaches parts 0-3, cmd3 only parts 4-6), so this
     // also IS the segment selector.
-    uint vb = uint(gl_VertexID) * 6u;
+    uint vb = uint(gl_VertexID) * MODEL_VERTEX_FLOATS;
     int pid = int(geo.v[vb + 5u]);
+    int normalCode = int(geo.v[vb + 6u]);
     vSeg = pid >= 4 ? 1.0 : 0.0;
     vec4 p0 = particles.data[base + 0u];
     vec4 p1 = particles.data[base + 1u];
@@ -130,14 +142,22 @@ void main() {
 
     float rootYBob = cos(f3) * 0.25 * f5;
     float rootYRot = 0.0, rootZRot = 0.0;
-    float headYRot = 0.0, headZRot = 0.0, headXRot = headPitch * (PI / 180.0);
+    // vanilla leaves head.xRot at its reset value while dancing; only the
+    // non-dance branch feeds headPitch into it
+    float headYRot = 0.0, headZRot = 0.0, headXRot = 0.0;
     if (dance) {
         float f7 = ticks * 8.0 * (PI / 180.0) + lsa;
-        float f9 = spin ? fract(p3.x / SPIN_PERIOD) : 0.0;
+        // burst rhythm: linear 0..1 sweep across the 15-tick window, still for
+        // the rest of the 55-tick cycle (vanilla resets spinning progress)
+        float cyclePhase = fract(p3.x / SPIN_CYCLE_S);
+        float f9 = (spin && cyclePhase < SPIN_WINDOW_FRACTION)
+                ? cyclePhase / SPIN_WINDOW_FRACTION : 0.0;
         rootYRot = spin ? (PI * 4.0) * f9 : 0.0;
         rootZRot = cos(f7) * 16.0 * (PI / 180.0) * (1.0 - f9);
         headYRot = cos(f7) * 30.0 * (PI / 180.0) * (1.0 - f9);
         headZRot = cos(f7) * 14.0 * (PI / 180.0) * (1.0 - f9);
+    } else {
+        headXRot = headPitch * (PI / 180.0);
     }
     float wingXR = 0.43633232 * (1.0 - f4);
     float bodyXR = f4 * (PI / 4.0);
@@ -179,6 +199,15 @@ void main() {
     vec3 world = p0.xyz + vec3(cos(ry) * flipped.x + sin(ry) * flipped.z,
                                flipped.y,
                                -sin(ry) * flipped.x + cos(ry) * flipped.z);
+
+    // same transform chain applied to the DIRECTION (no translation, no
+    // scaling): part rotation -> S(-1,-1,1) -> Ry(pi - yaw) -> camera view
+    vec3 nPart = mat3(M) * FACE_NORMALS[normalCode];
+    vec3 nFlipped = vec3(-nPart.x, -nPart.y, nPart.z);
+    vec3 nWorld = vec3(cos(ry) * nFlipped.x + sin(ry) * nFlipped.z,
+                       nFlipped.y,
+                       -sin(ry) * nFlipped.x + cos(ry) * nFlipped.z);
+    vNormalView = normalize(mat3(ModelViewMat) * nWorld);
 
     gl_Position = ProjMat * ModelViewMat * vec4(world - uCamPos, 1.0);
     vDist = length(world - uCamPos);

@@ -102,7 +102,13 @@ void main() {
     // Protective floor: a zero/garbage lifetime header must never kill a particle
     // the same frame it is spawned (would keep the pool permanently empty).
     maxLife = max(maxLife, 0.1);
-    float baseSize = mix(0.7, 1.3, hash1(seed + 13.1));
+    // Per-particle scale jitter (+/-30%) suits organic sprites, but MODEL
+    // particles stand in for a vanilla ENTITY — vanilla allays are uniform,
+    // so they render at the exact spec scale (material check mirrors keygen).
+    float spawnMatId = emitters.u[hb + 7u].x;
+    float baseSize = (spawnMatId >= 1.5 && spawnMatId < 2.5)
+            ? 1.0
+            : mix(0.7, 1.3, hash1(seed + 13.1));
     float rot = (hash1(seed + 14.1) - 0.5) * 6.2831853;
     float intensity = mix(0.7, 1.0, hash1(seed + 15.1));
 

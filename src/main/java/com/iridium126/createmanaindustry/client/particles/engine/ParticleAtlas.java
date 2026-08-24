@@ -23,21 +23,29 @@ import org.lwjgl.opengl.GL30;
  */
 public final class ParticleAtlas {
 
-    public static final ParticleAtlas CHERRY = new ParticleAtlas("cherry", 4, 3, 12);
-    /** Single 32x32 frame: the vanilla allay entity texture (for MODEL particles). */
-    public static final ParticleAtlas ALLAY = new ParticleAtlas("allay", 1, 1, 1);
+    public static final ParticleAtlas CHERRY = new ParticleAtlas("cherry", 4, 3, 12, false);
+    /**
+     * Single 32x32 frame: the vanilla allay entity texture (for MODEL
+     * particles). Mipmapped like the vanilla entity atlas — safe here because
+     * a single-frame atlas cannot blend neighbouring sprites at high mip
+     * levels — removing distant shimmer.
+     */
+    public static final ParticleAtlas ALLAY = new ParticleAtlas("allay", 1, 1, 1, true);
 
     private final String baseName;
     private final int cols;
     private final int rows;
     private final int frames;
+    /** Whether to generate mipmaps and minify through them on this atlas. */
+    private final boolean mipmap;
     private int textureId = -1;
 
-    private ParticleAtlas(String baseName, int cols, int rows, int frames) {
+    private ParticleAtlas(String baseName, int cols, int rows, int frames, boolean mipmap) {
         this.baseName = baseName;
         this.cols = cols;
         this.rows = rows;
         this.frames = frames;
+        this.mipmap = mipmap;
     }
 
     public int frames() {
@@ -118,13 +126,21 @@ public final class ParticleAtlas {
 
             textureId = GL11.glGenTextures();
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureId);
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
             GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
             GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
             GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
             ParticleGLUtil.prepareClientUpload(); // guard PBO / unpack-state leftovers
             GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA8, texW, texH, 0,
                     GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, pixels);
+            if (this.mipmap) {
+                // vanilla-entity-atlas-style distance behaviour; a single-frame
+                // atlas cannot bleed neighbouring sprites at high mip levels
+                GL30.glGenerateMipmap(GL11.GL_TEXTURE_2D);
+                GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER,
+                        GL30.GL_NEAREST_MIPMAP_LINEAR);
+            } else {
+                GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+            }
 
             canvas.close();
             for (NativeImage img : imgs)

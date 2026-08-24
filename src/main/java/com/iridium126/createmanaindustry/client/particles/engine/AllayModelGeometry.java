@@ -9,8 +9,9 @@ import java.util.List;
  * unique vertices per quad plus 6 triangle indices (the wings additionally
  * carry a second, reversed index set so the zero-thickness planes stay
  * double-sided under backface culling — same vertices, no vertex cost).
- * Each vertex is 6 floats — {@code pos.xyz} (model units, 1/16 block),
- * {@code uv} (normalised against the 32x32 texture) and {@code partId} —
+ * Each vertex is 7 floats — {@code pos.xyz} (model units, 1/16 block),
+ * {@code uv} (normalised against the 32x32 texture), {@code partId} and the
+ * face normal axis id (+X,-X,+Y,-Y,+Z,-Z = 0..5, LUT-decoded in model.vsh) —
  * consumed by {@code model.vsh} (SSBO vertex pulling through the element
  * buffer). Faces use the exact per-face UV rects and vertex order of vanilla
  * {@code ModelPart.Cube}; degenerate faces (zero-area sides) are skipped.
@@ -29,8 +30,12 @@ final class AllayModelGeometry {
 
     /** 32x32 texture (LayerDefinition.create(..., 32, 32)). */
     private static final float TEX_SIZE = 32f;
-    /** Vertex stride in floats: pos.xyz, uv.xy, partId. */
-    public static final int VERTEX_FLOATS = 6;
+    /**
+     * Vertex stride in floats: pos.xyz, uv.xy, partId, normalAxis. Injected
+     * into every shader source as MODEL_VERTEX_FLOATS by ParticlePrograms —
+     * this constant is the single source of truth for the stride.
+     */
+    public static final int VERTEX_FLOATS = 7;
 
     /** Flat vertex array (pos.xyz model units / uv normalised / partId). */
     static final float[] VERTICES;
@@ -101,18 +106,18 @@ final class AllayModelGeometry {
         float u0 = texU, uD = texU + dz, uDx = texU + dz + dx, uDxx = texU + dz + dx + dz;
         float v0 = texV, vD = texV + dz, vDy = texV + dz + dy;
 
-        // DOWN (y0): verts {5,4,0,1} rect (uD,v0)-(uDx,vD)
-        face(out, idx, partId, c, new int[] { 5, 4, 0, 1 }, uD, v0, uDx, vD, dz, dx, doubleSided);
-        // UP (y1): verts {2,3,7,6} rect (uDx,vD)-(u0+dz+2dx,v0)
-        face(out, idx, partId, c, new int[] { 2, 3, 7, 6 }, uDx, vD, texU + dz + dx + dx, v0, dx, dz, doubleSided);
-        // WEST (x0): verts {0,4,7,3} rect (u0,vD)-(uD,vDy)
-        face(out, idx, partId, c, new int[] { 0, 4, 7, 3 }, u0, vD, uD, vDy, dz, dy, doubleSided);
-        // NORTH (z0): verts {1,0,3,2} rect (uD,vD)-(uDx,vDy)
-        face(out, idx, partId, c, new int[] { 1, 0, 3, 2 }, uD, vD, uDx, vDy, dx, dy, doubleSided);
-        // EAST (x1): verts {5,1,2,6} rect (uDx,vD)-(uDxx,vDy)
-        face(out, idx, partId, c, new int[] { 5, 1, 2, 6 }, uDx, vD, uDxx, vDy, dz, dy, doubleSided);
-        // SOUTH (z1): verts {4,5,6,7} rect (uDxx,vD)-(uDxx+dx,vDy)
-        face(out, idx, partId, c, new int[] { 4, 5, 6, 7 }, uDxx, vD, uDxx + dx, vDy, dx, dy, doubleSided);
+        // DOWN (y0): verts {5,4,0,1} rect (uD,v0)-(uDx,vD)   normal -Y
+        face(out, idx, partId, c, new int[] { 5, 4, 0, 1 }, uD, v0, uDx, vD, dz, dx, doubleSided, 3);
+        // UP (y1): verts {2,3,7,6} rect (uDx,vD)-(u0+dz+2dx,v0)   normal +Y
+        face(out, idx, partId, c, new int[] { 2, 3, 7, 6 }, uDx, vD, texU + dz + dx + dx, v0, dx, dz, doubleSided, 2);
+        // WEST (x0): verts {0,4,7,3} rect (u0,vD)-(uD,vDy)   normal -X
+        face(out, idx, partId, c, new int[] { 0, 4, 7, 3 }, u0, vD, uD, vDy, dz, dy, doubleSided, 1);
+        // NORTH (z0): verts {1,0,3,2} rect (uD,vD)-(uDx,vDy)   normal -Z
+        face(out, idx, partId, c, new int[] { 1, 0, 3, 2 }, uD, vD, uDx, vDy, dx, dy, doubleSided, 5);
+        // EAST (x1): verts {5,1,2,6} rect (uDx,vD)-(uDxx,vDy)   normal +X
+        face(out, idx, partId, c, new int[] { 5, 1, 2, 6 }, uDx, vD, uDxx, vDy, dz, dy, doubleSided, 0);
+        // SOUTH (z1): verts {4,5,6,7} rect (uDxx,vD)-(uDxx+dx,vDy)   normal +Z
+        face(out, idx, partId, c, new int[] { 4, 5, 6, 7 }, uDxx, vD, uDxx + dx, vDy, dx, dy, doubleSided, 4);
     }
 
     /**
@@ -124,7 +129,8 @@ final class AllayModelGeometry {
      * degeneracy test.
      */
     private static void face(List<Float> out, List<Integer> idx, int partId, float[][] c, int[] q,
-            float u1, float v1, float u2, float v2, float spanA, float spanB, boolean doubleSided) {
+            float u1, float v1, float u2, float v2, float spanA, float spanB, boolean doubleSided,
+            int normalAxis) {
         if (spanA == 0f || spanB == 0f)
             return;
         float[] us = { u2, u1, u1, u2 };
@@ -138,6 +144,7 @@ final class AllayModelGeometry {
             out.add(us[t] / TEX_SIZE);
             out.add(vs[t] / TEX_SIZE);
             out.add((float) partId);
+            out.add((float) normalAxis);
         }
         idx.add(base);
         idx.add(base + 1);

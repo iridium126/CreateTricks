@@ -41,6 +41,13 @@ public class CreateManaIndustryClient {
             FuelRodBloomHandler.init();
         }
 
+        // Shader-pack MODEL-particle path (iris-veil-compat world render hooks).
+        // Guarded on IRISVEIL_ACTIVE so the shaderpack package's irisveil imports
+        // are never resolved when the mod is absent.
+        if (CreateManaIndustry.IRISVEIL_ACTIVE) {
+            com.iridium126.createmanaindustry.client.particles.shaderpack.CmiShaderPackHook.init();
+        }
+
         if (CreateManaIndustry.HEX_ACTIVE && CreateManaIndustry.TRICKSTER_ACTIVE)
             InlineClientAPI.INSTANCE.addRenderer(InlineTrickRenderer.INSTANCE);
     }

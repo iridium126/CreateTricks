@@ -1,6 +1,8 @@
 # G-self 设计文档 —— 粒子引擎光影包兼容路线
 
-> 状态：设计评审稿（代码未动）
+> **命名映射**："G-self"仅为路线代号；代码与配置一律使用领域命名——配置项 shaderPackIntegration、命令 /cmip shaderpack status、类 CmiShaderPackHook / ShaderPackProgramCompiler / ParticleVertexInjector。
+
+> 状态：**已实施（M1+M2，compileJava 通过）**——实施记录见文末 §12；运行验证（Photon 并排矩阵）待游戏内进行
 > 证据链：主文档附录 B-1/B-2/B-3/B-4（S1 证伪、X1 塌缩、iris-flw-compat 分析、Round-4 终审）
 > 参考实现：.refs/iris-flw-compat（MIT）、.refs/Colorwheel（LGPL，仅借鉴思路）、本引擎 MistIrisHook（已验证的合成窗口）
 
@@ -174,3 +176,38 @@ M2 起以 /cmip gself status + 附录 A 场景矩阵复核。
 
 本文档取代主计划中的阶段四（S1 契约镜像）与阶段三的执行点部分；
 阶段三的阴影能力并入 S 轨。生命周期税结论（附录 A）使 P-A′ 降为备选。
+
+---
+
+## 12. 实施记录（M1+M2，compileJava 通过）
+
+经 grilling 流程逐项决策（Q1–Q5 + 折叠项确认），与原设计的差异与落地形态如下。
+
+### 12.1 与本文件的决策修订
+
+| 原条目 | 实施定案 | 理由 |
+|---|---|---|
+| §3.2 四段绘制全部迁入钩子 | **仅 MODEL 迁移**；精灵三段（additive/OPAQUE/ALPHA）留守 AFTER_LEVEL 自绘路径 | 用户裁定，回归 Q9 冻结语义。已知限制：精灵恒合成于悦灵之上且读不到其深度 |
+| §3.5/D2 计算块前移 | **不前移**：钩子绑定最新完成池（readIndex 侧）+ 新增 lastFinalPermId 持久化排序缓冲 id；单帧滞后待实测（观察点：快速横移抖动/边缘弹入/相机急摇），出现可感知伪影再做前移补丁 | 验证帧相位前移是否必要 |
+| §3.3 深度回退=着色器手动采样 | **双路自动**：钩子点纯 GL 查询 compat FBO 的 DEPTH_ATTACHMENT；有→按模式硬件深度测试；无→自绘回退模式的 model.fsh 走 uMainDepth 手动采样比较（雾场同款）。**包程序模式在无深度附件时整体让位给自绘回退**——遮挡正确性优先于受光 | M1 必验项的工程化 |
+| §4.3/D1 方案 A | 确认 A，风险精确化为"包自定义 varying 携带垃圾"；但注入器采用**前置块 + gl_Vertex/ftransform 重定向**机制后，包顶点逻辑实际消费我们的真值，风险面进一步收窄 | Q3 |
+| §7 验证范围 | Photon v1.3b 为 M2 通过门；Complementary 仅冒烟 | Q4 |
+| §4.1 注入器来源 | 以 iris-veil-compat 的 GlslTransformerVeilPatcher（446 行，glsl-transformer **2.0.1** API，MIT）为基座改造，非 iris-flw-compat 版（避免 2.x→3.x 迁移税）；glsl-transformer 由 irisveil JarJar 提供，本项目仅 compileOnly 引入、**不打包分发**（该库为 AGPL v3） | Q5 + 事实核查 |
+
+### 12.2 交付物清单
+
+- client/particles/shaderpack/CmiShaderPackHook.java —— 执行点：注册 4 个家族 drawBuffers 世界钩子（复用 MistInjectionProfiles 选族）；双模式绘制——**pack programs**（编译成功且有硬件深度）走两条 Iris ShaderInstance 分别绘 cmd2（cutout）/cmd3（鬼影），否则**自绘回退**（引擎现有 modelRender 经钩子提交，无深度附件时启用 uMainDepth 手动深度）；独立 GL_TIME_ELAPSED 环并入节流 EMA；成功绘制即置仲裁闩。
+- client/particles/shaderpack/ShaderPackProgramCompiler.java —— 编译链替换：ProgramSet → ProgramFallbackResolver(ProgramId.Block) → 注入 → jcpp → 双 BlendModeOverride（opaque=包默认 / ghost=new BlendMode(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ONE_MINUS_SRC_ALPHA)）→ invokeCreateShader(TERRAIN, FogMode.OFF)；gtexture 采样单元自动发现；失败粘滞到 pipeline 实例更换。
+- client/particles/shaderpack/ParticleVertexInjector.java —— AST 注入器（基座 MIT 归属保留）：前置 SSBO(绑定 12–15)/uniform/globals + main 前缀块；重写 gl_Vertex→cmi_VertexView（视空间预烘）、gl_ModelViewMatrix→mat4(1)、ftransform→proj·viewPos、gl_Color→cmi_Tint、gl_MultiTexCoord0/1→常量 UV/满档光照、gl_Normal→世界法线、扩展属性中性化（照抄参考实现）。
+- shaders/particles/chunks/allay_pose.glsl + model.vsh 重写 —— 姿势数学单一事实源：cmiAllayPartTransform / cmiKeyframeColor / 旋转件，L0 与合并程序共享；#pragma cmi_include 由 ParticlePrograms.loadResolved 解析。
+- CMIParticleEngine 改造 —— lastFinalPermId 提交点晋升（success-only）；仲裁闩 hookModelsDrawn（钩子置位→跳过 drawModels→capture 前 re-arm）；externalHookGpuMs 并入节流样本；状态字段三枚供命令读取。
+- ClientConfig / CMIParticleCommand —— particles.shaderPackIntegration（默认 true=auto）；/cmip shaderpack status 显示 config/irisveil/path/depth 与最近回退原因。
+- CreateManaIndustryClient / build.gradle —— IRISVEIL_ACTIVE 门控 init；compileOnly io.github.douira:glsl-transformer:2.0.1 + mavenCentral。
+
+### 12.3 已知偏差与技术备忘
+
+- **apply() 哨兵**：NeoForge 映射下 ShaderInstance.MODEL_VIEW_MATRIX 为 final，无法像参考包装器那样预置 dummy；改为 try/catch 回退裸 glUseProgram(shader.getId())——我方后续上传不依赖 vanilla uniform 状态。
+- **鬼影段混合**：Block 程序默认不透明，ghost 段以 BlendModeOverride 强制标准透明混合并保留深度写入（L0 同款取舍：隔墙遮挡正确，跨段排序由绘制顺序固定）。
+- **D2 前移触发条件**（留观）：若实测出现可感知一帧滞后伪影，再实施计算块前移至 BEFORE_ENTITIES——数据通路已就绪（钩子侧全部经由显式绑定，无指针局部依赖）。
+- **待运行验收**（M1/M2 通过线，需游戏内执行）：Photon 下 /summon minecraft:allay 并排对比矩阵（正午/夜晚/洞穴 × dance/spin/hold × 近/中/远景淡出缘）、无双绘抓帧、Complementary 冒烟、SHADOW_QUALITY 低配不崩属 S 轨另验。
+

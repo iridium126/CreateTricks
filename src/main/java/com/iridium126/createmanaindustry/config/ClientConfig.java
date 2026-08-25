@@ -31,6 +31,7 @@ public final class ClientConfig {
     private static ModConfigSpec.DoubleValue PARTICLE_BUDGET_MS;
     private static ModConfigSpec.BooleanValue PARTICLE_AUTO_THROTTLE;
     private static ModConfigSpec.IntValue PARTICLE_FADE_DISTANCE;
+    private static ModConfigSpec.BooleanValue PARTICLE_SHADER_PACK_INTEGRATION;
 
     static {
         BUILDER.comment("Volumetric mist rendering options.").push("rendering");
@@ -67,6 +68,13 @@ public final class ClientConfig {
                         + "match vanilla fog, so very high values with a short render distance "
                         + "can look out of place.")
                 .defineInRange("fadeDistance", 96, 16, 256);
+        PARTICLE_SHADER_PACK_INTEGRATION = BUILDER
+                .comment("When a shader pack is active, route MODEL (allay) particle drawing through the")
+                .comment("pack's own lighting pipeline via iris-veil-compat's world render hook, so the")
+                .comment("models receive pack fog, tone mapping and surface lighting. Sprite particles are")
+                .comment("unaffected and keep the self-drawn path. Falls back automatically when no pack")
+                .comment("is in use or the merged program fails to build. true = auto-enable when possible.")
+                .define("shaderPackIntegration", true);
         BUILDER.pop();
     }
 
@@ -80,6 +88,7 @@ public final class ClientConfig {
     public static double particleBudgetMs = 16.6;
     public static boolean particleAutoThrottle = true;
     public static int particleFadeDistance = 96;
+    public static boolean shaderPackIntegration = true;
 
     private ClientConfig() {}
 
@@ -95,6 +104,7 @@ public final class ClientConfig {
             particleBudgetMs = PARTICLE_BUDGET_MS.get();
             particleAutoThrottle = PARTICLE_AUTO_THROTTLE.get();
             particleFadeDistance = PARTICLE_FADE_DISTANCE.get();
+            shaderPackIntegration = PARTICLE_SHADER_PACK_INTEGRATION.get();
         }
     }
 }

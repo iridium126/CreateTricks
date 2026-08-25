@@ -266,21 +266,62 @@ public final class ParticlePrograms {
         return shader;
     }
 
-    /** Loads a bundled shader file as text, or null on failure. */
+    /**
+     * Public plain-source loader (include-resolved, no PRELUDE/#version) for
+     * consumers outside this package -- the shader-pack compiler assembles the
+     * merged MODEL vertex source from the same chunk files this class compiles.
+     */
+    public static String loadPlain(String path) {
+        String s = loadResolved(path, 0);
+        return s == null ? "" : s;
+    }
+
+    /** Vertex stride of the baked MODEL geometry (public for the shader-pack compiler). */
+    public static int modelVertexFloats() {
+        return AllayModelGeometry.VERTEX_FLOATS;
+    }
+
+    /** Matches {@code #pragma cmi_include chunks/name.glsl} lines in shader sources. */
+    private static final java.util.regex.Pattern INCLUDE_PATTERN =
+            java.util.regex.Pattern.compile("^\\s*#pragma\\s+cmi_include\\s+(\\S+)\\s*$", java.util.regex.Pattern.MULTILINE);
+
+    /**
+     * Loads a bundled shader file as text, or null on failure. Lines of the form
+     * {@code #pragma cmi_include chunks/name.glsl} (path relative to
+     * {@code shaders/particles/}) are replaced with the referenced file's content,
+     * recursively up to a small depth bound. This is the shared-source mechanism
+     * that keeps the pose math single-sourced between model.vsh and the
+     * shader-pack merged programs (see ParticleVertexInjector).
+     */
     private static String load(String path) {
+        return loadResolved(path, 0);
+    }
+
+    private static String loadResolved(String path, int depth) {
         ResourceManager rm = Minecraft.getInstance().getResourceManager();
         ResourceLocation id = CreateManaIndustry.modLoc(path);
+        String raw;
         try (Reader r = rm.openAsReader(id)) {
             StringBuilder sb = new StringBuilder();
             char[] buf = new char[4096];
             int n;
             while ((n = r.read(buf)) != -1)
                 sb.append(buf, 0, n);
-            return sb.toString();
+            raw = sb.toString();
         } catch (IOException e) {
             CreateManaIndustry.LOGGER.error("[CMI particles] cannot read shader {}", id, e);
             return null;
         }
+        if (depth >= 4 || !INCLUDE_PATTERN.matcher(raw).find())
+            return raw;
+        java.util.regex.Matcher m = INCLUDE_PATTERN.matcher(raw);
+        StringBuffer out = new StringBuffer(raw.length());
+        while (m.find()) {
+            String included = loadResolved(GLSL_DIR + m.group(1), depth + 1);
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(included != null ? included : ""));
+        }
+        m.appendTail(out);
+        return out.toString();
     }
 
     /** Deletes all program ids. Render-thread only. */

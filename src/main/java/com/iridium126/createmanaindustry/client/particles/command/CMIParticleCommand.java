@@ -4,6 +4,7 @@ import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.client.particles.emitter.EmitterPresets;
 import com.iridium126.createmanaindustry.client.particles.emitter.EmitterSpec;
 import com.iridium126.createmanaindustry.client.particles.engine.CMIParticleEngine;
+import com.iridium126.createmanaindustry.config.ClientConfig;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.FloatArgumentType;
@@ -85,7 +86,10 @@ public final class CMIParticleCommand {
                                 .executes(CMIParticleCommand::stats))
                         .then(Commands.literal("budget")
                                 .then(Commands.argument("ms", FloatArgumentType.floatArg(1f, 50f))
-                                        .executes(CMIParticleCommand::budget))));
+                                        .executes(CMIParticleCommand::budget)))
+                        .then(Commands.literal("shaderpack")
+                                .then(Commands.literal("status")
+                                        .executes(CMIParticleCommand::shaderPackStatus))));
     }
 
     // ------------------------------------------------------------------
@@ -197,6 +201,21 @@ public final class CMIParticleCommand {
         }
         CMIParticleEngine.INSTANCE.setBudget(ms);
         tell(ctx, "Particle frame budget set to " + ms + " ms.");
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int shaderPackStatus(CommandContext<CommandSourceStack> ctx) {
+        if (!engine(ctx))
+            return 0;
+        CMIParticleEngine e = CMIParticleEngine.INSTANCE;
+        String integration = ClientConfig.shaderPackIntegration ? "auto" : "off";
+        tell(ctx, "", "§b[CMI particles]§r shader-pack path:"
+                + " config=§e" + integration + "§r"
+                + "  irisveil=§e" + (CreateManaIndustry.IRISVEIL_ACTIVE ? "loaded" : "absent") + "§r"
+                + "  path=§e" + e.shaderPackPathStatus + "§r"
+                + "  depth=§e" + e.shaderPackDepthStatus);
+        if (!e.shaderPackErrorStatus.isEmpty())
+            tell(ctx, "§7", "last fallback reason: §c" + e.shaderPackErrorStatus + "§r");
         return Command.SINGLE_SUCCESS;
     }
 

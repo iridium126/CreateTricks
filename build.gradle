@@ -34,6 +34,7 @@ tasks.withType(ProcessResources).configureEach {
 }
 
 repositories {
+    mavenCentral()
     // Add here additional repositories if required by some of the dependencies below.
     mavenLocal()
     maven { url = "https://cursemaven.com" }
@@ -209,6 +210,9 @@ dependencies {
     compileOnly "net.createmod.ponder:Ponder-NeoForge-${minecraft_version}:${ponder_version}"
     implementation "maven.modrinth:3KUWeVhG:dqlL6EvF" // Veil
     compileOnly "curse.maven:irisshaders-455508:8242804"
+    // GLSL AST transformation for the shader-pack particle path. Provided at runtime
+    // Provided by iris-veil-compat (JarJar) -- compile against 2.0.1, never bundle (AGPL).
+    compileOnly "io.github.douira:glsl-transformer:2.0.1"
     compileOnly "curse.maven:iris-veil-compat-1541252:8280410"
     implementation "mezz.jei:jei-${minecraft_version}-neoforge:${jei_version}"
 

@@ -1,7 +1,7 @@
 package com.iridium126.createmanaindustry.mixin.render;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.client.particles.shaderpack.CmiEarlyModelHook;
+import com.iridium126.createmanaindustry.client.particles.shaderpack.CMIPackEntityMergeHook;
 
 import net.minecraft.client.renderer.LevelRenderer;
 
@@ -18,7 +18,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * point regular entities are done, block entities / translucent terrain / the
  * deferred composites have NOT run yet, so shader packs consume the merged
  * program's gbuffer output natively and light the particles exactly like a
- * vanilla allay entity (see CmiEarlyModelHook).
+ * vanilla allay entity (see {@link CMIPackEntityMergeHook}). When the merge is
+ * unavailable the engine's plain AFTER_LEVEL path renders the segments instead.
  *
  * <p>The IRISVEIL_ACTIVE check runs here first so the hook class -- which
  * references iris-veil-compat types -- is never loaded when the dependency is
@@ -38,6 +39,6 @@ abstract class LevelRendererBlockEntitiesMixin {
     private void cmi$drawEarlyModels(CallbackInfo ci) {
         if (!CreateManaIndustry.IRISVEIL_ACTIVE)
             return;
-        CmiEarlyModelHook.render();
+        CMIPackEntityMergeHook.render();
     }
 }

@@ -187,24 +187,25 @@ public final class CMIParticleEngine {
     private int lastGoodSlot = 0;
     /**
      * Sort buffer GL id holding the newest COMMITTED translucent permutation --
-     * pointer-local {@code finalPerm} dies with runFrame, but the shader-pack
-     * hook draws later in the same frame against the previous generation's
-     * data and needs to bind exactly that permutation. -1 until the first
-     * sorted frame commits.
+     * pointer-local {@code finalPerm} dies with runFrame, but the pack entity
+     * merge hook runs inside renderLevel before AFTER_LEVEL and binds exactly
+     * the last committed permutation. -1 until the first sorted frame commits.
      */
     private int lastFinalPermId = -1;
     /**
-     * Set by the shader-pack hook when it drew the MODEL segments this frame;
-     * runFrame skips its own drawModels accordingly (render arbitration) and
+     * Set by the pack entity merge hook when it drew the MODEL segments this
+     * frame; runFrame skips its own drawModels accordingly (render arbitration) and
      * clears the latch afterwards. Written only from the render thread.
      */
     private boolean hookModelsDrawn = false;
     /** Accumulated GPU ms measured inside the shader-pack hook (timer ring). */
     private double externalHookGpuMs = 0;
-    // Observable status for /cmip shaderpack status -- written by the hook,
-    // read by the command, both on the render thread.
+    // Observable status for /cmip shaderpack status -- written by the merge
+    // hook, read by the command, both on the render thread.
     public volatile String shaderPackPathStatus = "self-drawn";
     public volatile String shaderPackDepthStatus = "n/a";
+    /** S-track state for /cmip shaderpack status: n/a / active / no shadow track / ... */
+    public volatile String shaderPackShadowStatus = "n/a";
     public volatile String shaderPackErrorStatus = "";
     private volatile int liveDisplay = 0;
     private volatile float scale = 1f;
@@ -316,7 +317,7 @@ public final class CMIParticleEngine {
         this.disabled = false;
     }
 
-    /** Buffer management surface for the shader-pack hook (same thread). */
+    /** Buffer management surface for the pack entity merge hook (same thread). */
     public ParticleBuffers gpuBuffers() {
         return this.gpu;
     }
@@ -326,29 +327,15 @@ public final class CMIParticleEngine {
         return this.lastFinalPermId;
     }
 
-    /** Program id of the self-drawn MODEL renderer (hook fallback path). */
-    public int modelProgramId() {
-        return this.programs.modelRender();
-    }
-
     /** Lazily loads and returns the MODEL particle atlas texture id. */
     public int modelAtlasTextureId() {
         this.allayAtlas.ensureLoaded();
         return this.allayAtlas.textureId();
     }
 
-    /** Called by a shader-pack hook after it drew the MODEL segments itself. */
+    /** Called by the pack entity merge hook after it drew the MODEL segments itself. */
     public void markHookModelDrawn() {
         this.hookModelsDrawn = true;
-    }
-
-    /**
-     * Whether the MODEL segments were already drawn earlier in THIS frame by a
-     * hook window that runs before AFTER_LEVEL (currently the early entities
-     * merge). The late hook consults this to stand down its fallback draw.
-     */
-    public boolean isHookModelLatchSet() {
-        return this.hookModelsDrawn;
     }
 
     /** Accumulates one completed hook-side timer query (GPU ms, lagged). */
@@ -786,8 +773,8 @@ public final class CMIParticleEngine {
                 this.gpu.bindOrderOpaque();
                 drawPass(1, view, projectionMatrix, camera);
                 if (this.hookModelsDrawn) {
-                    // The shader-pack hook drew the MODEL segments earlier in
-                    // this frame against the committed previous generation;
+                    // The pack entity merge hook drew the MODEL segments earlier
+                    // in this frame against the committed previous generation;
                     // skipping ours prevents a double-draw (render arbitration).
                 } else {
                     drawModels(view, projectionMatrix, camera);
@@ -804,7 +791,7 @@ public final class CMIParticleEngine {
             //    ring spare, then fence the frame: next frame POLLS the fence and
             //    only reads the counters once the GPU has finished writing them
             //    (a raw readback is a pipeline stall, however lagged the slot).
-            // Re-arm the shader-pack arbitration latch for the next frame: the
+            // Re-arm the merge-hook arbitration latch for the next frame: the
             // hook runs inside renderLevel (before AFTER_LEVEL), so it will set
             // this again before the next runFrame reads it.
             this.hookModelsDrawn = false;

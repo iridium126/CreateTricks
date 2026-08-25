@@ -22,7 +22,6 @@ import net.irisshaders.iris.shaderpack.programs.ProgramSource;
 import net.irisshaders.iris.gl.shader.StandardMacros;
 
 import java.io.IOException;
-import java.util.Map;
 import net.irisshaders.iris.vertices.IrisVertexFormats;
 import net.minecraft.client.renderer.ShaderInstance;
 import top.leonx.irisveil.accessors.IrisRenderingPipelineAccessor;
@@ -37,7 +36,7 @@ import org.lwjgl.opengl.GL20;
  * own fallback chain, injects the SSBO-driven allay vertex program with
  * {@link ParticleVertexInjector}, and keeps the PACK FRAGMENT VERBATIM.
  *
- * <p>The merged pair is drawn by {@link CmiEarlyModelHook} during the gbuffer
+ * <p>The merged pair is drawn by {@link CMIPackEntityMergeHook} during the gbuffer
  * phase (before any deferred composite), so encoder-style packs such as Photon
  * light the particles through their normal deferred path -- including the
  * {@code material_mask = 40} emission rule their entity vertex shaders apply
@@ -69,14 +68,19 @@ import org.lwjgl.opengl.GL20;
  */
 public final class ShaderPackProgramCompiler {
 
-    /** SSBO binding slots for the merged program: deliberately high so neither
-     * Iris nor a coexisting Flywheel stack can claim them (see design doc §5). */
-    /** Texture units the merged programs' TBO samplers are pinned to. High,
-     * clear of Iris/pack allocations, and restored after every draw. */
+    /** Texture units the merged programs' TBO samplers are pinned to. Reserved
+     * inside Iris's sampler allocator by mixin/irisveil/MixinProgramSamplers,
+     * so pack samplers can never collide with them; unbound after every draw. */
     public static final int MERGED_SAMPLER_UNIT_BASE = 10;
 
     private static final String SHADER_NAME = "cmi_model_entities";
     private static final String GHOST_SHADER_NAME = "cmi_model_entities_ghost";
+    private static final String SHADOW_SHADER_NAME = "cmi_model_shadow";
+
+    /** Shadow-path alpha-test fallback, mirroring the reference linker: the
+     * gbuffer pair discards like native cutout entities, while the shadow map
+     * keeps every fragment unless the pack defines alphaTest.shadow itself. */
+    private static final AlphaTest FALLBACK_ALPHA_TEST_SHADOW = AlphaTest.ALWAYS;
 
     /** L0 ghost semantics pinned onto the ghost program regardless of what the
      * pack's entity blend directive carries (design doc §12.2): standard
@@ -84,17 +88,6 @@ public final class ShaderPackProgramCompiler {
     private static final BlendModeOverride GHOST_BLEND_OVERRIDE = new BlendModeOverride(new BlendMode(
             GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA,
             GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA));
-
-    /** SSBO interface blocks for the merged programs, injected as RAW TEXT right
-     * after the pack #version line. Kept out of the AST injector on purpose:
-     * their survival must not depend on cross-tree declaration transplanting or
-     * on any particular printer mode. jcpp and both downstream parsers leave
-     * them untouched verbatim. */
-    private static final String SSBO_DECLARATIONS =
-        "layout(std430, binding = 12) readonly buffer CmiGeo { float v[]; };\n" +
-        "layout(std430, binding = 13) readonly buffer CmiPool { vec4 data[]; };\n" +
-        "layout(std430, binding = 14) readonly buffer CmiEmitters { vec4 u[]; };\n" +
-        "layout(std430, binding = 15) readonly buffer CmiSorted { uvec2 kv[]; };\n";
 
     /** Native entity-cutout discard level, used only when the pack's entities
      * program carries no {@code alphaTest.<program>} directive of its own. */
@@ -108,6 +101,11 @@ public final class ShaderPackProgramCompiler {
 
     private ShaderInstance entitiesShader;
     private ShaderInstance ghostShader;
+    /** Tri-state: true compiled, false sticky-failed/unavailable, null pending. */
+    private Boolean shadowReady;
+    private ShaderInstance shadowShader;
+    private int shadowGtextureUnit = -1;
+    private String shadowLastError = "";
     private Object owningPipeline; // identity of the pipeline the shaders belong to
     /** Fired whenever compilation restarts: previously returned program ids go stale. */
     private Runnable onRebuild;
@@ -118,9 +116,6 @@ public final class ShaderPackProgramCompiler {
     private boolean failed;
     /** Warn-once latch when the blend-pin mixin is absent. */
     private boolean blendPinWarned;
-    /** Patched sources of the latest attempt, dumped even on failure. */
-    private String lastPatchedVertex;
-    private String lastPatchedFragment;
 
     public boolean isReady() {
         return entitiesShader != null && ghostShader != null;
@@ -180,17 +175,6 @@ public final class ShaderPackProgramCompiler {
                 return fail("vertex injection failed");
             patched = JcppProcessor.glslPreprocessSource(patched,
                     StandardMacros.createStandardEnvironmentDefines());
-            this.lastPatchedVertex = patched;
-            if (CreateManaIndustry.LOGGER.isInfoEnabled()) {
-                String[] lines = patched.split("\n", -1);
-                int ssboLine = -1;
-                for (int i = 0; i < lines.length; i++)
-                    if (lines[i].contains("buffer CmiPool")) { ssboLine = i + 1; break; }
-                CreateManaIndustry.LOGGER.info(
-                        "[CMI particles] merged vsh prepared: chars={}, lines={}, ssboDeclLine={}",
-                        patched.length(), lines.length, ssboLine);
-            }
-            this.lastPatchedFragment = fragRef;
 
             var properties = ((ProgramSourceAccessor) refProgram).getShaderProperties();
 
@@ -205,7 +189,7 @@ public final class ShaderPackProgramCompiler {
             // ShaderCreator honours them exactly as for a native entity draw;
             // absent fields fall through unchanged (alpha -> FALLBACK_ALPHA_TEST,
             // blend -> ProgramId.Entities' built-in default).
-            this.entitiesShader = this.compileMergedWithRescue(accessor, programSet, properties,
+            this.entitiesShader = this.compileMerged(accessor, programSet, properties,
                     patched, fragRef, SHADER_NAME, refProgram.getDirectives(), null);
             if (this.entitiesShader == null)
                 return fail("Iris returned no shader instance");
@@ -218,16 +202,18 @@ public final class ShaderPackProgramCompiler {
             // every source the same original instance otherwise.
             var ghostDirectives = refProgram.getDirectives()
                     .withOverriddenDrawBuffers(refProgram.getDirectives().getDrawBuffers());
-            this.ghostShader = this.compileMergedWithRescue(accessor, programSet, properties,
+            this.ghostShader = this.compileMerged(accessor, programSet, properties,
                     patched, fragRef, GHOST_SHADER_NAME, ghostDirectives, GHOST_BLEND_OVERRIDE);
             if (this.ghostShader == null)
                 return fail("Iris returned no ghost shader instance");
             this.ghostGtextureUnit = findSamplerUnit(this.ghostShader);
 
-            dumpPatchedSources(patched, fragRef);
+            // Third program: the S-track. Compiled last and fully isolated --
+            // any failure here only costs particle shadows, never the merge.
+            this.compileShadow(accessor, programSet, properties, resolver);
 
             CreateManaIndustry.LOGGER.info(
-                    "[CMI particles] early entities merge ready ({}+{}, gtexture {}/{}, inherited alphaTest={})",
+                    "[CMI particles] pack entity merge ready ({}+{}, gtexture {}/{}, inherited alphaTest={})",
                     SHADER_NAME, GHOST_SHADER_NAME, this.gtextureUnit, this.ghostGtextureUnit,
                     inheritedAlpha);
             return true;
@@ -236,12 +222,6 @@ public final class ShaderPackProgramCompiler {
             this.ghostShader = null;
             this.gtextureUnit = -1;
             this.ghostGtextureUnit = -1;
-            // Dump whatever got patched before the failure: a GLSL type error
-            // introduced by identifier rewriting is invisible in logs alone.
-            dumpPatchedSources(this.lastPatchedVertex, this.lastPatchedFragment);
-            dumpTransformCache();
-            this.lastPatchedVertex = null;
-            this.lastPatchedFragment = null;
             return fail(describeCompileFailure(e));
         }
     }
@@ -252,6 +232,26 @@ public final class ShaderPackProgramCompiler {
 
     public ShaderInstance ghostShader() {
         return this.ghostShader;
+    }
+
+    /** The merged shadow-map program; null when the shadow track is down. */
+    public ShaderInstance shadowShader() {
+        return this.shadowShader;
+    }
+
+    /** Texture unit Iris assigned to the shadow fragment's main sampler. */
+    public int shadowGtextureUnit() {
+        return this.shadowGtextureUnit;
+    }
+
+    /** Whether the merged shadow program is compiled and usable this pipeline. */
+    public boolean shadowReady() {
+        return Boolean.TRUE.equals(this.shadowReady);
+    }
+
+    /** Why the shadow track is down (sticky per pipeline); empty when up. */
+    public String shadowLastError() {
+        return this.shadowLastError;
     }
 
     public int gtextureUnit() {
@@ -268,6 +268,10 @@ public final class ShaderPackProgramCompiler {
         this.ghostShader = null;
         this.gtextureUnit = -1;
         this.ghostGtextureUnit = -1;
+        this.shadowReady = null;
+        this.shadowShader = null;
+        this.shadowGtextureUnit = -1;
+        this.shadowLastError = "";
         this.owningPipeline = null;
     }
 
@@ -318,37 +322,79 @@ public final class ShaderPackProgramCompiler {
 
     private boolean fail(String reason) {
         if (!this.failed)
-            CreateManaIndustry.LOGGER.warn("[CMI particles] early entities merge unavailable: {}; staying on the self-drawn path", reason);
+            CreateManaIndustry.LOGGER.warn("[CMI particles] pack entity merge unavailable: {}; staying on the self-drawn path", reason);
         this.failed = true;
         this.lastError = reason;
         return false;
     }
 
     /**
-     * compileMerged + one-shot SSBO rescue: when the driver rejects the merged
-     * program with C1503s on our block names although the prepared input carried
-     * them, something inside the in-game transform pass stripped the blocks and
-     * cached the stripped text. Re-inject the blocks into EVERY cached source
-     * derived from us and retry once -- the retry is then a pure cache hit on
-     * repaired text.
+     * Builds the S-track program from the pack's SHADOW pipeline (same merged
+     * vertex main, same injector rewrites; the shadow modelview maps the same
+     * camera-relative level space, see CmiPackEntityMergeHook). Deliberately
+     * NOT part of {@link #fail}'s sticky semantics: a down shadow track never
+     * degrades the gbuffer pair -- particles simply cast no shadows.
      */
-    private ShaderInstance compileMergedWithRescue(IrisRenderingPipelineAccessor accessor, ProgramSet programSet,
-                                                   net.irisshaders.iris.shaderpack.properties.ShaderProperties properties,
-                                                   String patchedVertex, String fragRef, String name,
-                                                   net.irisshaders.iris.shaderpack.properties.ProgramDirectives directives,
-                                                   BlendModeOverride pinBlend) throws IOException {
+    private void compileShadow(IrisRenderingPipelineAccessor accessor, ProgramSet programSet,
+                               net.irisshaders.iris.shaderpack.properties.ShaderProperties properties,
+                               ProgramFallbackResolver resolver) {
+        this.shadowShader = null;
+        this.shadowGtextureUnit = -1;
         try {
-            return compileMerged(accessor, programSet, properties, patchedVertex, fragRef, name, directives, pinBlend);
-        } catch (ShaderCompileException sce) {
-            dumpTransformCache();
-            int repaired = repairCachedSources();
-            if (repaired <= 0)
-                throw sce;
-            CreateManaIndustry.LOGGER.warn(
-                    "[CMI particles] {} lost its SSBO declarations inside the in-game transform pass; re-injected into {} cached source(s), retrying",
-                    name, repaired);
-            return compileMerged(accessor, programSet, properties, patchedVertex, fragRef, name, directives, pinBlend);
+            // Entities-first: native entity shadows are drawn through the pack's
+            // shadow_entities program (ShaderKey.SHADOW_ENTITIES_CUTOUT), whose
+            // vertex stage consumes ONLY gl_ModelViewMatrix/gl_ProjectionMatrix --
+            // exactly the matrices we upload -- and skips terrain-only extras
+            // (waving-animation round-trips through named shadowModelView/
+            // cameraPosition uniforms, COLORED_LIGHTS voxelization). The plain
+            // shadow (terrain) program is only the fallback for packs without it.
+            var refProgram = resolver.resolve(ProgramId.ShadowEntities).orElse(null);
+            ProgramId shadowVariant = ProgramId.ShadowEntities;
+            if (refProgram == null) {
+                refProgram = resolver.resolve(ProgramId.Shadow).orElse(null);
+                shadowVariant = ProgramId.Shadow;
+            }
+            if (refProgram == null)
+                { shadowDown("pack has neither shadow_entities nor shadow program source"); return; }
+            var vertRef = refProgram.getVertexSource().orElse(null);
+            var fragRef = refProgram.getFragmentSource().orElse(null);
+            if (vertRef == null || fragRef == null)
+                { shadowDown("shadow program source missing vertex or fragment"); return; }
+
+            String patched = this.injector.patch(vertRef, this.buildMergedSource(), SHADOW_SHADER_NAME);
+            if (patched == vertRef)
+                { shadowDown("vertex injection failed"); return; }
+            patched = JcppProcessor.glslPreprocessSource(patched,
+                    StandardMacros.createStandardEnvironmentDefines());
+
+            // Route-A again: inherit the resolved Shadow directives wholesale so
+            // alphaTest.shadow/blend.shadow behave exactly as for native draws;
+            // absent fields fall through to ALWAYS (reference shadow semantics).
+            var source = this.makeSource(programSet, properties, patched, fragRef)
+                    .withDirectiveOverride(refProgram.getDirectives());
+            this.shadowShader = accessor.invokeCreateShadowShader(SHADOW_SHADER_NAME, source, shadowVariant,
+                    FALLBACK_ALPHA_TEST_SHADOW, IrisVertexFormats.TERRAIN, false, false, false, false);
+            if (this.shadowShader == null)
+                { shadowDown("Iris returned no shadow shader instance"); return; }
+
+            this.shadowGtextureUnit = findSamplerUnit(this.shadowShader);
+            this.shadowReady = true;
+            this.shadowLastError = "";
+            CreateManaIndustry.LOGGER.info("[CMI particles] pack entity merge: shadow track ready ({}, gtexture {})",
+                    shadowVariant == ProgramId.ShadowEntities ? "shadow_entities" : "shadow",
+                    this.shadowGtextureUnit);
+        } catch (Exception e) {
+            this.shadowShader = null;
+            this.shadowGtextureUnit = -1;
+            shadowDown(describeCompileFailure(e));
         }
+    }
+
+    /** Sticky shadow-track failure record; never affects the gbuffer pair. */
+    private void shadowDown(String reason) {
+        this.shadowReady = false;
+        this.shadowLastError = reason;
+        CreateManaIndustry.LOGGER.info("[CMI particles] shadow track unavailable (particles cast no shadows): {}", reason);
     }
 
     /**
@@ -386,103 +432,6 @@ public final class ShaderPackProgramCompiler {
                                      String vertex, String fragment) {
         return new ProgramSource(SHADER_NAME, vertex,
                 null, null, null, fragment, programSet, properties, null);
-    }
-
-    /** Re-inserts the SSBO declarations into every cached transform output that
-     * came from us (cmi_ globals present) but lost its blocks. Returns how many
-     * sources were repaired. */
-    private static int repairCachedSources() {
-        try {
-            Class<?> tp = Class.forName("net.irisshaders.iris.pipeline.transform.TransformPatcher");
-            java.lang.reflect.Field f = tp.getDeclaredField("cache");
-            f.setAccessible(true);
-            @SuppressWarnings("unchecked")
-            Map<Object, Object> cache = (Map<Object, Object>) f.get(null);
-            int repaired = 0;
-            for (Object v : cache.values()) {
-                if (!(v instanceof Map<?, ?>))
-                    continue;
-                @SuppressWarnings("unchecked")
-                Map<Object, Object> programs = (Map<Object, Object>) v;
-                for (Map.Entry<Object, Object> pe : programs.entrySet()) {
-                    if (pe.getValue() instanceof String s
-                            && s.contains("cmi_VertexLevel")
-                            && !s.contains("buffer CmiPool")) {
-                        pe.setValue(injectSsboDeclarations(s));
-                        repaired++;
-                    }
-                }
-            }
-            return repaired;
-        } catch (Throwable t) {
-            CreateManaIndustry.LOGGER.debug("[CMI particles] could not repair transform cache", t);
-            return 0;
-        }
-    }
-
-    /** Idempotently ensures the merged vertex source carries the SSBO block
-     * declarations, inserting them directly after the #version line. */
-    private static String injectSsboDeclarations(String source) {
-        if (source.contains("buffer CmiPool"))
-            return source;
-        java.util.regex.Matcher m =
-                java.util.regex.Pattern.compile("#version[^\n]*\n").matcher(source);
-        if (m.find())
-            return source.substring(0, m.end()) + SSBO_DECLARATIONS + source.substring(m.end());
-        return SSBO_DECLARATIONS + source;
-    }
-
-    /**
-     * GAME-SIDE GROUND TRUTH: after a GL-stage compile failure, the exact text
-     * NVIDIA saw sits in TransformPatcher's result cache (transform succeeded,
-     * cache.put ran, THEN the driver rejected it). Reflectively dumps every
-     * cached vertex string so we can diff prepared-input vs actually-compiled.
-     * Best-effort: any reflection miss is logged at debug and ignored.
-     */
-    @SuppressWarnings("unchecked")
-    private static void dumpTransformCache() {
-        try {
-            Class<?> tp = Class.forName("net.irisshaders.iris.pipeline.transform.TransformPatcher");
-            java.lang.reflect.Field f = tp.getDeclaredField("cache");
-            f.setAccessible(true);
-            Map<Object, Object> cache = (Map<Object, Object>) f.get(null);
-            java.nio.file.Path dir = java.nio.file.Path.of("patched_shaders", "cache");
-            java.nio.file.Files.createDirectories(dir);
-            int dumped = 0;
-            boolean sawBlocks = false;
-            for (Map.Entry<Object, Object> en : cache.entrySet()) {
-                if (!(en.getValue() instanceof Map<?, ?> programs))
-                    continue;
-                for (Object o : programs.values()) {
-                    if (!(o instanceof String s) || !s.contains("void main"))
-                        continue;
-                    sawBlocks |= s.contains("buffer CmiPool");
-                    java.nio.file.Files.writeString(
-                            dir.resolve("cache_" + (dumped++) + ".vsh"), s);
-                }
-            }
-            CreateManaIndustry.LOGGER.info(
-                    "[CMI particles] transform cache dump: {} vertices, anyBufferBlocks={}", dumped, sawBlocks);
-        } catch (Throwable t) {
-            CreateManaIndustry.LOGGER.debug("[CMI particles] could not dump transform cache", t);
-        }
-    }
-
-    /**
-     * Dumps the merged sources next to the game directory for offline diffing
-     * while the merge path is under runtime verification (same convention as
-     * iris-veil-compat's linker). Best-effort: failures never affect rendering.
-     */
-    private static void dumpPatchedSources(String vertex, String fragment) {
-        try {
-            java.nio.file.Path dir = java.nio.file.Path.of("patched_shaders");
-            java.nio.file.Files.createDirectories(dir);
-            java.nio.file.Files.writeString(dir.resolve(SHADER_NAME + ".vsh"), vertex);
-            if (fragment != null)
-                java.nio.file.Files.writeString(dir.resolve(SHADER_NAME + ".fsh"), fragment);
-        } catch (Exception e) {
-            CreateManaIndustry.LOGGER.debug("[CMI particles] could not dump patched shaders", e);
-        }
     }
 
     /** Finds which texture unit Iris bound the pack fragment's main sampler to. */

@@ -19,6 +19,7 @@ import net.neoforged.fml.loading.FMLLoader;
  *   <li>{@code .trickster.}  → Trickster required</li>
  *   <li>{@code .hexcasting.} → Hexcasting required</li>
  *   <li>{@code .iris.}       → iris required</li>
+ *   <li>{@code .irisveil.}   → iris-veil-compat required (implies iris)</li>
  *   <li>anything else        → always applied</li>
  * </ul>
  * Subpackages are part of the FQCN, so every mixin under
@@ -39,6 +40,7 @@ public class CMIMixinPlugin implements IMixinConfigPlugin {
     private static final String TRICKSTER_MOD_ID = "trickster";
     private static final String HEX_MOD_ID = "hexcasting";
     private static final String IRIS_MOD_ID = "iris";
+    private static final String IRISVEIL_MOD_ID = "irisveil";
 
     @Override
     public void onLoad(String mixinPackage) {}
@@ -69,6 +71,12 @@ public class CMIMixinPlugin implements IMixinConfigPlugin {
         // Mixins targeting iris internals — disable when iris is absent
         if (mixinClassName.contains(".iris."))
             return isLoaded(IRIS_MOD_ID);
+
+        // Mixins reserving iris-veil-compat resources (the particle TBO texture
+        // units) require iris-veil-compat itself; iris is its hard dependency,
+        // so loading implies everything they target is present
+        if (mixinClassName.contains(".irisveil."))
+            return isLoaded(IRISVEIL_MOD_ID);
 
         return true;
     }

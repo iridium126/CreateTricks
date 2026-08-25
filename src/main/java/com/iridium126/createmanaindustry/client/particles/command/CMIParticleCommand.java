@@ -213,7 +213,8 @@ public final class CMIParticleCommand {
                 + " config=§e" + integration + "§r"
                 + "  irisveil=§e" + (CreateManaIndustry.IRISVEIL_ACTIVE ? "loaded" : "absent") + "§r"
                 + "  path=§e" + e.shaderPackPathStatus + "§r"
-                + "  depth=§e" + e.shaderPackDepthStatus);
+                + "  depth=§e" + e.shaderPackDepthStatus
+                + "  shadow=§e" + e.shaderPackShadowStatus);
         if (!e.shaderPackErrorStatus.isEmpty())
             tell(ctx, "§7", "last fallback reason: §c" + e.shaderPackErrorStatus + "§r");
         return Command.SINGLE_SUCCESS;

@@ -6,6 +6,7 @@ import com.iridium126.createmanaindustry.client.particles.engine.ParticleBuffers
 import com.iridium126.createmanaindustry.config.ClientConfig;
 
 import com.mojang.blaze3d.systems.RenderSystem;
+import net.irisshaders.iris.shadows.ShadowRenderer;
 import net.irisshaders.iris.uniforms.CapturedRenderingState;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ShaderInstance;
@@ -19,7 +20,6 @@ import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL33;
-import org.lwjgl.opengl.GL43;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -31,25 +31,28 @@ import java.util.Map;
  * switches to {@code blockentities}, i.e. after regular entities and before
  * block entities, translucent terrain and any deferred composite.
  *
- * <p>Because the draw lands before deferred lighting, the merged program's
- * packed output is consumed by the pack exactly like a native entity's:
- * Photon-family packs light us through their deferred pass -- including the
- * {@code material_mask = 40} emission their entity vertex shaders apply at
- * full block light, which our injected full-bright lightmap deliberately
- * triggers (that IS the vanilla allay's "glowing eyes" treatment) -- while
- * forward-lit packs shade us in-fragment as usual.</p>
+ * <p>The MODEL segments are drawn through a program MERGED into the active
+ * shader pack's {@code gbuffers_entities} pipeline (see
+ * {@link ShaderPackProgramCompiler}), so the pack consumes the merged output
+ * exactly like a native entity's: Photon-family packs light the particles
+ * through their deferred pass -- including the {@code material_mask = 40}
+ * emission their entity vertex shaders apply at full block light, which our
+ * injected full-bright lightmap deliberately triggers (that IS the vanilla
+ * allay's "glowing eyes" treatment) -- while forward-lit packs shade us
+ * in-fragment as usual.
  *
  * <p>Arbitration: a successful draw here latches
- * {@link CMIParticleEngine#markHookModelDrawn()}, so the late shader-pack hook
- * stands down and the AFTER_LEVEL frame skips its own drawModels; sprites stay
- * on the late path untouched (design freeze Q9). When compilation fails the
- * latch stays clear and the late hook's self-drawn fallback takes over.</p>
+ * {@link CMIParticleEngine#markHookModelDrawn()}, so the engine's AFTER_LEVEL
+ * frame skips its own drawModels. When compilation fails the latch stays clear
+ * and runFrame draws the MODEL segments itself on that plain path --
+ * byte-for-byte the treatment every other particle type gets (sprites are
+ * permanently on it per design freeze Q9).
  *
  * <p>All iris-veil-compat references require the mod to be loaded -- render()
  * is only reachable under {@link CreateManaIndustry#IRISVEIL_ACTIVE} (checked
- * in the mixin before this class is first touched).</p>
+ * in the mixin before this class is first touched).
  */
-public final class CmiEarlyModelHook {
+public final class CMIPackEntityMergeHook {
 
     private static final ShaderPackProgramCompiler COMPILER = new ShaderPackProgramCompiler();
 
@@ -66,7 +69,7 @@ public final class CmiEarlyModelHook {
     /** Warn-once latch for {@link #applyGuarded}'s fallback path. */
     private static boolean applyFallbackWarned;
 
-    private CmiEarlyModelHook() {}
+    private CMIPackEntityMergeHook() {}
 
     // ------------------------------------------------------------------
     // Entry point (mixin, render thread)
@@ -83,7 +86,7 @@ public final class CmiEarlyModelHook {
                 return;
 
             if (!ensureCompiledWithListener())
-                return; // sticky failure recorded; late self-drawn fallback engages
+                return; // sticky failure recorded; the engine's plain AFTER_LEVEL path takes over
 
             beginTimer(engine);
             drawEntities(engine);
@@ -93,11 +96,11 @@ public final class CmiEarlyModelHook {
             // L0 drawModels then costs nothing (it would submit the same empty
             // commands), while a CPU-side per-type readback would be a stall.
             engine.markHookModelDrawn();
-            engine.shaderPackPathStatus = "early entities merge (cutout+ghost dual)";
+            engine.shaderPackPathStatus = "pack entity merge (cutout+ghost dual)";
             engine.shaderPackDepthStatus = "hardware (gbuffer)";
             engine.shaderPackErrorStatus = "";
         } catch (RuntimeException | LinkageError e) {
-            CreateManaIndustry.LOGGER.warn("[CMI particles] early model hook failed", e);
+            CreateManaIndustry.LOGGER.warn("[CMI particles] pack entity merge draw failed", e);
             engine.shaderPackErrorStatus = String.valueOf(e);
         }
     }
@@ -110,9 +113,111 @@ public final class CmiEarlyModelHook {
         return COMPILER.ensureCompiled();
     }
 
-    /** Most recent early-path compile failure, for /cmip shaderpack status. */
-    public static String lastError() {
-        return COMPILER.lastError();
+    // ------------------------------------------------------------------
+    // Shadow track (S-track)
+    // ------------------------------------------------------------------
+
+    /**
+     * Draws the MODEL segments into the active shadow map -- called from
+     * {@code MixinIrisShadowRenderer} inside {@code renderShadows} at the same
+     * spot iris-flw-compat uses for Flywheel content, right before Iris batches
+     * its own buffered entity geometry ("draw entities"). Only the MODEL type
+     * casts shadows; sprites stay shadow-free exactly like vanilla particles.
+     *
+     * <p>Fully contained: any failure here only means no particle shadows this
+     * frame -- the gbuffer path and the plain fallback are untouched.
+     */
+    public static void renderShadow() {
+        CMIParticleEngine engine = CMIParticleEngine.INSTANCE;
+        try {
+            if (!ClientConfig.shaderPackIntegration
+                    || !IrisVeilCompat.isShaderPackInUse()
+                    || !engine.available()
+                    || engine.liveCount() <= 0)
+                return;
+
+            if (!ensureCompiledWithListener()) {
+                engine.shaderPackShadowStatus = "merge failed";
+                return;
+            }
+            if (!COMPILER.shadowReady()) {
+                engine.shaderPackShadowStatus = "no shadow track";
+                return;
+            }
+
+            drawShadow(engine);
+            engine.shaderPackShadowStatus = "active";
+        } catch (RuntimeException | LinkageError e) {
+            CreateManaIndustry.LOGGER.warn("[CMI particles] shadow-track draw failed", e);
+            engine.shaderPackShadowStatus = "draw failed";
+        }
+    }
+
+    /**
+     * Both segments go through the ONE merged shadow program (no ghost blend
+     * pinning here -- a shadow map is depth-led): skipping the ghost geometry
+     * would make cloaks/wings stop casting shadows.
+     */
+    private static void drawShadow(CMIParticleEngine engine) {
+        var gpu = engine.gpuBuffers();
+        boolean cullWasEnabled = GL11.glIsEnabled(GL11.GL_CULL_FACE);
+
+        bindSharedResources(engine, gpu);
+        gpu.bindDrawIndirect();
+
+        ShaderInstance shader = COMPILER.shadowShader();
+        applyGuarded(shader);
+        uploadShadowUniforms(shader.getId());
+        RenderSystem.enableDepthTest();
+        GL11.glEnable(GL11.GL_CULL_FACE);
+        RenderSystem.disableBlend();
+        RenderSystem.depthMask(true);
+        bindAtlas(engine, COMPILER.shadowGtextureUnit());
+        gpu.drawModelCutout();
+        gpu.drawModelGhost();
+        shader.clear();
+
+        RenderSystem.depthMask(true);
+        GL30.glBindVertexArray(0);
+        GL20.glUseProgram(0);
+        gpu.unbindMergedTbos(ShaderPackProgramCompiler.MERGED_SAMPLER_UNIT_BASE);
+        RenderSystem.activeTexture(GL13.GL_TEXTURE0);
+
+        // ShadowRenderer deliberately renders its terrain with cull disabled
+        // and keeps that state for later sections; restore what we found.
+        if (!cullWasEnabled)
+            GL11.glDisable(GL11.GL_CULL_FACE);
+    }
+
+    /**
+     * Shadow-pass uniform refresh: same protocol as the gbuffer segments except
+     * the matrices come from Iris's shadow camera. The vertex INPUT SPACE is the
+     * same camera-relative level space as the gbuffer pass: ShadowMatrices.
+     * createModelViewMatrix bakes NO camera translation into MODELVIEW -- only
+     * the sub-grid snap remainder -- while native geometry arrives relative to
+     * the UNSHIFTED camera position (entities via pose translation, terrain via
+     * per-section offsets). So cmi_CameraPos here feeds exactly what the gbuffer
+     * path feeds, and our vertex main needs no shadow variant at all.
+     */
+    private static void uploadShadowUniforms(int progId) {
+        Matrix4f projection = new Matrix4f(ShadowRenderer.PROJECTION);
+        Matrix4f modelView = new Matrix4f(ShadowRenderer.MODELVIEW);
+        uploadIrisMatrices(progId, projection, modelView);
+        uploadNeutralEntityUniforms(progId);
+        var camPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
+        setFloat3(progId, "cmi_CameraPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
+        setFloat(progId, "cmi_FadeDist", (float) ClientConfig.particleFadeDistance);
+        // Round-trip insurance for packs whose merged program is the plain
+        // terrain-fallback shadow variant (no shadow_entities source): its
+        // vertex stage routes positions through the NAMED matrices
+        // shadowModelView/shadowModelViewInverse/cameraPosition. Push them to
+        // agree with OUR uploads so the round-trip stays exact regardless of
+        // how Iris's uniform updaters behave during an external apply(). All
+        // three are unused by the entities variant -- locations read -1.
+        setMat(progId, "shadowModelView", modelView);
+        setMat(progId, "shadowModelViewInverse", new Matrix4f(modelView).invert());
+        setFloat3(progId, "cameraPosition", (float) camPos.x, (float) camPos.y, (float) camPos.z);
+        setSamplers(progId);
     }
 
     // ------------------------------------------------------------------
@@ -193,6 +298,12 @@ public final class CmiEarlyModelHook {
         setInt(progId, "cmi_Sorted", base + 3);
     }
 
+    private static void setMat(int progId, String name, Matrix4f m) {
+        int l = loc(progId, name);
+        if (l >= 0)
+            GL20.glUniformMatrix4fv(l, false, m.get(new float[16]));
+    }
+
     private static void bindSharedResources(CMIParticleEngine engine, ParticleBuffers gpu) {
         // Merged programs read particle data through TBO views pinned to fixed
         // texture units; plain sampler declarations survive every in-game pass
@@ -269,7 +380,7 @@ public final class CmiEarlyModelHook {
     }
 
     // ------------------------------------------------------------------
-    // Timer ring (same discipline as the late hook)
+    // Timer ring (never blocks)
     // ------------------------------------------------------------------
 
     private static void beginTimer(CMIParticleEngine engine) {

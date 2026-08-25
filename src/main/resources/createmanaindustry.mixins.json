@@ -52,6 +52,8 @@
     "bnb.CogwheelChainPlacementInteractionMixin",
     "basin.TrapdoorCTBehaviourMixin",
     "basin.TrainTrapdoorBlockSkipRenderingMixin",
+    "irisveil.MixinProgramSamplers",
+    "irisveil.MixinIrisShadowRenderer",
     "jei.BasinCategoryMixin",
     "jei.CreateHeatedBasinCategoryMixin",
     "iris.ShadowRendererAccessor",

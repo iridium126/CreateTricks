@@ -7,14 +7,13 @@ import com.iridium126.createmanaindustry.config.ClientConfig;
 import com.iridium126.createmanaindustry.client.render.mist.MistInjectionProfiles;
 
 import com.mojang.blaze3d.systems.RenderSystem;
+
 import net.irisshaders.iris.uniforms.CapturedRenderingState;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.ShaderInstance;
-import org.joml.Matrix3f;
-import org.joml.Matrix4f;
 import top.leonx.irisveil.IrisVeilCompat;
 import top.leonx.irisveil.compat.veil.VeilCompatRegistry;
 
+import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL15;
@@ -23,34 +22,29 @@ import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL33;
 import org.lwjgl.opengl.GL43;
 
-import java.util.HashMap;
-import java.util.Map;
-
 /**
- * Draws the MODEL (allay) particle segments inside the Iris gbuffer through
- * iris-veil-compat's world render hooks -- the only composition window in this
- * project that is verified to survive a shader pack's composite chain
- * (Round-1..4 probes; the mist volumetric pass rides the same mechanism).
+ * LATE fallback window for the MODEL particle segments -- after this system's
+ * early entities merge ({@link CmiEarlyModelHook}, injected before
+ * {@code blockentities}), registered here on iris-veil-compat's post-world-
+ * border hooks so its output still rides the pack composite.
  *
- * <p>Two draw modes, selected per frame:</p>
- * <ul>
- *   <li><b>Pack programs</b> (design M2): {@link ShaderPackProgramCompiler}
- *       merged the allay vertex program into the pack's Block program; drawing
- *       through those ShaderInstances gives the models the pack's surface
- *       lighting, fog and tone mapping. Requires the compat framebuffer to have
- *       a depth attachment (hardware occlusion).</li>
- *   <li><b>Self-drawn fallback</b> (design M1): the engine's own model program,
- *       submitted at the hook instead of AFTER_LEVEL, so its output still rides
- *       the pack composite (tone mapping / bloom). When the target framebuffer
- *       has no depth attachment, the fragment shader compares against the MAIN
- *       render target's depth texture manually (uMainDepth/uManualDepth), the
- *       same technique as the mist pass.</li>
- * </ul>
+ * <p>Since routing went all-early (r4), this window only engages when the
+ * early merge is unavailable for the active pack (sticky compile failure,
+ * missing Entities program...) or stood down mid-frame: it submits the
+ * engine's own self-hosted model program -- hardware depth test against the
+ * compat framebuffer when one exists, otherwise manual compares against the
+ * MAIN render target's depth texture ({@code uMainDepth/uManualDepth}, same
+ * technique as the mist pass).</p>
  *
- * <p>Arbitration: a successful hook draw latches
- * {@code CMIParticleEngine.markHookModelDrawn()}, which makes the regular
- * AFTER_LEVEL frame skip its own drawModels (preventing double submission).
- * Sprite buckets always stay on the AFTER_LEVEL path (design Q9 freeze).</p>
+ * <p>The former pack-program branch lived here until the deferred-encoder
+ * finding: encoder packs' gbuffer fragments write packed data that is
+ * invisible in a post-lighting colour buffer, which is why the merge moved to
+ * the early window and this hook dropped back to self-drawn-only.</p>
+ *
+ * <p>Arbitration: when the early hook drew this frame it latches
+ * {@link CMIParticleEngine#markHookModelDrawn()}; render() checks the latch
+ * first and returns without drawing. Sprite buckets always stay on the
+ * AFTER_LEVEL path (design Q9 freeze).</p>
  *
  * <p>All iris-veil-compat references require the mod to be loaded -- init() is
  * only called under {@link CreateManaIndustry#IRISVEIL_ACTIVE}.</p>
@@ -72,16 +66,12 @@ public final class CmiShaderPackHook {
     private static final int MAIN_DEPTH_UNIT = 2;
 
     private static boolean registered;
-    private static final ShaderPackProgramCompiler COMPILER = new ShaderPackProgramCompiler();
 
     /** GL_TIME_ELAPSED ring for the hook-side GPU cost (never blocks). */
     private static final int[] TIMER_QUERIES = new int[4];
     private static int timerSlot = 0;
     private static int timerIssued = 0;
     private static boolean timerReady = false;
-
-    /** Uniform-location cache (program id -> name -> location). */
-    private static final Map<Integer, Map<String, Integer>> UNIFORMS = new HashMap<>();
 
     private CmiShaderPackHook() {}
 
@@ -127,32 +117,25 @@ public final class CmiShaderPackHook {
     // ------------------------------------------------------------------
 
     /**
-     * Draws the MODEL segments into the already-bound compat framebuffer.
-     * Returns whether anything was drawn (drives the arbitration latch).
+     * Draws the MODEL segments into the already-bound compat framebuffer via
+     * the engine's self-hosted program. Returns whether anything was drawn
+     * (drives the arbitration latch).
      */
     private static boolean render() {
         CMIParticleEngine engine = CMIParticleEngine.INSTANCE;
         try {
-            boolean packReady = COMPILER.ensureCompiled();
-            boolean hardwareDepth = queryHardwareDepth();
-
-            // Mode selection: pack programs need hardware depth for occlusion;
-            // without an attachment fall back to the self-drawn program whose
-            // fragment shader samples the main depth manually (consensus #4).
-            boolean usePackPath = packReady && hardwareDepth;
+            // The early entities merge owns MODEL rendering whenever it ran --
+            // including zero-instance frames, whose empty commands make our
+            // fallback redundant by definition.
+            if (engine.isHookModelLatchSet())
+                return false;
 
             if (!timerReady) {
                 GL30.glGenQueries(TIMER_QUERIES);
                 timerReady = true;
             }
             GL15.glBeginQuery(GL33.GL_TIME_ELAPSED, TIMER_QUERIES[timerSlot]);
-            boolean drew;
-
-            if (usePackPath)
-                drew = drawWithPackPrograms(engine);
-            else
-                drew = drawSelfHosted(engine, packReady);
-
+            boolean drew = drawSelfHosted(engine);
             GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
 
             // Collect the oldest sample (RING-1 frames old, virtually complete).
@@ -165,9 +148,10 @@ public final class CmiShaderPackHook {
 
             if (drew) {
                 engine.markHookModelDrawn();
-                engine.shaderPackPathStatus = usePackPath ? "shader-pack programs" : "self-drawn via hook";
-                engine.shaderPackDepthStatus = hardwareDepth ? "hardware" : "manual main-depth";
-                engine.shaderPackErrorStatus = usePackPath ? "" : COMPILER.lastError();
+                engine.shaderPackPathStatus = "self-drawn via hook (fallback)";
+                engine.shaderPackDepthStatus = queryHardwareDepth() ? "hardware" : "manual main-depth";
+                if (engine.shaderPackErrorStatus.isEmpty())
+                    engine.shaderPackErrorStatus = CmiEarlyModelHook.lastError();
             }
             return drew;
         } catch (RuntimeException | LinkageError e) {
@@ -193,57 +177,10 @@ public final class CmiShaderPackHook {
     }
 
     // ------------------------------------------------------------------
-    // Mode B: merged pack programs
+    // Self-hosted program through the hook (fallback)
     // ------------------------------------------------------------------
 
-    private static boolean drawWithPackPrograms(CMIParticleEngine engine) {
-        var gpu = engine.gpuBuffers();
-        ShaderInstance opaque = COMPILER.opaqueShader();
-        ShaderInstance translucent = COMPILER.translucentShader();
-        if (opaque == null || translucent == null)
-            return false;
-
-        Matrix4f projection = new Matrix4f(CapturedRenderingState.INSTANCE.getGbufferProjection());
-        Matrix4f modelView = new Matrix4f(CapturedRenderingState.INSTANCE.getGbufferModelView());
-
-        bindSharedResources(engine, gpu);
-
-        RenderSystem.enableDepthTest();
-        GL11.glEnable(GL11.GL_CULL_FACE);
-
-        applyGuarded(opaque);
-        uploadIrisMatrices(opaque.getId(), projection, modelView);
-        uploadCmiUniforms(opaque.getId(), engine, modelView);
-        // cutout segment: no blending, depth writes (early-Z feeder)
-        RenderSystem.disableBlend();
-        RenderSystem.depthMask(true);
-        bindAtlas(engine, COMPILER.gtextureUnit());
-        gpu.bindDrawIndirect();
-        gpu.drawIndirect(2);
-        opaque.clear();
-
-        applyGuarded(translucent);
-        uploadIrisMatrices(translucent.getId(), projection, modelView);
-        uploadCmiUniforms(translucent.getId(), engine, modelView);
-        // ghost segment: standard alpha blend WITH depth writes (L0 semantics)
-        RenderSystem.enableBlend();
-        RenderSystem.blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA,
-                GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA);
-        RenderSystem.depthMask(true);
-        bindAtlas(engine, COMPILER.gtextureUnit());
-        gpu.bindDrawIndirect();
-        gpu.drawIndirect(3);
-        translucent.clear();
-
-        restoreState(gpu);
-        return true;
-    }
-
-    // ------------------------------------------------------------------
-    // Mode A: self-hosted program through the hook (M1 / fallback)
-    // ------------------------------------------------------------------
-
-    private static boolean drawSelfHosted(CMIParticleEngine engine, boolean packFailed) {
+    private static boolean drawSelfHosted(CMIParticleEngine engine) {
         int prog = engine.modelProgramId();
         if (prog == 0)
             return false;
@@ -252,7 +189,8 @@ public final class CmiShaderPackHook {
         if (mc.getMainRenderTarget() == null)
             return false;
 
-        // Previous-generation snapshot: freshest COMMITTED pool + permutation.
+        // Previous-generation snapshot: freshest COMMITTED pool + permutation,
+        // bound on the engine's standard slots (model.vsh reads base 1/5/7/12).
         gpu.bindParticleRead(ParticleBuffers.PARTICLE_BB_WRITE);
         gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, safeFinalPerm(engine));
         gpu.bindEmitters(ParticleBuffers.EMITTER_BB);
@@ -262,22 +200,22 @@ public final class CmiShaderPackHook {
         GL20.glUseProgram(prog);
         Matrix4f view = new Matrix4f(CapturedRenderingState.INSTANCE.getGbufferModelView());
         Matrix4f projection = new Matrix4f(CapturedRenderingState.INSTANCE.getGbufferProjection());
-        var camPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
+        var camPos = mc.gameRenderer.getMainCamera().getPosition();
         setMat4(prog, "ModelViewMat", view);
         setMat4(prog, "ProjMat", projection);
         setFloat3(prog, "uCamPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
-        setFloat(prog, "uFadeDist", (float) ClientConfig.particleFadeDistance);
-        setInt(prog, "uSprite", 1);
+        setFloat1(prog, "uFadeDist", (float) ClientConfig.particleFadeDistance);
+        setInt1(prog, "uSprite", 1);
 
         boolean hardwareDepth = queryHardwareDepth();
         int depthTex = mc.getMainRenderTarget().getDepthTextureId();
-        setInt(prog, "uManualDepth", hardwareDepth ? 0 : 1);
+        setInt1(prog, "uManualDepth", hardwareDepth ? 0 : 1);
         if (!hardwareDepth && depthTex > 0) {
             RenderSystem.activeTexture(GL13.GL_TEXTURE0 + MAIN_DEPTH_UNIT);
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, depthTex);
-            setInt(prog, "uMainDepth", MAIN_DEPTH_UNIT);
+            setInt1(prog, "uMainDepth", MAIN_DEPTH_UNIT);
         } else {
-            setInt(prog, "uMainDepth", 0);
+            setInt1(prog, "uMainDepth", 0);
         }
 
         GL13.glActiveTexture(GL13.GL_TEXTURE1);
@@ -285,6 +223,8 @@ public final class CmiShaderPackHook {
 
         RenderSystem.enableDepthTest();
         GL11.glEnable(GL11.GL_CULL_FACE);
+        // L0 semantics: both segments blend SRC_ALPHA with depth writes so ghost
+        // surfaces occlude later translucent passes
         RenderSystem.enableBlend();
         RenderSystem.blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA,
                 GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA);
@@ -300,8 +240,6 @@ public final class CmiShaderPackHook {
         GL20.glUseProgram(0);
         GL30.glBindVertexArray(0);
         RenderSystem.activeTexture(GL13.GL_TEXTURE0);
-        if (packFailed)
-            engine.shaderPackErrorStatus = "pack merge failed; self-drawn fallback active";
         return true;
     }
 
@@ -312,113 +250,31 @@ public final class CmiShaderPackHook {
     }
 
     // ------------------------------------------------------------------
-    // Shared plumbing
+    // Uniform helpers -- direct lookups, deliberately uncached: the engine
+    // program id changes on shader rebuilds and there are only a handful of
+    // queries per frame.
     // ------------------------------------------------------------------
 
-    private static void bindSharedResources(CMIParticleEngine engine, ParticleBuffers gpu) {
-        // Previous-generation snapshot on the MERGED binding slots (high numbers,
-        // clear of Iris/Flywheel territory).
-        gpu.bindParticleRead(ShaderPackProgramCompiler.MERGED_BINDING_POOL);
-        gpu.bindEmitters(ShaderPackProgramCompiler.MERGED_BINDING_EMITTERS);
-        gpu.bindSort(ShaderPackProgramCompiler.MERGED_BINDING_SORT, safeFinalPerm(engine));
-        gpu.bindModelGeo();
-        gpu.bindVao();
+    private static void setInt1(int prog, String name, int v) {
+        int l = GL20.glGetUniformLocation(prog, name);
+        if (l >= 0)
+            GL20.glUniform1i(l, v);
     }
 
-    /** The pack fragment samples the entity texture through its gtexture sampler. */
-    private static void bindAtlas(CMIParticleEngine engine, int unit) {
-        if (unit < 0)
-            return;
-        RenderSystem.activeTexture(GL13.GL_TEXTURE0 + unit);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, engine.modelAtlasTextureId());
-    }
-
-    /**
-     * Applies an Iris-created ShaderInstance. When the merged program optimised
-     * the vanilla ModelViewMat away, apply() can throw inside its uniform
-     * iteration (the reference wrapper seeded a dummy; that field is final under
-     * the NeoForge mappings, so fall back to a bare glUseProgram instead -- our
-     * uploads below do not depend on the vanilla uniform state).
-     */
-    private static void applyGuarded(ShaderInstance shader) {
-        try {
-            shader.apply();
-        } catch (RuntimeException e) {
-            GL20.glUseProgram(shader.getId());
-        }
-    }
-
-    /**
-     * Iris rewrote the pack's fixed-function matrices onto these iris_* uniforms;
-     * they are NOT refreshed outside Iris's own draw stream, so supply the
-     * current gbuffer matrices ourselves (same protocol as the reference wrapper).
-     */
-    private static void uploadIrisMatrices(int progId, Matrix4f projection, Matrix4f modelView) {
-        int projLoc = GL20.glGetUniformLocation(progId, "iris_ProjMat");
-        if (projLoc >= 0) {
-            try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
-                GL20.glUniformMatrix4fv(projLoc, false, projection.get(stack.mallocFloat(16)));
-            }
-        }
-        int mvLoc = GL20.glGetUniformLocation(progId, "iris_ModelViewMat");
-        if (mvLoc >= 0) {
-            try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
-                GL20.glUniformMatrix4fv(mvLoc, false, modelView.get(stack.mallocFloat(16)));
-            }
-        }
-        int normalLoc = GL20.glGetUniformLocation(progId, "iris_NormalMat");
-        if (normalLoc >= 0) {
-            Matrix4f inv = new Matrix4f(modelView).invert();
-            Matrix3f normalMat = new Matrix3f(inv.transpose());
-            try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
-                GL20.glUniformMatrix3fv(normalLoc, false, normalMat.get(stack.mallocFloat(9)));
-            }
-        }
-    }
-
-    private static void uploadCmiUniforms(int progId, CMIParticleEngine engine, Matrix4f modelView) {
-        var camPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
-        setFloat3(progId, "cmi_CameraPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
-        setFloat(progId, "cmi_FadeDist", (float) ClientConfig.particleFadeDistance);
-        setMat4(progId, "cmi_ModelViewMat", modelView);
-    }
-
-    private static void restoreState(ParticleBuffers gpu) {
-        RenderSystem.depthMask(true);
-        RenderSystem.defaultBlendFunc();
-        RenderSystem.disableBlend();
-        GL30.glBindVertexArray(0);
-        GL20.glUseProgram(0);
-        // release our high SSBO slots back to neutral so nothing downstream can
-        // accidentally consume them
-        for (int b = ShaderPackProgramCompiler.MERGED_BINDING_GEO; b <= ShaderPackProgramCompiler.MERGED_BINDING_SORT; b++)
-            GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, b, 0);
-        RenderSystem.activeTexture(GL13.GL_TEXTURE0);
-    }
-// uniform helpers -------------------------------------------------------
-
-    private static int loc(int prog, String name) {
-        return UNIFORMS.computeIfAbsent(prog, k -> new HashMap<>())
-                .computeIfAbsent(name, n -> GL20.glGetUniformLocation(prog, n));
-    }
-
-    private static void setInt(int prog, String name, int v) {
-        int l = loc(prog, name);
-        if (l >= 0) GL20.glUniform1i(l, v);
-    }
-
-    private static void setFloat(int prog, String name, float v) {
-        int l = loc(prog, name);
-        if (l >= 0) GL20.glUniform1f(l, v);
+    private static void setFloat1(int prog, String name, float v) {
+        int l = GL20.glGetUniformLocation(prog, name);
+        if (l >= 0)
+            GL20.glUniform1f(l, v);
     }
 
     private static void setFloat3(int prog, String name, float x, float y, float z) {
-        int l = loc(prog, name);
-        if (l >= 0) GL20.glUniform3f(l, x, y, z);
+        int l = GL20.glGetUniformLocation(prog, name);
+        if (l >= 0)
+            GL20.glUniform3f(l, x, y, z);
     }
 
     private static void setMat4(int prog, String name, Matrix4f m) {
-        int l = loc(prog, name);
+        int l = GL20.glGetUniformLocation(prog, name);
         if (l >= 0) {
             try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
                 GL20.glUniformMatrix4fv(l, false, m.get(stack.mallocFloat(16)));

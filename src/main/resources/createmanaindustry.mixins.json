@@ -39,6 +39,7 @@
     "vanilla.LivingEntityMoltenFluidMistMixin"
   ],
   "client": [
+    "render.LevelRendererBlockEntitiesMixin",
     "render.CachedBuffersMixin",
     "render.ModelsMixin",
     "render.SafeBlockEntityRendererMixin",

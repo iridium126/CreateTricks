@@ -6,8 +6,6 @@ import com.iridium126.createmanaindustry.client.particles.engine.ParticleProgram
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.gl.blending.AlphaTest;
 import net.irisshaders.iris.gl.blending.AlphaTestFunction;
-import net.irisshaders.iris.gl.blending.BlendMode;
-import net.irisshaders.iris.gl.blending.BlendModeOverride;
 import net.irisshaders.iris.gl.state.FogMode;
 import net.irisshaders.iris.pipeline.IrisRenderingPipeline;
 import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
@@ -20,27 +18,40 @@ import net.irisshaders.iris.gl.shader.StandardMacros;
 import net.irisshaders.iris.vertices.IrisVertexFormats;
 import net.minecraft.client.renderer.ShaderInstance;
 import top.leonx.irisveil.accessors.IrisRenderingPipelineAccessor;
-import top.leonx.irisveil.accessors.ProgramDirectivesAccessor;
 import top.leonx.irisveil.accessors.ProgramSourceAccessor;
 
 import org.lwjgl.opengl.GL20;
 
-import java.util.List;
-
 /**
- * Compiles the CMI MODEL-particle draw into the active shader pack's lighting
- * context: resolves the pack's Block program via Iris's own fallback chain,
- * injects the SSBO-driven allay vertex program with {@link
- * ParticleVertexInjector}, and builds TWO Iris-managed {@link ShaderInstance}s
- * from the same patched sources -- one with the pack's opaque blend (the
- * cutout segment, indirect cmd2) and one forced to standard alpha blending
- * (the cloak/wings segment, cmd3; Block programs are opaque by default, so the
- * ghost segment's blend mode must be substituted).
+ * Compiles the CMI MODEL-particle draw into the active shader pack's ENTITY
+ * pipeline: resolves the pack's {@code gbuffers_entities} program via Iris's
+ * own fallback chain, injects the SSBO-driven allay vertex program with
+ * {@link ParticleVertexInjector}, and keeps the PACK FRAGMENT VERBATIM.
+ *
+ * <p>The merged pair is drawn by {@link CmiEarlyModelHook} during the gbuffer
+ * phase (before any deferred composite), so encoder-style packs such as Photon
+ * light the particles through their normal deferred path -- including the
+ * {@code material_mask = 40} emission rule their entity vertex shaders apply
+ * at full block light, which our injected full-bright lightmap deliberately
+ * triggers. Forward-lit packs (Complementary et al.) simply shade us like a
+ * native entity at their usual in-shader timing. Either way the particles get
+ * exactly the surface treatment the pack gives a real allay.</p>
+ *
+ * <p>One merged {@link ShaderInstance} serves BOTH model segments (cutout and
+ * ghost): they are two element ranges of one multi-draw and differ in nothing
+ * the program can see, so no per-segment program or blend substitution is
+ * needed. The alpha test is NOT pinned: the resolved Entities directives are
+ * copied onto our synthetic ProgramSource via {@code withDirectiveOverride},
+ * so name-keyed pack directives ({@code alphaTest.gbuffers_entities}, ...)
+ * win inside {@code ShaderCreator} exactly like a native entity draw --
+ * matching the pack's entity discard behaviour is precisely the goal
+ * ({@code GREATER 0.1} is only the fallback when the pack defines none).</p>
  *
  * <p>Core flow adapted from iris-veil-compat's {@code IrisVeilProgramLinker}
  * / iris-flw-compat's {@code IrisProgramLinker} (MIT, (c) top.leonx): pipeline
- * accessor -> ProgramSet -> ProgramFallbackResolver(ProgramId.Block) -> patch
- * -> jcpp preprocess -> ProgramSource -> callCreateShader.</p>
+ * accessor -> ProgramSet -> ProgramFallbackResolver(ProgramId.Entities) ->
+ * patch -> jcpp preprocess -> ProgramSource (+ its withDirectiveOverride step)
+ * -> invokeCreateShader.</p>
  *
  * <p>All iris-veil-compat type references in this class require the mod to be
  * loaded -- instantiate only under {@link CreateManaIndustry#IRISVEIL_ACTIVE}.</p>
@@ -54,34 +65,42 @@ public final class ShaderPackProgramCompiler {
     public static final int MERGED_BINDING_EMITTERS = 14;
     public static final int MERGED_BINDING_SORT = 15;
 
-    private static final String SHADER_NAME = "cmi_model_particles";
+    private static final String SHADER_NAME = "cmi_model_entities";
 
-    /**
-     * Standard alpha blending for the cloak/wings segment. Block programs are
-     * opaque by default in most packs, so the ghost segment's blend mode must
-     * be substituted explicitly (same src/alpha factors as the L0 path).
-     */
-    private static final BlendModeOverride GHOST_BLEND_OVERRIDE =
-            new BlendModeOverride(new BlendMode(org.lwjgl.opengl.GL11.GL_SRC_ALPHA,
-                    org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA,
-                    org.lwjgl.opengl.GL11.GL_ONE,
-                    org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA));
+    /** Native entity-cutout discard level, used only when the pack's entities
+     * program carries no {@code alphaTest.<program>} directive of its own. */
+    private static final AlphaTest FALLBACK_ALPHA_TEST =
+            new AlphaTest(AlphaTestFunction.GREATER, 0.1f);
 
     private final ParticleVertexInjector injector = new ParticleVertexInjector();
 
     /** Lazily built merged vertex source (SSBO decls + pose chunk + main). */
     private String mergedVertexSource;
 
-    private ShaderInstance opaqueShader;
-    private ShaderInstance translucentShader;
+    private ShaderInstance entitiesShader;
     private Object owningPipeline; // identity of the pipeline the shaders belong to
+    /** Fired whenever compilation restarts: previously returned program ids go stale. */
+    private Runnable onRebuild;
     /** Texture unit Iris assigned to the pack fragment's gtexture sampler. */
     private int gtextureUnit = -1;
     private String lastError = "";
     private boolean failed;
+    /** Patched sources of the latest attempt, dumped even on failure. */
+    private String lastPatchedVertex;
+    private String lastPatchedFragment;
 
     public boolean isReady() {
-        return opaqueShader != null && translucentShader != null;
+        return entitiesShader != null;
+    }
+
+    /**
+     * Registers a callback invoked whenever a rebuild starts (pipeline changed).
+     * Consumers that cache GL state keyed by program id -- e.g. uniform-location
+     * maps -- must drop those entries here: rebuild deletes the old programs, so
+     * cached ids would silently alias whatever the driver reuses.
+     */
+    public void setOnRebuild(Runnable listener) {
+        this.onRebuild = listener;
     }
 
     public String lastError() {
@@ -89,9 +108,10 @@ public final class ShaderPackProgramCompiler {
     }
 
     /**
-     * Builds (or rebuilds, after a pipeline change) the merged programs.
-     * Returns false on any failure -- the hook then falls back to L0 and this
-     * class records the reason for /cmip shaderpack status.
+     * Builds (or rebuilds, after a pipeline change) the merged program.
+     * Returns false on any failure -- the early hook then stands down and the
+     * late-window self-drawn fallback takes over; this class records the reason
+     * for /cmip shaderpack status.
      */
     public boolean ensureCompiled() {
         WorldRenderingPipeline pipeline = Iris.getPipelineManager().getPipelineNullable();
@@ -107,65 +127,76 @@ public final class ShaderPackProgramCompiler {
         this.failed = false;
         this.lastError = "";
         this.owningPipeline = pipeline; // claimed up front for the sticky semantics above
+        if (this.onRebuild != null)
+            this.onRebuild.run(); // old program ids are gone from here on
         try {
             var accessor = (IrisRenderingPipelineAccessor) pipeline;
             ProgramSet programSet = accessor.getProgramSet();
 
             var resolver = new ProgramFallbackResolver(programSet);
-            var refProgram = resolver.resolve(ProgramId.Block).orElse(null);
+            var refProgram = resolver.resolve(ProgramId.Entities).orElse(null);
             if (refProgram == null)
-                return fail("pack has no Block program source (fallback chain exhausted)");
+                return fail("pack has no Entities program source (fallback chain exhausted)");
             var vertRef = refProgram.getVertexSource().orElse(null);
             var fragRef = refProgram.getFragmentSource().orElse(null);
             if (vertRef == null || fragRef == null)
-                return fail("Block program source missing vertex or fragment");
+                return fail("Entities program source missing vertex or fragment");
 
             String patched = this.injector.patch(vertRef, this.buildMergedSource(), SHADER_NAME);
             if (patched == vertRef)
                 return fail("vertex injection failed");
             patched = JcppProcessor.glslPreprocessSource(patched,
                     StandardMacros.createStandardEnvironmentDefines());
+            this.lastPatchedVertex = patched;
+            this.lastPatchedFragment = fragRef;
 
             var properties = ((ProgramSourceAccessor) refProgram).getShaderProperties();
-            BlendModeOverride packBlend = ((ProgramSourceAccessor) refProgram).getBlendModeOverride();
 
-            this.opaqueShader = accessor.invokeCreateShader(
-                    SHADER_NAME + "_opaque",
-                    this.makeSource(programSet, properties, packBlend, patched, fragRef, "opaque"),
-                    ProgramId.Block, AlphaTest.ALWAYS,
+            // No blend override is passed in the constructor call itself: the
+            // synthetic program name misses every name-keyed property
+            // (ProgramDirectives resolves alphaTest.<name>/blend.<name> against
+            // source.getName()), so a freshly built source carries none of the
+            // pack's per-program settings. Copying the resolved Entities
+            // directives wholesale restores them: ShaderCreator then honours
+            // alphaTest/blend/buffer-blend exactly as for a native entity draw,
+            // while absent fields fall through unchanged (alpha ->
+            // FALLBACK_ALPHA_TEST below, blend -> ProgramId.Entities' built-in
+            // default). Same mechanism as iris-veil-compat's linker.
+            this.entitiesShader = accessor.invokeCreateShader(
+                    SHADER_NAME,
+                    this.makeSource(programSet, properties, patched, fragRef)
+                            .withDirectiveOverride(refProgram.getDirectives()),
+                    ProgramId.Entities, FALLBACK_ALPHA_TEST,
                     IrisVertexFormats.TERRAIN, FogMode.OFF,
                     false, false, false, false, false);
-            // The ghost segment needs real alpha blending; Block programs default
-            // to the pack's opaque blend, so substitute the standard translucent mode.
-            this.translucentShader = accessor.invokeCreateShader(
-                    SHADER_NAME + "_translucent",
-                    this.makeSource(programSet, properties, GHOST_BLEND_OVERRIDE, patched, fragRef, "translucent"),
-                    ProgramId.Block, AlphaTest.ALWAYS,
-                    IrisVertexFormats.TERRAIN, FogMode.OFF,
-                    false, false, false, false, false);
 
-            if (this.opaqueShader == null || this.translucentShader == null)
+            dumpPatchedSources(patched, fragRef);
+
+            if (this.entitiesShader == null)
                 return fail("Iris returned no shader instance");
 
-            this.gtextureUnit = findSamplerUnit(this.opaqueShader);
+            this.gtextureUnit = findSamplerUnit(this.entitiesShader);
             CreateManaIndustry.LOGGER.info(
-                    "[CMI particles] shader-pack path ready ({} gtexture unit {})",
-                    SHADER_NAME, this.gtextureUnit);
+                    "[CMI particles] early entities merge ready ({} gtexture unit {}, inherited alphaTest={})",
+                    SHADER_NAME, this.gtextureUnit,
+                    refProgram.getDirectives().getAlphaTestOverride()
+                            .map(String::valueOf)
+                            .orElse("none -> fallback " + FALLBACK_ALPHA_TEST));
             return true;
         } catch (Exception e) {
-            this.opaqueShader = null;
-            this.translucentShader = null;
+            this.entitiesShader = null;
             this.gtextureUnit = -1;
+            // Dump whatever got patched before the failure: a GLSL type error
+            // introduced by identifier rewriting is invisible in logs alone.
+            dumpPatchedSources(this.lastPatchedVertex, this.lastPatchedFragment);
+            this.lastPatchedVertex = null;
+            this.lastPatchedFragment = null;
             return fail(e.toString());
         }
     }
 
-    public ShaderInstance opaqueShader() {
-        return this.opaqueShader;
-    }
-
-    public ShaderInstance translucentShader() {
-        return this.translucentShader;
+    public ShaderInstance entitiesShader() {
+        return this.entitiesShader;
     }
 
     public int gtextureUnit() {
@@ -174,8 +205,7 @@ public final class ShaderPackProgramCompiler {
 
     /** Drops compiled state (pipeline changed, reload, or failure). */
     public void reset() {
-        this.opaqueShader = null;
-        this.translucentShader = null;
+        this.entitiesShader = null;
         this.gtextureUnit = -1;
         this.owningPipeline = null;
     }
@@ -186,16 +216,33 @@ public final class ShaderPackProgramCompiler {
 
     private boolean fail(String reason) {
         if (!this.failed)
-            CreateManaIndustry.LOGGER.warn("[CMI particles] shader-pack path unavailable: {}; staying on the self-drawn path", reason);
+            CreateManaIndustry.LOGGER.warn("[CMI particles] early entities merge unavailable: {}; staying on the self-drawn path", reason);
         this.failed = true;
         this.lastError = reason;
         return false;
     }
 
     private ProgramSource makeSource(ProgramSet programSet, net.irisshaders.iris.shaderpack.properties.ShaderProperties properties,
-                                     BlendModeOverride blend, String vertex, String fragment, String suffix) {
-        return new ProgramSource(SHADER_NAME + "_" + suffix, vertex,
-                null, null, null, fragment, programSet, properties, blend);
+                                     String vertex, String fragment) {
+        return new ProgramSource(SHADER_NAME, vertex,
+                null, null, null, fragment, programSet, properties, null);
+    }
+
+    /**
+     * Dumps the merged sources next to the game directory for offline diffing
+     * while the merge path is under runtime verification (same convention as
+     * iris-veil-compat's linker). Best-effort: failures never affect rendering.
+     */
+    private static void dumpPatchedSources(String vertex, String fragment) {
+        try {
+            java.nio.file.Path dir = java.nio.file.Path.of("patched_shaders");
+            java.nio.file.Files.createDirectories(dir);
+            java.nio.file.Files.writeString(dir.resolve(SHADER_NAME + ".vsh"), vertex);
+            if (fragment != null)
+                java.nio.file.Files.writeString(dir.resolve(SHADER_NAME + ".fsh"), fragment);
+        } catch (Exception e) {
+            CreateManaIndustry.LOGGER.debug("[CMI particles] could not dump patched shaders", e);
+        }
     }
 
     /** Finds which texture unit Iris bound the pack fragment's main sampler to. */
@@ -230,7 +277,7 @@ public final class ShaderPackProgramCompiler {
             throw new IllegalStateException("cannot load chunks/allay_pose.glsl");
 
         StringBuilder sb = new StringBuilder(8192);
-        sb.append("#version 330 core\n"); // placeholder; the injector bumps it to the pack version
+        sb.append("#version 430 core\n"); // feature-level placeholder (SSBOs); the injector rewrites the PACK header, not this one
         sb.append("#define VEC4_PER_PARTICLE 4u\n");
         sb.append("#define VEC4_PER_EMITTER ").append(20).append("u\n");
         sb.append("#define MODEL_VERTEX_FLOATS ").append(ParticlePrograms.modelVertexFloats()).append('\n');
@@ -247,7 +294,11 @@ public final class ShaderPackProgramCompiler {
                 // results consumed by the pack code through the injector's rewrites
                 vec4 cmi_VertexView;   // view-space vertex (view transform pre-baked)
                 vec4 cmi_TexCoord0v;   // atlas UV as a gl_MultiTexCoord0 stand-in
-                ivec4 cmi_LightCoordv; // full-bright lightmap (block light 15)
+                // FLOAT, matching the compatibility-profile gl_MultiTexCoord1
+                // attribute: pack code freely mixes .xy with float math (e.g.
+                // Photon's clamp01(gl_MultiTexCoord1.xy * rcp(240.0))); an ivec4
+                // here produced illegal ivec*float and failed the whole merge.
+                vec4 cmi_LightCoordv; // full-bright lightmap (block light 15)
                 vec3 cmi_NormalLevel;  // level-space pose normal
                 vec4 cmi_Tint;         // emitter colour keyframes x per-particle tint
 
@@ -305,7 +356,7 @@ public final class ShaderPackProgramCompiler {
                         ? vec4(0.0, 0.0, 1e9, 1.0)
                         : cmi_ModelViewMat * vec4(world - cmi_CameraPos, 1.0);
                     cmi_TexCoord0v = vec4(uv, 0.0, 1.0);
-                    cmi_LightCoordv = ivec4(240, 240, 0, 1); // block light 15 + full sky
+                    cmi_LightCoordv = vec4(240.0, 240.0, 0.0, 1.0); // block light 15 + full sky
 
                     vec4 kfr[8];
                     for (int i = 0; i < 8; i++) kfr[i] = gone ? vec4(1.0) : cmiEmitters.u[hb + 8u + uint(i)];

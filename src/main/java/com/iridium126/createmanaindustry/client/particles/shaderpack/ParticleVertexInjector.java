@@ -104,7 +104,13 @@ public final class ParticleVertexInjector {
                     throw new IllegalArgumentException("No #version directive found in pack vertex source!");
                 }
                 int originalVersion = Integer.parseInt(matcher.group(1));
-                int finalVersion = Math.max(originalVersion, 400);
+                // Floor at 430: the injected CMI block declares std430 SSBOs
+                // (GLSL 430+). The primary target pack (Photon v1.3b) ships
+                // gbuffers_block.vsh as #version 400 compatibility -- without
+                // this floor the merged program only links where drivers accept
+                // SSBOs below 4.30 (spec-illegal) and silently falls back to the
+                // self-drawn path everywhere else.
+                int finalVersion = Math.max(originalVersion, 430);
                 input = matcher.replaceAll("#version " + finalVersion + " compatibility\n");
                 transformer.getLexer().version = Version.fromNumber(finalVersion);
                 return super.parseTranslationUnit(rootInstance, input);
@@ -114,7 +120,9 @@ public final class ParticleVertexInjector {
 
         cmiTransformer = new SingleASTTransformer<>();
         cmiTransformer.setRootSupplier(RootSupplier.PREFIX_UNORDERED_ED_EXACT);
-        cmiTransformer.getLexer().version = Version.GLSL40;
+        // match the injected source's feature level -- the merged CMI source
+        // contains uint/uvec2 arithmetic and std430 buffer blocks (430 syntax)
+        cmiTransformer.getLexer().version = Version.fromNumber(430);
     }
 
     /**

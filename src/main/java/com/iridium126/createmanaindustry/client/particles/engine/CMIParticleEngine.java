@@ -337,9 +337,18 @@ public final class CMIParticleEngine {
         return this.allayAtlas.textureId();
     }
 
-    /** Called by the shader-pack hook after it drew the MODEL segments itself. */
+    /** Called by a shader-pack hook after it drew the MODEL segments itself. */
     public void markHookModelDrawn() {
         this.hookModelsDrawn = true;
+    }
+
+    /**
+     * Whether the MODEL segments were already drawn earlier in THIS frame by a
+     * hook window that runs before AFTER_LEVEL (currently the early entities
+     * merge). The late hook consults this to stand down its fallback draw.
+     */
+    public boolean isHookModelLatchSet() {
+        return this.hookModelsDrawn;
     }
 
     /** Accumulates one completed hook-side timer query (GPU ms, lagged). */

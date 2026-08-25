@@ -44,12 +44,14 @@ import java.util.regex.Pattern;
  * <p>CMI-specific rewrites (all particle state lives in high-numbered SSBO
  * bindings the pack never touches):</p>
  * <ul>
- *   <li>{@code gl_Vertex} -> the VIEW-SPACE vertex computed from the particle
- *       pool ({@code cmi_VertexView}); {@code gl_ModelViewMatrix} collapses to
- *       {@code mat4(1.0)} because the view transform is already baked in --
- *       both explicit {@code proj * mv * pos} chains and fog distance math
- *       stay correct;</li>
- *   <li>{@code ftransform()} -> {@code gl_ProjectionMatrix * cmi_VertexView};</li>
+ *   <li>{@code gl_Vertex} -> the CAMERA-RELATIVE LEVEL-SPACE vertex computed
+ *       from the particle pool ({@code cmi_VertexLevel}); {@code
+ *       gl_ModelViewMatrix} is left UNTOUCHED (Iris feeds the real matrix), so
+ *       positioning, fog-distance math AND any non-positioning MV use keep
+ *       native-entity semantics -- same contract as the iris-flw-compat /
+ *       iris-veil-compat patchers, which never collapse the matrices either;</li>
+ *   <li>{@code ftransform()} -> {@code gl_ProjectionMatrix *
+ *       gl_ModelViewMatrix * cmi_VertexLevel};</li>
  *   <li>{@code gl_Color} -> {@code cmi_Tint} (emitter colour keyframes);</li>
  *   <li>{@code gl_MultiTexCoord0} -> {@code cmi_TexCoord0v} (baked atlas UV);</li>
  *   <li>{@code gl_MultiTexCoord1} -> {@code cmi_LightCoordv}, a full-bright
@@ -177,11 +179,13 @@ public final class ParticleVertexInjector {
         packTree.prependMainFunctionBody(cmiBlock.getStatements());
 
         // Step 4: rewrite the pack's fixed-function vertex pipeline onto our
-        // computed results (view space is baked; matrices collapse to identity)
-        packRoot.replaceReferenceExpressions(transformer, "gl_Vertex", "vec4(cmi_VertexView.xyz, 1.0)");
-        packRoot.replaceReferenceExpressions(transformer, "gl_ModelViewMatrix", "mat4(1.0)");
+        // computed results. We emit a camera-relative LEVEL-SPACE vertex and
+        // deliberately do NOT touch gl_ModelViewMatrix: Iris supplies the real
+        // matrix, so proj/mv/fog math behaves exactly as it would for a native
+        // entity drawn at the same spot.
+        packRoot.replaceReferenceExpressions(transformer, "gl_Vertex", "vec4(cmi_VertexLevel.xyz, 1.0)");
         packRoot.replaceExpressionMatches(transformer, FTRANSFORM_EXPR,
-            "(gl_ProjectionMatrix * cmi_VertexView)");
+            "(gl_ProjectionMatrix * gl_ModelViewMatrix * cmi_VertexLevel)");
         packRoot.replaceReferenceExpressions(transformer, "gl_Color", "cmi_Tint");
         packRoot.replaceReferenceExpressions(transformer, "gl_Normal", "cmi_NormalLevel");
         packRoot.replaceReferenceExpressions(transformer, "gl_MultiTexCoord0", "cmi_TexCoord0v");

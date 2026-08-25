@@ -6,11 +6,14 @@
 // Everything is prefixed cmi so injected pack programs cannot collide.
 // Port reference: .refs/neoforge-21.1.227/net/minecraft/client/model/AllayModel.java
 
-#define CMI_PI 3.14159265
+// NOTE: plain const declarations, NOT #define -- the shader-pack merger
+// splices this chunk through glsl-transformer ASTs, where preprocessor
+// directives do not survive (they are lexer-level, not AST nodes).
+const float CMI_PI = 3.14159265;
 // vanilla spin rhythm (Allay.isSpinning): dancingTicks % 55 < 15 sweeps 4*pi,
 // then stays still until the next cycle (4*pi mod 2*pi == identity).
-#define CMI_SPIN_CYCLE_S 2.75
-#define CMI_SPIN_WINDOW_FRACTION (15.0 / 55.0)
+const float CMI_SPIN_CYCLE_S = 2.75;
+const float CMI_SPIN_WINDOW_FRACTION = 15.0 / 55.0;
 
 // baked face-normal axis table (+X,-X,+Y,-Y,+Z,-Z), matching AllayModelGeometry axis ids
 const vec3 CMI_FACE_NORMALS[6] = vec3[6](

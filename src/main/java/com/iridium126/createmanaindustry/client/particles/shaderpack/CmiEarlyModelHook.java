@@ -93,7 +93,7 @@ public final class CmiEarlyModelHook {
             // L0 drawModels then costs nothing (it would submit the same empty
             // commands), while a CPU-side per-type readback would be a stall.
             engine.markHookModelDrawn();
-            engine.shaderPackPathStatus = "early entities merge";
+            engine.shaderPackPathStatus = "early entities merge (cutout+ghost dual)";
             engine.shaderPackDepthStatus = "hardware (gbuffer)";
             engine.shaderPackErrorStatus = "";
         } catch (RuntimeException | LinkageError e) {
@@ -121,36 +121,43 @@ public final class CmiEarlyModelHook {
 
     private static void drawEntities(CMIParticleEngine engine) {
         var gpu = engine.gpuBuffers();
-        ShaderInstance shader = COMPILER.entitiesShader();
 
         bindSharedResources(engine, gpu);
+        gpu.bindDrawIndirect();
 
+        // Cutout segment: native solid-entity treatment -- no blending, depth
+        // writes everywhere (early-Z feeder for later passes). The program
+        // inherits the pack's entity directives wholesale.
+        ShaderInstance shader = COMPILER.entitiesShader();
         applyGuarded(shader);
         int progId = shader.getId();
-
-        // Iris rewrote the pack's fixed-function matrices onto iris_* uniforms;
-        // they are NOT refreshed outside Iris's own draw stream, so supply the
-        // current gbuffer matrices ourselves (same protocol as flw-compat).
-        Matrix4f projection = new Matrix4f(CapturedRenderingState.INSTANCE.getGbufferProjection());
-        Matrix4f modelView = new Matrix4f(CapturedRenderingState.INSTANCE.getGbufferModelView());
-        uploadIrisMatrices(progId, projection, modelView);
-        uploadNeutralEntityUniforms(progId);
-        uploadCmiUniforms(progId, engine, modelView);
-
+        uploadSegmentUniforms(progId, engine);
         RenderSystem.enableDepthTest();
         GL11.glEnable(GL11.GL_CULL_FACE);
-        // native solid entities are cutout-shaded: no blending on either model
-        // segment, depth writes everywhere (early-Z feeder for later passes)
         RenderSystem.disableBlend();
         RenderSystem.depthMask(true);
-
         bindAtlas(engine, COMPILER.gtextureUnit());
-        gpu.bindDrawIndirect();
-        // BOTH model segments through one multi-draw, exactly like the L0 path:
-        // cutout segment (cmd2) then ghost segment (cmd3), same program/state.
-        gpu.drawModelSegments();
-
+        gpu.drawModelCutout();
         shader.clear();
+
+        // Ghost segment: same geometry stream and inherited alpha test, but the
+        // pinned translucent blend applies (ExtendedShader.apply() overrides GL
+        // blend state itself; we mirror it through RenderSystem so the state
+        // tracker stays consistent). Depth writes stay ON -- the documented L0
+        // tradeoff lets ghost surfaces occlude later translucent passes.
+        ShaderInstance ghost = COMPILER.ghostShader();
+        applyGuarded(ghost);
+        progId = ghost.getId();
+        uploadSegmentUniforms(progId, engine);
+        RenderSystem.enableDepthTest();
+        GL11.glEnable(GL11.GL_CULL_FACE);
+        RenderSystem.enableBlend();
+        RenderSystem.blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA,
+                GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        RenderSystem.depthMask(true);
+        bindAtlas(engine, COMPILER.ghostGtextureUnit());
+        gpu.drawModelGhost();
+        ghost.clear();
 
         RenderSystem.depthMask(true);
         RenderSystem.defaultBlendFunc();
@@ -158,24 +165,43 @@ public final class CmiEarlyModelHook {
         GL30.glBindVertexArray(0);
         GL20.glUseProgram(0);
 
-        restoreSsboBindings(gpu);
+        gpu.unbindMergedTbos(ShaderPackProgramCompiler.MERGED_SAMPLER_UNIT_BASE);
         RenderSystem.activeTexture(GL13.GL_TEXTURE0);
     }
 
-    private static void bindSharedResources(CMIParticleEngine engine, ParticleBuffers gpu) {
-        // Previous-generation snapshot on the MERGED binding slots (high numbers,
-        // clear of Iris/Flywheel territory): freshest COMMITTED pool + permutation.
-        gpu.bindParticleRead(ShaderPackProgramCompiler.MERGED_BINDING_POOL);
-        gpu.bindEmitters(ShaderPackProgramCompiler.MERGED_BINDING_EMITTERS);
-        gpu.bindSort(ShaderPackProgramCompiler.MERGED_BINDING_SORT, safeFinalPerm(engine));
-        gpu.bindModelGeo();
-        gpu.bindVao();
+    /**
+     * Per-program uniform refresh for one merged segment: the iris_* matrices
+     * are NOT refreshed outside Iris's own draw stream, so supply the current
+     * gbuffer matrices ourselves (same protocol as flw-compat), then neutralise
+     * the stale entity uniforms and push our data uniforms.
+     */
+    private static void uploadSegmentUniforms(int progId, CMIParticleEngine engine) {
+        Matrix4f projection = new Matrix4f(CapturedRenderingState.INSTANCE.getGbufferProjection());
+        Matrix4f modelView = new Matrix4f(CapturedRenderingState.INSTANCE.getGbufferModelView());
+        uploadIrisMatrices(progId, projection, modelView);
+        uploadNeutralEntityUniforms(progId);
+        uploadCmiUniforms(progId, engine);
+        setSamplers(progId);
     }
 
-    /** -1 until the first committed sorted frame; guards premature binds. */
-    private static int safeFinalPerm(CMIParticleEngine engine) {
-        int id = engine.lastFinalPermBufferId();
-        return id >= 0 ? id : engine.gpuBuffers().sortBuffer(0);
+    /** Points the merged program's samplerBuffer uniforms at our TBO units. */
+    private static void setSamplers(int progId) {
+        int base = ShaderPackProgramCompiler.MERGED_SAMPLER_UNIT_BASE;
+        setInt(progId, "cmi_Geo", base);
+        setInt(progId, "cmi_Pool", base + 1);
+        setInt(progId, "cmi_Emitters", base + 2);
+        setInt(progId, "cmi_Sorted", base + 3);
+    }
+
+    private static void bindSharedResources(CMIParticleEngine engine, ParticleBuffers gpu) {
+        // Merged programs read particle data through TBO views pinned to fixed
+        // texture units; plain sampler declarations survive every in-game pass
+        // where interface blocks demonstrably do not.
+        int permId = engine.lastFinalPermBufferId();
+        gpu.bindMergedTbos(ShaderPackProgramCompiler.MERGED_SAMPLER_UNIT_BASE,
+                gpu.particleReadBufferId(),
+                permId >= 0 ? permId : gpu.sortBuffer(0));
+        gpu.bindVao();
     }
 
     /**
@@ -228,11 +254,10 @@ public final class CmiEarlyModelHook {
         }
     }
 
-    private static void uploadCmiUniforms(int progId, CMIParticleEngine engine, Matrix4f modelView) {
+    private static void uploadCmiUniforms(int progId, CMIParticleEngine engine) {
         var camPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
         setFloat3(progId, "cmi_CameraPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
         setFloat(progId, "cmi_FadeDist", (float) ClientConfig.particleFadeDistance);
-        setMat4(progId, "cmi_ModelViewMat", modelView);
     }
 
     /** The pack fragment samples the entity texture through its gtexture sampler. */
@@ -241,13 +266,6 @@ public final class CmiEarlyModelHook {
             return;
         RenderSystem.activeTexture(GL13.GL_TEXTURE0 + unit);
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, engine.modelAtlasTextureId());
-    }
-
-    private static void restoreSsboBindings(ParticleBuffers gpu) {
-        // release our high SSBO slots back to neutral so nothing downstream can
-        // accidentally consume them
-        for (int b = ShaderPackProgramCompiler.MERGED_BINDING_GEO; b <= ShaderPackProgramCompiler.MERGED_BINDING_SORT; b++)
-            GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, b, 0);
     }
 
     // ------------------------------------------------------------------
@@ -299,11 +317,5 @@ public final class CmiEarlyModelHook {
     private static void setFloat4(int prog, String name, float x, float y, float z, float w) {
         int l = loc(prog, name);
         if (l >= 0) GL20.glUniform4f(l, x, y, z, w);
-    }
-
-    private static void setMat4(int prog, String name, Matrix4f m) {
-        int l = loc(prog, name);
-        if (l >= 0)
-            GL20.glUniformMatrix4fv(l, false, m.get(new float[16]));
     }
 }

@@ -8,9 +8,12 @@ import com.iridium126.createmanaindustry.client.particles.emitter.EmitterSpec;
 
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL31;
+import org.lwjgl.opengl.GL32;
 import org.lwjgl.opengl.GL40;
 import org.lwjgl.opengl.GL43;
 
@@ -364,6 +367,63 @@ public final class ParticleBuffers {
         return this.sortSSBOs[i];
     }
 
+    /** Read-side pool backing buffer id (for the merged program's TBO view). */
+    public int particleReadBufferId() {
+        return this.particleSSBOs[this.readIndex];
+    }
+
+    // ---- merged-program TBO views (shader-pack path) --------------------
+    // The pack-merged programs declare plain samplerBuffer uniforms instead of
+    // SSBO interface blocks: ordinary global declarations survive every stage
+    // of the in-game transform pipeline, interface blocks demonstrably do not.
+    // Each view is {textureId, lastAttachedBufferId} and re-attaches lazily
+    // when the backing buffer changes (pool flip / permutation rotation).
+
+    private final int[][] mergedTbos = {
+            {-1, -1}, // cmi_Geo      (R32F,    modelGeoSSBO)
+            {-1, -1}, // cmi_Pool     (RGBA32F, read-side particle pool)
+            {-1, -1}, // cmi_Emitters (RGBA32F, emitterSSBO)
+            {-1, -1}, // cmi_Sorted   (RG32UI,  active permutation buffer)
+    };
+
+    private void ensureMergedTbo(int slot, int internalFormat, int bufferId) {
+        if (bufferId <= 0)
+            return;
+        int[] t = this.mergedTbos[slot];
+        if (t[0] == -1)
+            t[0] = GL11.glGenTextures();
+        if (t[1] != bufferId) {
+            GL11.glBindTexture(GL31.GL_TEXTURE_BUFFER, t[0]);
+            GL31.glTexBuffer(GL31.GL_TEXTURE_BUFFER, internalFormat, bufferId);
+            GL11.glBindTexture(GL31.GL_TEXTURE_BUFFER, 0);
+            t[1] = bufferId;
+        }
+    }
+
+    /** Binds the four TBO views to texture units baseUnit..baseUnit+3. */
+    public void bindMergedTbos(int baseUnit, int poolReadBufferId, int permBufferId) {
+        if (this.modelGeoSSBO <= 0 || this.emitterSSBO <= 0)
+            return;
+        ensureMergedTbo(0, GL30.GL_R32F, this.modelGeoSSBO);
+        ensureMergedTbo(1, GL30.GL_RGBA32F, poolReadBufferId);
+        ensureMergedTbo(2, GL30.GL_RGBA32F, this.emitterSSBO);
+        ensureMergedTbo(3, GL32.GL_RG32UI, permBufferId);
+        for (int i = 0; i < 4; i++) {
+            GL13.glActiveTexture(GL13.GL_TEXTURE0 + baseUnit + i);
+            GL11.glBindTexture(GL31.GL_TEXTURE_BUFFER, this.mergedTbos[i][0]);
+        }
+        GL13.glActiveTexture(GL13.GL_TEXTURE0);
+    }
+
+    /** Detaches the merged TBO views from their texture units. */
+    public void unbindMergedTbos(int baseUnit) {
+        for (int i = 0; i < 4; i++) {
+            GL13.glActiveTexture(GL13.GL_TEXTURE0 + baseUnit + i);
+            GL11.glBindTexture(GL31.GL_TEXTURE_BUFFER, 0);
+        }
+        GL13.glActiveTexture(GL13.GL_TEXTURE0);
+    }
+
     /** Binds the additive-permutation buffer at its fixed binding for keygen/draw. */
     public void bindOrderAdd() {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, ORDERADD_BINDING, this.orderAddSSBO);
@@ -551,6 +611,18 @@ public final class ParticleBuffers {
                 2L * INDIRECT_STRIDE, 2, INDIRECT_STRIDE);
     }
 
+    /** Draws ONLY the CUTOUT MODEL sub-draw (command 2) -- shader-pack early path. */
+    public void drawModelCutout() {
+        GL43.glMultiDrawElementsIndirect(GL11.GL_TRIANGLES, GL11.GL_UNSIGNED_INT,
+                2L * INDIRECT_STRIDE, 1, INDIRECT_STRIDE);
+    }
+
+    /** Draws ONLY the GHOST MODEL sub-draw (command 3) -- shader-pack early path. */
+    public void drawModelGhost() {
+        GL43.glMultiDrawElementsIndirect(GL11.GL_TRIANGLES, GL11.GL_UNSIGNED_INT,
+                3L * INDIRECT_STRIDE, 1, INDIRECT_STRIDE);
+    }
+
     public void bindVao() {
         GL30.glBindVertexArray(this.vao);
     }
@@ -595,6 +667,9 @@ public final class ParticleBuffers {
             GL15.glDeleteBuffers(this.offsetSSBO);
         if (this.bakeMetaSSBO > 0)
             GL15.glDeleteBuffers(this.bakeMetaSSBO);
+        for (int[] t : this.mergedTbos)
+            if (t[0] > 0)
+                GL11.glDeleteTextures(t[0]);
         this.initialized = false;
     }
 }

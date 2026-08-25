@@ -211,3 +211,65 @@ M2 起以 /cmip gself status + 附录 A 场景矩阵复核。
 - **D2 前移触发条件**（留观）：若实测出现可感知一帧滞后伪影，再实施计算块前移至 BEFORE_ENTITIES——数据通路已就绪（钩子侧全部经由显式绑定，无指针局部依赖）。
 - **待运行验收**（M1/M2 通过线，需游戏内执行）：Photon 下 /summon minecraft:allay 并排对比矩阵（正午/夜晚/洞穴 × dance/spin/hold × 近/中/远景淡出缘）、无双绘抓帧、Complementary 冒烟、SHADOW_QUALITY 低配不崩属 S 轨另验。
 
+
+---
+
+## 13. 对齐审查与运行期修复记录（0.2.4 → 0.2.5 周期）
+
+> 对照基线：.refs/Flywheel 1.0.6（让位式，无共存实现）、.refs/iris-flw-compat 2.4.0、
+> .refs/iris-veil-compat、.refs/Iris（与运行时 1.8.14-beta.1 同源）。审查方法：静态逐行对照 +
+> 运行时 jar 离线全管线复现 + 游戏侧多跳捕获（ProgramCompileCapture / GlShaderSourceLogger /
+> GlmShaderSourceCapture / TransformPatcher 缓存转储，均已随问题闭环移除）。
+
+### 13.1 审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 执行窗口 | 与 Flywheel LevelRendererMixin 完全一致（ldc=blockentities，priority 1001） |
+| 编译链配方 | accessor→resolver→注入→jcpp→createShader 七步同构；偏差与修复见 13.2 |
+| 注入器骨架 | 与 veil GlslTransformerVeilPatcher 同构；glsl-transformer 停留 2.0.1 为既定决策 |
+| 绘制期协议 | flw 式 apply 后补传 iris_* 矩阵/法线一致，且中性化 entityId/entityColor 超出参考 |
+| 槽位隔离 | Flywheel SSBO 0–7 / UBO 0–4 / 纹理 T0–T9 数字级核对，本引擎 12–15 无冲突 |
+| 阴影轨 | 未实施（两参考均有现成配方：MixinShadowRenderer / invokeCreateShadowShader） |
+
+### 13.2 已落地修复
+
+1. **P0 指令继承**：合成程序名永远匹配不到 name-keyed 包属性（ProgramDirectives 按
+   source.getName() 查表，ShaderCreator:53 取 orElse(fallback)），原注释"包指令优先"
+   与事实相反。修复：makeSource(...) 链 .withDirectiveOverride(refProgram.getDirectives())
+   （veil 式整体继承；flw 式 ProgramDirectives mixin 为备选）。日志输出 inherited alphaTest。
+2. **P2-1 矩阵折叠撤销（A1 包络）**：改发相机相对 level-space 顶点（cmi_VertexLevel），
+   删除 gl_ModelViewMatrix→mat4(1.0) 重写，ftransform 显式三连乘——对齐两参考的
+   "保留真实矩阵"契约，包内非定位用途的 MV 不再拿到单位阵。
+3. **P2-2 双程序拆分**：cutout（指令全继承）/ ghost（私有指令副本经
+   CMIProgramDirectivesAccessor getter 短路钉死标准透明混合）；绘制拆两次单段 multi-draw；
+   ghost 保持 L0 深度写入。
+4. **SSBO → TBO 迁移（根因规避）**：游戏内存在无法离线复现的环节会在变换产物进入驱动前
+   剥除接口块声明（cache_135 转储证明变换输出完好、驱动仍报 C1503@使用行；本地同 jar 全管线
+   复现保真，sodium/FML 差异为唯一环境变量）。合并程序改为四个 samplerBuffer
+   （Sorted 用 usampler）+ texelFetch——普通全局声明经全链路实证不可剥除；引擎侧惰性 TBO
+   视图（ParticleBuffers.mergedTbos，单元 MERGED_SAMPLER_UNIT_BASE=10..13，绘制后归位）。
+   L0 自绘路径不变。
+5. **诊断基建**：describeCompileFailure 解开 FakeChainedJsonException 的恒空消息包装
+   （Iris 以 super("", e) 包装 ShaderCompileException，裸 toString 必然丢失驱动日志）；
+   invokeCreateShader / merge ready 观测行接入 /cmip shaderpack status。
+
+### 13.3 工程备忘（本轮教训）
+
+- Mixin 保留整个已声明 mixin 包：duck 接口必须放在包外（本项目新增 accessor 包），
+  否则常规代码直接引用即 IllegalClassLoadError；
+- 构造器 init 的 HEAD 注入（super 之前）处理器必须 static；
+- Route-A 的 withDirectiveOverride 是同一指令对象的共享引用——需要差异化时必须先以
+  withOverriddenDrawBuffers(getDrawBuffers()) 克隆（ghost 混合钉死依赖此细节）；
+- glsl-transformer AST 不保留预处理指令：注入源的 #define 一律改为 const 声明
+  （姿势块已同步改造，L0 共享语义不变）；
+- 原版 Program.compileShader 失败抛 IOException，经 iris MixinProgram 转成
+  ShaderCompileException(名+扩展名, 驱动日志)——异常文件名带 .vsh 即源于此。
+
+### 13.4 遗留观察项
+
+- 采样器单元 10–13 未进 Iris 预留集（flw 同款 MixinProgramSamplers 为候选后续）；
+- gtexture 单元 0 图集不归还（原版每绘制重绑，暂无实害）；
+- shadow 轨（S）未实施；
+- "接口块剥除者"身份未定（与 sodium/FML 活跃相关），TBO 化已绕开；未来若需真 SSBO 再议。
+

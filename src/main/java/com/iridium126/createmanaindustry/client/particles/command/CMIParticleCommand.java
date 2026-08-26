@@ -134,19 +134,19 @@ public final class CMIParticleCommand {
         String presetName = StringArgumentType.getString(ctx, "preset");
         EmitterSpec spec = EmitterPresets.byName(presetName);
         if (spec == null || spec.material != EmitterSpec.Material.MODEL) {
-            tell(ctx, "Unknown MODEL preset. Try: allay_fly, allay_dance, allay_spin, allay_hold");
+            tell(ctx, "Unknown MODEL preset. Try: allay_fly, allay_dance, allay_hold, allay_death");
             return 0;
         }
         String animName = StringArgumentType.getString(ctx, "animation");
         EmitterSpec.Animation anim = switch (animName) {
             case "fly" -> EmitterSpec.Animation.FLY;
             case "dance" -> EmitterSpec.Animation.DANCE;
-            case "spin" -> EmitterSpec.Animation.SPIN;
             case "hold" -> EmitterSpec.Animation.HOLD;
+            case "death" -> EmitterSpec.Animation.DEATH;
             default -> null;
         };
         if (anim == null) {
-            tell(ctx, "Unknown animation. Try: fly, dance, spin, hold");
+            tell(ctx, "Unknown animation. Try: fly, dance, hold, death");
             return 0;
         }
         if (!engine(ctx)) {

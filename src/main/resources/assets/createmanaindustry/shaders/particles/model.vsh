@@ -108,6 +108,13 @@ void main() {
     vec3 nWorld = vec3(cos(ry) * nFlipped.x + sin(ry) * nFlipped.z,
                        nFlipped.y,
                        -sin(ry) * nFlipped.x + cos(ry) * nFlipped.z);
+    // DEATH: tip the corpse about the WORLD Z axis, outermost (after the
+    // facing yaw) exactly like vanilla's Rz-after-Ry setupRotations order.
+    // Rotate the OFFSET from the particle origin, not the absolute position.
+    if (anim == 3) {
+        world = cmiDeathRoll(world - p0.xyz, p3.x) + p0.xyz;
+        nWorld = cmiDeathRoll(nWorld, p3.x);
+    }
     vNormalView = normalize(mat3(ModelViewMat) * nWorld);
 
     gl_Position = ProjMat * ModelViewMat * vec4(world - uCamPos, 1.0);

@@ -142,7 +142,11 @@ public final class EmitterPresets {
             .color(1f, 1f, 1f, 1f)
             .build();
 
-    /** Allay dancing in place (vanilla jukebox pose, no spin). */
+    /**
+     * Vanilla-complete jukebox dance: body/head roll WITH the periodic burst
+     * spin ({@code isDancing()} always carries the {@code isSpinning()} rhythm,
+     * including its post-window wobble-suppression decay), no travel.
+     */
     public static final EmitterSpec ALLAY_DANCE = EmitterSpec.builder()
             .shape(EmitterShape.POINT)
             .speed(0.05, 0.2)
@@ -152,21 +156,6 @@ public final class EmitterPresets {
             .drag(2.0)
             .material(EmitterSpec.Material.MODEL)
             .animation(EmitterSpec.Animation.DANCE)
-            .glow(1.0)
-            .color(1f, 1f, 1f, 1f)
-            .build();
-
-    /** Allay spiralling upward with the looped 4-turn spin. */
-    public static final EmitterSpec ALLAY_SPIN = EmitterSpec.builder()
-            .shape(EmitterShape.POINT)
-            .speed(0.3, 0.8)
-            .life(6.0, 10.0)
-            .sizeOverLife(0.33, 0.33, 1.0)
-            .gravity(0, 0.8, 0)
-            .flutter(0.6)
-            .drag(0.8)
-            .material(EmitterSpec.Material.MODEL)
-            .animation(EmitterSpec.Animation.SPIN)
             .glow(1.0)
             .color(1f, 1f, 1f, 1f)
             .build();
@@ -185,6 +174,32 @@ public final class EmitterPresets {
             .color(1f, 1f, 1f, 1f)
             .build();
 
+    /**
+     * Vanilla death sequence: the idle animation keeps playing (clock-driven
+     * arm/wing sway does not stop on corpses) while the corpse rolls up to
+     * 90 degrees about the world Z axis with vanilla's sqrt easing over
+     * exactly 20 ticks (= the fixed 1 s lifetime), dropping under gravity
+     * like a real dying entity ({@code LivingEntity.travel} has no death
+     * gate). The killing-blow red flash is approximated with colour
+     * keyframes -- three of them space the fade across the FIRST half of the
+     * timeline (0.5 s). No poof cloud: triggering a follow-up emitter on
+     * expiry needs event wiring the particle engine does not have yet.
+     */
+    public static final EmitterSpec ALLAY_DEATH = EmitterSpec.builder()
+            .shape(EmitterShape.POINT)
+            .speed(0, 0.15)          // residual momentum of the killing blow
+            .life(1.0, 1.0)          // exactly the vanilla 20-tick death timer
+            .sizeOverLife(0.33, 0.33, 1.0)
+            .gravity(0, -8, 0)       // corpses fall under gravity
+            .drag(0.8)
+            .material(EmitterSpec.Material.MODEL)
+            .animation(EmitterSpec.Animation.DEATH)
+            .glow(1.0)
+            .color(1.0f, 0.42f, 0.42f, 1f)   // hurt flash approximation
+            .color(1f, 1f, 1f, 1f)
+            .color(1f, 1f, 1f, 1f)   // fade completes at half-life (0.5 s)
+            .build();
+
     /** Looks up a preset by its command name, or returns null. */
     public static EmitterSpec byName(String name) {
         return switch (name) {
@@ -197,8 +212,8 @@ public final class EmitterPresets {
             case "flood" -> FLOOD;
             case "allay_fly" -> ALLAY_FLY;
             case "allay_dance" -> ALLAY_DANCE;
-            case "allay_spin" -> ALLAY_SPIN;
             case "allay_hold" -> ALLAY_HOLD;
+            case "allay_death" -> ALLAY_DEATH;
             default -> null;
         };
     }
@@ -206,7 +221,7 @@ public final class EmitterPresets {
     /** Names registered for the command argument suggestions. */
     public static String[] names() {
         return new String[] { "mana_spark", "ember", "ash", "soul_flame", "mana_burst", "cherry_leaves", "flood",
-                "allay_fly", "allay_dance", "allay_spin", "allay_hold" };
+                "allay_fly", "allay_dance", "allay_hold", "allay_death" };
     }
 
     /** Animation names for the /cmip anim argument suggestions. */

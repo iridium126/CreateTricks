@@ -10,8 +10,11 @@
 // splices this chunk through glsl-transformer ASTs, where preprocessor
 // directives do not survive (they are lexer-level, not AST nodes).
 const float CMI_PI = 3.14159265;
-// vanilla spin rhythm (Allay.isSpinning): dancingTicks % 55 < 15 sweeps 4*pi,
-// then stays still until the next cycle (4*pi mod 2*pi == identity).
+// vanilla spin rhythm (Allay.isSpinning): dancingTicks % 55 < 15 sweeps 4*pi.
+// Outside the window vanilla's clamped spinningAnimationTicks accumulator keeps
+// DECAYING for one further window length, and the wobble multipliers ride that
+// decayed progress -- so the wobble fades back IN over the tail. The root yaw
+// itself is zeroed there (resetPose), only the wobble sees the decay.
 const float CMI_SPIN_CYCLE_S = 2.75;
 const float CMI_SPIN_WINDOW_FRACTION = 15.0 / 55.0;
 
@@ -52,10 +55,35 @@ vec4 cmiKeyframeColor(vec4 frames[8], int cc, float life) {
     return mix(c0, c1, f);
 }
 
+// ---- vanilla death roll (DEATH anim) -------------------------------------
+// LivingEntityRenderer.setupRotations tips the corpse about the WORLD Z axis,
+// applied AFTER the body-yaw rotation (outermost before the entity transform),
+// with a sqrt-eased angle over the 20-tick death timer:
+//   f = sqrt(min(((deathTime + partialTick - 1) / 20) * 1.6, 1)); rotZ(f*90deg)
+
+/** Death-roll angle in radians for a particle age of {@code ageSec} seconds. */
+float cmiDeathRollAngle(float ageSec) {
+    float u = clamp((ageSec * 20.0 - 1.0) / 20.0, 0.0, 1.0);
+    return sqrt(min(u * 1.6, 1.0)) * (CMI_PI / 2.0);
+}
+
+/**
+ * Rolls a world-space vector about the world Z axis by the death angle.
+ * For POSITION OFFSETS pass the offset FROM THE PARTICLE ORIGIN -- rolling an
+ * absolute position would orbit it around the world origin. Direction vectors
+ * (normals) are origin-free and pass unchanged in kind.
+ */
+vec3 cmiDeathRoll(vec3 v, float ageSec) {
+    float a = cmiDeathRollAngle(ageSec);
+    float c = cos(a);
+    float s = sin(a);
+    return vec3(c * v.x - s * v.y, s * v.x + c * v.y, v.z);
+}
+
 // Full vanilla AllayModel.setupAnim port. Returns the MODEL-SPACE part matrix
 // (units of 1/16 block, before the /16 · S(-1,-1,1) · Ry(pi-yaw) chain).
 //   ageSec  particle age in seconds        seed  per-particle random seed
-//   vel     particle velocity (blocks/s)   anim  0 FLY 1 DANCE 2 SPIN 3 HOLD
+//   vel     particle velocity (blocks/s)   anim  0 FLY 1 DANCE 2 HOLD 3 DEATH
 //   pid     part id (see AllayModelGeometry)
 //   yaw     out: body facing yaw (radians)
 mat4 cmiAllayPartTransform(float ageSec, float seed, vec3 vel, int anim, int pid, out float yaw) {
@@ -75,10 +103,11 @@ mat4 cmiAllayPartTransform(float ageSec, float seed, vec3 vel, int anim, int pid
     float f3 = ticks * 9.0 * (CMI_PI / 180.0);
     float f4 = min(lsa / 0.3, 1.0);
     float f5 = 1.0 - f4;
-    // HOLD ramp (vanilla holdingItemAnimationTicks / 5 over five ticks)
-    float f6 = (anim == 3) ? smoothstep(0.0, 0.25, ageSec) : 0.0;
-    bool dance = (anim == 1 || anim == 2);
-    bool spin = (anim == 2);
+    // HOLD ramp -- vanilla getHoldingItemAnimationProgress lerps its tick
+    // counter LINEARLY over five ticks (lerp(...)/5); mirror that linear shape
+    // (the symmetric release needs a hold-end event particles never observe)
+    float f6 = (anim == 2) ? clamp(ageSec / 0.25, 0.0, 1.0) : 0.0;
+    bool dance = (anim == 1); // full vanilla jukebox dance incl. the spin rhythm
 
     float rootYBob = cos(f3) * 0.25 * f5;
     float rootYRot = 0.0, rootZRot = 0.0;
@@ -87,11 +116,22 @@ mat4 cmiAllayPartTransform(float ageSec, float seed, vec3 vel, int anim, int pid
     float headYRot = 0.0, headZRot = 0.0, headXRot = 0.0;
     if (dance) {
         float f7 = ticks * 8.0 * (CMI_PI / 180.0) + lsa;
-        // burst rhythm: linear sweep across the 15-tick window, still otherwise
+        // burst rhythm: f9 follows vanilla's CLAMPED ACCUMULATOR
+        // (spinningAnimationTicks): it rises across the 15-tick window, then
+        // decays for one further window length before resting at zero. The
+        // root YAW is driven only inside the window (resetPose zeroes it in
+        // the tail); the wobble below stays suppressed through the whole tail.
         float cyclePhase = fract(ageSec / CMI_SPIN_CYCLE_S);
-        float f9 = (spin && cyclePhase < CMI_SPIN_WINDOW_FRACTION)
-                ? cyclePhase / CMI_SPIN_WINDOW_FRACTION : 0.0;
-        rootYRot = spin ? (CMI_PI * 4.0) * f9 : 0.0;
+        float w = CMI_SPIN_WINDOW_FRACTION;
+        float f9;
+        if (cyclePhase < w) {
+            f9 = cyclePhase / w;
+        } else if (cyclePhase < 2.0 * w) {
+            f9 = 1.0 - (cyclePhase - w) / w;
+        } else {
+            f9 = 0.0;
+        }
+        rootYRot = (cyclePhase < w) ? (CMI_PI * 4.0) * f9 : 0.0;
         rootZRot = cos(f7) * 16.0 * (CMI_PI / 180.0) * (1.0 - f9);
         headYRot = cos(f7) * 30.0 * (CMI_PI / 180.0) * (1.0 - f9);
         headZRot = cos(f7) * 14.0 * (CMI_PI / 180.0) * (1.0 - f9);

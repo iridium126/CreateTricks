@@ -50,8 +50,8 @@
 
 ### 1.3 动画（model/AllayModel.setupAnim + Allay.java）
 - 各姿势系数与本引擎 GLSL 移植版逐项核对一致（root bob、wing f1、arm f12/f14、dance wobble f7–f11）
-- **自旋为爆发式**：isSpinning() = dancingTicks % 55 < 15；进度 ticks/15 线性；root.yRot = 4π × 进度——0.75 秒内转两圈然后停顿至下个周期
-- HOLD 抬臂缓动 = holdingItemAnimationTicks / 5.0（本引擎 smoothstep 0..0.25s 已等价 ✓）
+- **自旋为爆发式**：isSpinning() = dancingTicks % 55 < 15；窗口内进度线性上升、root.yRot = 4π × 进度；窗口关闭后钳制累加器 spinningAnimationTicks 还会再衰减一个窗口长度（Allay.tick 的递减规则）——期间 root 偏航已被 resetPose 归零，但三路 wobble 乘 (1−f9) 继续受其抑制，即自旋结束后仍有 15t 的摆动渐入，然后静止至下个周期
+- HOLD 抬臂缓动 = holdingItemAnimationTicks 的**线性** lerp / 5.0（五 tick 线性斜坡；早期 smoothstep 实现不等价，已修正）
 - **跳舞分支中 head.xRot 保持 0**（非跳舞才吃 headPitch）——本引擎当前多算了一项
 
 ### 1.4 几何与变换（model/geom/ModelPart.java + LivingEntityRenderer）
@@ -61,7 +61,7 @@
 - 翅膀零厚度双绕序、斗篷 α160 ✓
 
 ### 1.5 本引擎已对齐项确认（无需改动）
-几何/UV/变换链/姿势主体系数/cull 等效策略（双绕序壳）/鬼影段写深度语义/HOLD 缓动。
+几何/UV/变换链/姿势主体系数/cull 等效策略（双绕序壳）/鬼影段写深度语义/HOLD 线性缓动（0.2.5 起为线性，见阶段一实施记录补遗）。
 
 ---
 
@@ -70,7 +70,7 @@
 | # | 差异 | 决策 |
 |---|---|---|
 | D1 | 恒定全亮平涂，无法线漫反射、无天空光分量 | 补法线漫反射 + 固定近白基色（≈0.95–1.0 实测校准）；不绑 lightmap（block=15 时收益微小） |
-| D2 | 自旋为 1s 连续循环 vs 原版爆发式 | 复刻原版节奏（55t 周期 / 前 15t 扫 4π / 停顿），随机相位保留 |
+| D2 | 自旋为 1s 连续循环 vs 原版爆发式 | 复刻原版节奏（55t 周期 / 前 15t 扫 4π / 其后一个窗口长度的衰减尾内 wobble 渐入 / 停顿）；0.2.5 补齐初版遗漏的衰减尾 |
 | D3 | 跳舞时头部仍叠加速度俯仰 | 归零对齐原版分支语义 |
 | D4 | 图集 NEAREST 无 mip，远距闪烁 | 仅 ALLAY 图集开 mip（单帧 32×32 无边界渗色风险）；cherry 多帧图集不动 |
 | D5 | 贴地阴影（原版 0.4 blob）、手持物品、受伤闪白 | 全部排除（阴影实现贵收益低；后两者无粒子对应物） |
@@ -118,13 +118,19 @@ ShadowDistortionRegistry + 各包参数解析｜ShadowRendererAccessor mixin 先
 |---|---|---|---|
 | 1.1 法线烘焙 | client/particles/engine/AllayModelGeometry.java | 顶点 stride 6→7 floats：追加面法线轴 id（六向 ± 轴枚举，平面翅膀给其法向；fsh 按 gl_FrontFacing 翻转处理双绕序）。SSBO 尺寸随数组长度自适应；注意同步更新 model.vsh 中硬编码的顶点步长寻址——建议经 PRELUDE 以 #define 注入消除双处维护 | 几何重建后模型外观不变 |
 | 1.2 漫反射 | shaders/particles/model.vsh / model.fsh | vsh 解码法线轴 → 世界空间法线（复用 yaw 旋转矩阵）传出并变换到视空间；fsh 移植 minecraft_mix_light 双方向光（Light0/Light1 视空间固定方向常量），基色乘近白系数（新常量，默认 0.97，实测校准口）；翅膀平面法线按 gl_FrontFacing 翻转 | 悦灵顶部亮于底面/背光面；洞穴内不再死白平涂 |
-| 1.3 爆发自旋 | model.vsh | fract(age/SPIN_PERIOD) → phase=fract(age/2.75); prog = phase<15/55 ? phase·55/15 : 1.0 | /cmip anim allay_spin：快转两圈→停顿循环 |
+| 1.3 爆发自旋 | 共享块 allay_pose.glsl | phase=fract(age/2.75)；f9 三段式＝窗口内 phase/w、其后一个窗口长度内 1−(phase−w)/w、其余 0；rootYRot 仅窗口内 = 4π·f9（0.2.5 补齐衰减尾，对齐钳制累加器语义） | /cmip anim allay_dance：快转两圈→摆动渐入→停顿循环 |
 | 1.4 跳舞俯仰 | model.vsh | dance 分支将 headXRot 置 0 | /cmip anim allay_dance 头部不带速度点头 |
 | 1.5 图集 mipmap | engine/ParticleAtlas.java | 构造加 mipmap 开关；ALLAY 实例启用 glGenerateMipmap + MIN_FILTER=NEAREST_MIPMAP_LINEAR；CHERRY 不动 | 远距（64–96 格）翅膀边缘闪烁明显减轻 |
 
-**验证矩阵（并排 /summon minecraft:allay 截图对比）**：正午户外 / 夜晚地表 / 全暗洞穴 / dance / spin / hold / 近景(4格) / 中景(32格) / 远景(96格淡出缘)。通过标准：静止帧普通玩家不可分辨（D6 运动自由度除外）。
+**验证矩阵（并排 /summon minecraft:allay 截图对比）**：正午户外 / 夜晚地表 / 全暗洞穴 / dance / hold / death / 近景(4格) / 中景(32格) / 远景(96格淡出缘)。通过标准：静止帧普通玩家不可分辨（D6 运动自由度除外）。
 
-**实施记录**：五项均已落地（`AllayModelGeometry` stride 7 + 法线轴表、`model.fsh` 双方向光 + BASE_BRIGHTNESS 校准口、`model.vsh` SPIN_CYCLE_S/SPIN_WINDOW_FRACTION 爆发节奏、dance 分支 headXRot 归零、`ParticleAtlas.ALLAY` mipmap）。**已知偏差已修复**：步骤 1.2 初版漫反射相对原版 `minecraft_mix_light` 少乘了 MINECRAFT_LIGHT_POWER（0.6）（对照 `.refs/neoforge-21.1.227/.../shaders/include/light.glsl`）——中间角度受光面偏亮（侧面 0.966 vs 原版 0.740）、立体感被压平；已按原版公式补齐（model.fsh，POWER/AMBIENT 常量命名与 light.glsl 对齐）。待办：BASE_BRIGHTNESS=0.97 的目测校准基于带缺陷的公式，重跑上述验证矩阵时确认是否需上调。
+**实施记录**：五项均已落地（`AllayModelGeometry` stride 7 + 法线轴表、`model.fsh` 双方向光 + BASE_BRIGHTNESS 校准口、`model.vsh` SPIN_CYCLE_S/SPIN_WINDOW_FRACTION 爆发节奏、dance 分支 headXRot 归零、`ParticleAtlas.ALLAY` mipmap）。
+
+**实施记录补遗（0.2.5 周期，对齐复审驱动；姿势数学已迁入共享块 allay_pose.glsl，L0 与 shaderpack 合并双路径同时生效）**：
+
+- **A｜自旋衰减尾补齐**：原版 spinningAnimationTicks 为 [0,15] 钳制累加器——窗口结束后每 tick 递减，getSpinningProgress 在其后 15t 内由 1 线性回落 0；期间 root.yRot 已被 resetPose 归零，但三路 wobble 乘 (1−f9) 持续受抑。dance 分支 f9 改三段式（窗口升 / 衰减 / 零），rootYRot 仅窗口内驱动。本文件早先"停顿至下个周期"的表述漏掉了该段。
+- **B｜HOLD 缓动改线性**：原版 getHoldingItemAnimationProgress = lerp(ticks0, ticks) / 5 为五 tick 线性斜坡（对称回落需持物解除事件，粒子无此输入）；初版 smoothstep(0, 0.25s) 不等价，改为 clamp(ageSec / 0.25)。
+- **C｜舞蹈合并完整自旋 + 新增死亡动画**：动画 ID 重编号 FLY=0 / DANCE=1 / HOLD=2 / DEATH=3，删除独立 SPIN——原版 isDancing() 恒含 isSpinning() 节奏，无单独自旋姿态；allay_dance 即完整原版舞蹈，allay_spin 预设移除。DEATH 复用 FLY 待机微摆（LivingEntity.aiStep→travel 无死亡门控、重力照常、时钟驱动摆动不停），并在最外层（朝向 Ry 之后，同 setupRotations 的 Rz-after-Ry 合成序）绕世界 Z 轴翻转位置偏移与法线：sqrt(min(((t·20−1)/20)×1.6, 1)) × 90°。预设 allay_death ＝ 固定 1s 寿命（严格对齐 20 tick 死亡计时）+ 重力 −8 / drag 0.8 + 受击红闪颜色关键帧近似（(1, 0.42, 0.42)→白→白，前半程渐退）；结尾 POOF 未做（需要"到期联动第二发射器"的事件架构）。死亡翻转调用点两处：model.vsh 与 ShaderPackProgramCompiler 合并模板。**已知偏差已修复**：步骤 1.2 初版漫反射相对原版 `minecraft_mix_light` 少乘了 MINECRAFT_LIGHT_POWER（0.6）（对照 `.refs/neoforge-21.1.227/.../shaders/include/light.glsl`）——中间角度受光面偏亮（侧面 0.966 vs 原版 0.740）、立体感被压平；已按原版公式补齐（model.fsh，POWER/AMBIENT 常量命名与 light.glsl 对齐）。待办：BASE_BRIGHTNESS=0.97 的目测校准基于带缺陷的公式，重跑上述验证矩阵时确认是否需上调。
 
 ### 阶段二：光影包 spike（判定性实验，先行）
 1. 在 RenderLevelStageEvent.AFTER_ENTITIES 时点以调试纯色画一个 MODEL 实例，Photon 启用状态下检查：写入是否幸存至合成、附件绑定是否为 gbuffer MRT、TAAU 坐标换算是否正确

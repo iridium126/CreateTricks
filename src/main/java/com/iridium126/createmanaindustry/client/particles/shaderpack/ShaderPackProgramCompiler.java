@@ -585,15 +585,22 @@ public final class ShaderPackProgramCompiler {
                     vec3 pm = (M * vec4(local, 1.0)).xyz / 16.0;
                     vec3 flipped = vec3(-pm.x, 1.501 - pm.y, pm.z) * scale;
                     float ry = CMI_PI - yaw;
-                    vec3 world = p0.xyz + vec3(cos(ry) * flipped.x + sin(ry) * flipped.z,
-                                               flipped.y,
-                                               -sin(ry) * flipped.x + cos(ry) * flipped.z);
-
+                    vec3 worldOff = vec3(cos(ry) * flipped.x + sin(ry) * flipped.z,
+                                         flipped.y,
+                                         -sin(ry) * flipped.x + cos(ry) * flipped.z);
                     vec3 nPart = mat3(M) * CMI_FACE_NORMALS[normalCode];
                     vec3 nFlipped = vec3(-nPart.x, -nPart.y, nPart.z);
-                    cmi_NormalLevel = vec3(cos(ry) * nFlipped.x + sin(ry) * nFlipped.z,
-                                           nFlipped.y,
-                                           -sin(ry) * nFlipped.x + cos(ry) * nFlipped.z);
+                    vec3 nWorld = vec3(cos(ry) * nFlipped.x + sin(ry) * nFlipped.z,
+                                       nFlipped.y,
+                                       -sin(ry) * nFlipped.x + cos(ry) * nFlipped.z);
+                    // DEATH: tip the corpse about the WORLD Z axis, outermost
+                    // (after the facing yaw) like vanilla's setupRotations.
+                    if (anim == 3) {
+                        worldOff = cmiDeathRoll(worldOff, p3.x);
+                        nWorld = cmiDeathRoll(nWorld, p3.x);
+                    }
+                    vec3 world = p0.xyz + worldOff;
+                    cmi_NormalLevel = nWorld;
 
                     cmi_VertexLevel = gone
                         ? vec4(0.0, 0.0, 1e9, 1.0)

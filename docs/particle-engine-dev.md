@@ -199,13 +199,13 @@
 ```
 /cmip spawn <preset> [count]      爆发（受节流）
 /cmip stream <preset> <rate> [sec] 流式（秒数=真实秒；<=0 为无限，直到 /cmip clear）
-/cmip anim <preset> <animation>   MODEL 粒子动画热切换（fly/dance/spin/hold，存活粒子下帧生效）
+/cmip anim <preset> <animation>   MODEL 粒子动画热切换（fly/dance/hold/death，存活粒子下帧生效）
 /cmip bench <count>                不受节流压测（默认用 mana_burst）
 /cmip clear                        清空粒子与流
 /cmip stats                        存活/容量、streams、emission%、GPU 帧耗时 EMA、预算
 /cmip budget <ms>                  覆盖节流预算
 ```
-预设：`mana_spark / ember / ash / soul_flame / mana_burst / cherry_leaves / flood` + MODEL 系 `allay_fly / allay_dance / allay_spin / allay_hold`。
+预设：`mana_spark / ember / ash / soul_flame / mana_burst / cherry_leaves / flood` + MODEL 系 `allay_fly / allay_dance / allay_hold / allay_death`（0.2.5 起：舞蹈含完整原版爆发自旋节奏，独立 allay_spin 预设移除；`allay_death` 为原版死亡序列——1s 世界 Z 轴翻倒 + 重力下坠 + 受击红闪渐退）。
 `cherry_leaves` 为 **OPAQUE 材质（cutout + 写深度，免排序）+ 碰撞（触地即移除）** 演示：`/cmip stream cherry_leaves 200 20` 可在任意位置看持续飘落；花瓣纯 0/255 纹素，与原版 cutout 语义一致。
 `allay_*` 为 **MODEL 材质**演示：`/cmip spawn allay_fly 50` 后 `/cmip anim allay_fly dance` 可当场切换群舞。
 配置文件 `run/config/createmanaindustry-client.toml` → `[particles]`：`enabled / maxParticles / frameBudgetMs / autoThrottle / fadeDistance`

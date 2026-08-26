@@ -30,7 +30,7 @@ import net.minecraft.world.phys.Vec3;
  *  16:  reserved 0 (collision bake slices are selected per particle on the
  *      GPU — the header deliberately carries no world-position state),
  *      spriteCount, 0, 0
- *  17:  animation(0 FLY..3 HOLD, MODEL only), 0, 0, 0
+ *  17:  animation(0 FLY..3 DEATH, MODEL only), 0, 0, 0
  *  18..19: reserved
  * </pre>
  */
@@ -74,12 +74,21 @@ public final class EmitterSpec {
     public enum Animation {
         /** Vanilla hover: wing flap, bobbing, arm sway (limbSwingAmount from speed). */
         FLY(0),
-        /** Vanilla jukebox dance: body/head roll, no spin. */
+        /**
+         * Full vanilla jukebox dance: body/head roll plus the periodic burst
+         * spin -- {@code isDancing()} always includes the {@code isSpinning()}
+         * rhythm in vanilla, so there is no separate spin-only pose.
+         */
         DANCE(1),
-        /** Dance pose plus the looping 4-turn spin (vanilla one-shot, re-looped). */
-        SPIN(2),
         /** Arms raised as if carrying an item (item itself is not rendered). */
-        HOLD(3);
+        HOLD(2),
+        /**
+         * Vanilla death sequence: the idle pose keeps playing while the corpse
+         * rolls up to 90 degrees about the world Z axis with vanilla's sqrt
+         * easing over exactly 20 ticks ({@code LivingEntityRenderer
+         * .setupRotations}); pair with a ~1 s lifetime and gravity.
+         */
+        DEATH(3);
 
         final int index;
 
@@ -92,7 +101,7 @@ public final class EmitterSpec {
         }
 
         public static Animation byIndex(int i) {
-            return i == 1 ? DANCE : (i == 2 ? SPIN : (i == 3 ? HOLD : FLY));
+            return i == 1 ? DANCE : (i == 2 ? HOLD : (i == 3 ? DEATH : FLY));
         }
     }
 

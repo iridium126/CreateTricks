@@ -255,6 +255,10 @@ public final class CMIParticleEngine {
             .drag(0.6)
             .material(EmitterSpec.Material.MODEL)
             .animation(EmitterSpec.Animation.FLY)
+            // boids steering alone lets members shear straight through walls;
+            // REST keeps them sweeping against the occupancy volume (update.comp
+            // only collides particles with collideMode > NONE)
+            .collide(EmitterSpec.CollideMode.REST)
             .glow(1.0)
             .color(1f, 1f, 1f, 1f)
             .build();
@@ -579,6 +583,17 @@ public final class CMIParticleEngine {
         // Storm trickle-in: at most MAX_EMIT_COMMANDS members per frame until
         // the requested population is reached. At 2048 the bait ball assembles
         // over ~8 frames (~0.4 s) -- reads as fish arriving, not popping in.
+        // Storm upkeep every active frame, not just while trickle-spawning:
+        // the first members of frame one draw in this very tick (so the allay
+        // atlas must be live BEFORE emission), and a stray burst evicting a
+        // storm volume via LRU must heal instead of silently stripping REST
+        // collision. The swarm pins a dedicated 2x2 bake grid (+-48 block
+        // footprint); routing it through ensureEmitterRuntime would squat an
+        // extra off-grid centred slot the swarm never needs.
+        if (this.stormActive) {
+            this.allayAtlas.ensureLoaded();
+            this.collisionBake.ensureQuadrants(this.stormAnchor);
+        }
         if (this.stormActive && this.pendingStormSpawns > 0) {
             int id = ensureEmitter(ALLAY_STORM_SPEC);
             if (id >= 0 && entryCount < ParticleBuffers.MAX_EMIT_COMMANDS) {
@@ -599,7 +614,6 @@ public final class CMIParticleEngine {
                     this.stormEmitId = id;
                     this.stormHeaderWritten = true;
                 }
-                ensureEmitterRuntime(id, ALLAY_STORM_SPEC, this.stormAnchor);
                 // drain in ~60 frames regardless of population: 131072 members
                 // assemble in about one second instead of twenty-five
                 int n = Math.min(this.pendingStormSpawns,

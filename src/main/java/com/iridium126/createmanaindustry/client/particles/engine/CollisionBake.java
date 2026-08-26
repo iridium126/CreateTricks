@@ -125,11 +125,43 @@ public final class CollisionBake {
             return 0;
         if (textureId < 0 && !createTexture())
             return 0;
+        return ensureAnchor(floor(origin.x - CENTER_XZ), floor(origin.y - CENTER_Y),
+                floor(origin.z - CENTER_XZ));
+    }
 
-        int ax = floor(origin.x - CENTER_XZ);
-        int ay = floor(origin.y - CENTER_Y);
-        int az = floor(origin.z - CENTER_XZ);
+    /**
+     * Ensures a 2x2 grid of bake volumes tiled in the HORIZONTAL plane around
+     * {@code origin} (all four share one Y band): the tile seams sit on the
+     * lattice of 48-block multiples nearest the origin, yielding a seamless
+     * 96 x 96 XZ footprint whose nearest edge is at least one half-width
+     * (24 blocks) away on every side. Allay Storm swarms use this because
+     * their wander + radius reach past a single centred volume. Tiles abut
+     * rather than overlap — containment bounds are exclusive, so a particle
+     * crossing a seam lands in exactly one neighbour and the coverage stays
+     * watertight. Each tile allocates independently; full-pool LRU eviction
+     * applies per tile as in {@link #ensure}.
+     */
+    public void ensureQuadrants(Vec3 origin) {
+        if (origin == null)
+            return;
+        if (textureId < 0 && !createTexture())
+            return;
 
+        long lx = Math.round(origin.x / (double) SX) * SX;
+        long lz = Math.round(origin.z / (double) SZ) * SZ;
+        int ay = floor(origin.y) - CENTER_Y;
+
+        ensureAnchor((int) lx - SX, ay, (int) lz - SZ);
+        ensureAnchor((int) lx, ay, (int) lz - SZ);
+        ensureAnchor((int) lx - SX, ay, (int) lz);
+        ensureAnchor((int) lx, ay, (int) lz);
+    }
+
+    /**
+     * Allocates or touches the slot pinned to one anchor grid cell (LRU
+     * recency rides the map lookup); returns the 1-based slice index.
+     */
+    private int ensureAnchor(int ax, int ay, int az) {
         Anchor key = new Anchor(ax, ay, az);
         Slot s = slots.get(key);
         if (s == null) {

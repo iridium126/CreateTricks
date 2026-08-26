@@ -307,35 +307,48 @@ void main() {
         }
         if (slice >= 0) {
             swept = true;
-            float sx = vel.x * uDt;
-            if (sx != 0.0) {
-                if (solidAt(pos + vec3(sx, 0.0, 0.0), mOrigin, slice))
-                    vel.x = 0.0;
-                else
-                    pos.x += sx;
-            }
-            float sy = vel.y * uDt;
-            if (sy != 0.0) {
-                if (solidAt(pos + vec3(0.0, sy, 0.0), mOrigin, slice)) {
-                    vel.y = 0.0;
-                    if (sy < 0.0) {
-                        landed = true;
-                        // if the blocked step's target voxel is the voxel the
-                        // particle already sits in (spawned inside a block),
-                        // pop it up onto that voxel's top face
-                        float top = floor(pos.y + sy + 0.0001) + 1.0;
-                        pos.y = max(pos.y, top);
-                    }
-                } else {
-                    pos.y += sy;
+            // Each probe resolves one texel, so a single test move larger than
+            // ~1 block tunnels straight through a thin wall AND strands the
+            // particle inside it (every neighbour then reads solid). Split the
+            // frame move into <= half-voxel substeps: storm members capped at
+            // STORM_MAX_SPEED over the clamped 0.25 s worst-case frame travel
+            // up to 1.5 blocks. Ordinary speeds keep steps at exactly 1.
+            float span = max(abs(vel.x), max(abs(vel.y), abs(vel.z))) * uDt;
+            int steps = 1 + int(clamp(span / 0.5, 0.0, 15.0));
+            float sdt = uDt / float(steps);
+            for (int si = 0; si < steps; si++) {
+                float sx = vel.x * sdt;
+                if (sx != 0.0) {
+                    if (solidAt(pos + vec3(sx, 0.0, 0.0), mOrigin, slice))
+                        vel.x = 0.0;
+                    else
+                        pos.x += sx;
                 }
-            }
-            float sz = vel.z * uDt;
-            if (sz != 0.0) {
-                if (solidAt(pos + vec3(0.0, 0.0, sz), mOrigin, slice))
-                    vel.z = 0.0;
-                else
-                    pos.z += sz;
+                float sy = vel.y * sdt;
+                if (sy != 0.0) {
+                    if (solidAt(pos + vec3(0.0, sy, 0.0), mOrigin, slice)) {
+                        vel.y = 0.0;
+                        if (sy < 0.0) {
+                            landed = true;
+                            // if the blocked step's target voxel is the voxel
+                            // the particle already sits in (spawned inside a
+                            // block), pop it up onto that voxel's top face
+                            float top = floor(pos.y + sy + 0.0001) + 1.0;
+                            pos.y = max(pos.y, top);
+                        }
+                    } else {
+                        pos.y += sy;
+                    }
+                }
+                float sz = vel.z * sdt;
+                if (sz != 0.0) {
+                    if (solidAt(pos + vec3(0.0, 0.0, sz), mOrigin, slice))
+                        vel.z = 0.0;
+                    else
+                        pos.z += sz;
+                }
+                if (landed && collideMode > 1.5)
+                    break; // dying leaf: no need to keep sweeping this frame
             }
         }
     }

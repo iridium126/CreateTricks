@@ -273,6 +273,72 @@ M2 起以 /cmip gself status + 附录 A 场景矩阵复核。
 
 ---
 
+## 14. 实施记录：MODEL cutout 近先序绘制（方案 A / R5a）
+
+> 决策方式：grilling 逐项确认（Q1–Q6）；状态：**已实施（compileJava 通过）**；运行验收待游戏内（L2 观察点见 14.5）
+> 关联：§13 绘制协议的延伸；D2 一帧滞后体系不受影响（数据通路未动）
+
+### 14.1 问题与目标
+
+- 症状：玩家视角进入约一万悦灵的重叠区域严重掉帧，GPU 压力集中在片元阶段；
+- 根因：cmd2（cutout）与 cmd3（ghost）共享远→近排序排列。该顺序是 ghost 透明合成的
+  承重结构，却让不透明段吃满最坏情况过绘制——每像素被着色的片元数 = 平均重叠层深 k，
+  远处悦灵的包实体 fsh 全额执行后被更近几何整体覆盖；
+- 约束：包 fsh 逐片元成本不可触碰（PATCH_FRAG=false 契约），唯一杠杆是减少进入包 fsh 的片元数。
+
+### 14.2 定案链（grilling 裁定记录）
+
+| 决策点 | 定案 | 主要否决项 |
+|---|---|---|
+| 实现变体 | 键序不动 + 仅合并路径 cmd2 反向取槽（近→远） | dense 近似（H_k≈ln k 残留）；双份排序数组（机器翻倍） |
+| L0 路径 | 完全不动：合并 multi-draw 不拆分，model.vsh 零改动 | L0 同步改造（无明显压力） |
+| N_model 通道 | **R5a**：sort 缓冲尾部元数据槽，capture 发布，结构性同代 | 第 5 TBO 直读 indirect（aborted 帧存在跨代错位窗口）；同单元换绑（cmd2 同绘制内需 Sorted+N 并存，数学不可行）；滞后 CPU 回读（ΔN 代际错位） |
+| 区分机制 | 逐次绘制 uniform `cmi_ReverseInstance` | gl_BaseInstance（驱动/包环境可用性风险） |
+| 验收口径 | L1 静态本轮 + L2 运行待验（§14.5） | 抓帧逐像素 diff（对单次着色改动过重） |
+
+### 14.3 实现清单
+
+1. `ParticleBuffers`：sort 缓冲分配 `(cap+1)*8`；尾槽（下标 = cap）为保留元数据格。
+   安全区论证：radix 散射写 `[0, N_total)`、正向读 `< N_total`、反向读 `< N_model ≤ N_total`
+   ——元数据槽永不被有效读取触及；L0 着色器不读该槽。
+2. `capture.comp`：新增 IndirectBuf 声明与 `uMetaSlot`，发布
+   `N_model = indirect.cmd[IDX_CNT_MODELOP]` 至 `kv[uMetaSlot]`。引擎侧无条件绑定合法 sort
+   缓冲（finalPerm ≥ 0 取提交缓冲，否则 scratch 0），meta 与 perm 同缓冲同代——aborted 帧
+   二者一起停留旧代，不存在"新计数配旧排列"的组合。
+3. 合并顶点源（`ShaderPackProgramCompiler.buildMergedSource`）：新增
+   `uniform int cmi_MetaSlot / cmi_ReverseInstance`；实例解析改为
+   `slot = (reverse==1 && iid<N) ? N-1-iid : min(iid, N-1)`。钳制把 aborted 帧下
+   "indirect 计数 > 已提交分区 N"的可能越界读（真 UB）降级为一帧无害重复实例。
+4. 钩子（`CMIPackEntityMergeHook.uploadSegmentMode`）：cutout=true（近先序）、ghost=false
+   （保持正向远→近混合语义）、shadow=false（深度主导，顺序无关）。status 行追加
+   "model near-first" 供 `/cmip shaderpack status` 观测。
+5. 明确不动：keygen/radix/census、L0 全链路、预留集（维持 4 单元）、Iris 编译交互面。
+
+### 14.4 深度排序能否优化（分析结论：维持现状）
+
+1. **成本份额**：现有管线为单遍计数排序（RADIX_PASSES=1，O(N+512)），万级条目在 GPU 上
+   为微秒级，相对片元压力可忽略——优化排序本身对本次问题收益上限≈0；
+2. **微优化全部否决**：时间相干复用上一帧排列（失效检测比排序更贵）、warp 聚合原子
+   （驱动已做）、缩减 bin 数（9 位键已是最小信息量）；
+3. **新依赖关系**：本方案之后排序从 ghost 的附属升级为 cmd2 的承重结构——反向读的
+   near-first 收益以"分区按深度带有序"为前提；若去除排序，early-Z 收益从 ~1× 退化到
+   无序 H_k≈ln k；
+4. **唯一语义级杠杆（仅记录，不立项）**：ghost 若接受"仅最近壳层参与混合"（near-first
+   到达时 depth-write 天然使每像素只剩一层），blend 片元成本随 k 归一；但混合不可交换、
+   乱序会帧间闪烁，确定性近→远仍需排序——即该取舍也不解除对排序的需求，且属视觉变更，
+   应单独走 grilling。
+
+### 14.5 预期收益与 L2 待验观察点
+
+- **量化预期**：重叠区每像素 cutout 着色次数 k → ~1（k 为平均重叠层深；k=30 即约 30×）；
+- `/cmip shaderpack status` 应显示 "(…, model near-first)"；
+- ghost 合成并排截图应与改前逐像素一致（cmd3 正向读取未动）；
+- 10k 重叠场景前后 hook 环 GPU ms 对比（externalHookGpuMs 已并入节流样本）；
+- 抓帧核对 shaded fragments 数量级；
+- 已知边界：aborted 帧 + 计数增长同时发生时，多余实例退化为一帧重复渲染（钳制保证无越界读）。
+
+---
+
 ## 14. 对齐修复第二轮（审查驱动，A–F）
 
 > 独立复审以 .refs/Flywheel 1.0.6 / iris-flw-compat 2.4.0 / iris-veil-compat / Iris 运行时同源逐行核对后落地的六项修正。

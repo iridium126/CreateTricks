@@ -534,6 +534,21 @@ public final class ShaderPackProgramCompiler {
                 uniform vec3 cmi_CameraPos;
                 uniform float cmi_FadeDist;
 
+                // Sort-buffer metadata tail slot (index == particle capacity,
+                // see ParticleBuffers allocation). capture.comp stores THIS
+                // generation's exact MODEL item count there, inside the same
+                // buffer as the permutation itself, so the count consumed below
+                // is structurally always the same generation as the items --
+                // an aborted frame leaves count and permutation stale together
+                // instead of pairing a fresh count with a stale array.
+                uniform int cmi_MetaSlot;
+                // 1 = cutout segment: iterate the MODEL partition NEAREST first,
+                // so early-Z rejects every occluded fragment before the pack's
+                // fragment shader runs (dense-swarm fragment pressure collapses
+                // from k shaded layers per pixel to ~1). 0 = ghost segment keeps
+                // the array's native back-to-front order for correct blending.
+                uniform int cmi_ReverseInstance;
+
                 // results consumed by the pack code through the injector's rewrites
                 vec4 cmi_VertexLevel;  // camera-relative level-space vertex
                 vec4 cmi_TexCoord0v;   // atlas UV as a gl_MultiTexCoord0 stand-in
@@ -549,8 +564,25 @@ public final class ShaderPackProgramCompiler {
         sb.append(chunk).append('\n');
         sb.append("""
                 void main() {
-                    // resolve this instance through the MODEL partition of the sort array
-                    uvec2 item = texelFetch(cmi_Sorted, int(gl_InstanceID)).xy;
+                    // Resolve this instance through the MODEL partition of the
+                    // sort array. The partition is depth-ordered far -> near (far
+                    // items carry the small key); the cutout segment reverses its
+                    // slot so instances arrive NEAREST first across the indirect
+                    // draw, letting early-Z collapse dense overlaps from k shaded
+                    // layers per pixel to ~1. N_model comes from the metadata tail
+                    // slot of this same buffer, so index math can never mix
+                    // generations (see the uniform comment above).
+                    uint iid = uint(gl_InstanceID);
+                    uint nModel = max(texelFetch(cmi_Sorted, cmi_MetaSlot).x, 1u);
+                    // Stale-count net: on an aborted frame the indirect draw count
+                    // can exceed the committed partition's N; clamp every index
+                    // into [0, N) so texelFetch stays defined and any extra
+                    // invocation degrades to a harmless duplicate instance.
+                    uint fwd = min(iid, nModel - 1u);
+                    uint sortSlot = (cmi_ReverseInstance == 1 && iid < nModel)
+                        ? (nModel - 1u - iid)   // cutout: nearest item first
+                        : fwd;                  // ghost: farthest item first
+                    uvec2 item = texelFetch(cmi_Sorted, int(sortSlot)).xy;
                     bool gone = (item.y & 3u) != 0u; // foreign-type item: upstream corruption guard
                     uint inst = item.y >> 2u;
                     uint base = inst * 4u;

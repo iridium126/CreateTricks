@@ -1,0 +1,47 @@
+// Boids spatial-hash build for storm swarms (Allay Storm). Runs AFTER reset
+// and BEFORE update.comp each frame, reading the SAME committed read pool and
+// previous-frame counter slot that update consumes, so the indices inserted
+// here are exactly the indices update integrates.
+//
+// Only particles whose emitter header enables the storm (vec4 #18.x > 0.5)
+// are inserted; every other particle type ignores this structure entirely.
+// Classic lock-free linked-list hashing: one atomicExchange per particle
+// claims the bucket head, the previous head becomes this particle's "next".
+// No per-frame clearing of the next[] half is needed -- every traversed slot
+// was written earlier in THIS dispatch (heads were zeroed from the CPU).
+layout(local_size_x = 64) in;
+
+const float CELL_SIZE = 2.5;
+
+layout(std430, binding = BIND_POOL_READ) readonly buffer ParticleRead { vec4 data[]; } readBuf;
+layout(std430, binding = BIND_PREV_COUNTER) readonly buffer PrevCounterBuf { uint live; uint spare; uint translucentCensus; } prevCounter;
+layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+layout(std430, binding = BIND_GRID) buffer GridBuf {
+    int heads[GRID_TABLE]; // bucket head: live index + 1 (0 = empty bucket)
+    int next[STORM_NEXT_CAP];
+} grid;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= prevCounter.live)
+        return;
+    if (idx >= STORM_NEXT_CAP)
+        return; // beyond neighbour-coupling capacity (see ParticleBuffers)
+
+    uint base = idx * 4u;
+    uint eid = floatBitsToUint(readBuf.data[base + 3u].w);
+    uint hb = eid * VEC4_PER_EMITTER;
+    if (emitters.u[hb + 18u].x < 0.5)
+        return; // not a storm member
+
+    // Store index+1 in the chain so 0 stays the "empty" sentinel.
+    int stored = int(idx) + 1;
+
+    vec3 pos = readBuf.data[base].xyz;
+    ivec3 c = ivec3(floor(pos / CELL_SIZE));
+    // masked spatial hash; negative coordinates wrap deterministically
+    uint h = (uint(c.x) * 92837111u ^ uint(c.y) * 689287499u ^ uint(c.z) * 283923481u)
+            & (GRID_TABLE - 1u);
+    int old = atomicExchange(grid.heads[int(h)], stored);
+    grid.next[idx] = old;
+}

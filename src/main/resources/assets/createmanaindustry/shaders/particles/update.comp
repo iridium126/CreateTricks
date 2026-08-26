@@ -33,6 +33,29 @@ uniform uint uCapacity;
 uniform float uDt;
 uniform int  uCollisionOn; // 1 = collision texture/SSBO bound & valid
 
+// ---- storm swarm (boids) -------------------------------------------------
+// Spatial hash built by gridbuild.comp earlier THIS frame against the same
+// read pool / previous-frame counter slot this pass consumes.
+layout(std430, binding = BIND_GRID) buffer GridBuf {
+    int heads[GRID_TABLE]; // bucket head: live index + 1 (0 = empty bucket)
+    int next[STORM_NEXT_CAP];
+} grid;
+uniform float uTimeSec;
+uniform vec3  uPlayerPos;
+uniform int   uPlayerOn;   // 1 = uPlayerPos valid
+uniform uint  uKillEmit;   // emitter id force-expired this frame (none = ~0u)
+
+const float CELL_SIZE        = 2.5;  // == neighbour radius (one cell per axis)
+const float STORM_SEP_R      = 1.0;
+const float STORM_W_COHESION = 1.6;
+const float STORM_W_ALIGN    = 1.1;
+const float STORM_W_SEP      = 6.0;
+const float STORM_W_CONTAIN  = 3.0;
+const float STORM_PLAYER_R   = 3.0;
+const float STORM_PLAYER_W   = 14.0;
+
+#pragma cmi_include chunks/allay_pose.glsl
+
 bool solidAt(vec3 wp, vec3 mOrigin, int slice) {
     vec3 rel = wp - mOrigin;
     ivec3 tc = ivec3(floor(rel + vec3(0.0001)));
@@ -59,6 +82,8 @@ void main() {
         return; // dead -> drops out of the compacted output
 
     uint eid = floatBitsToUint(p3.w);
+    if (eid == uKillEmit)
+        return; // storm stopped: drop out of the compacted output immediately
     uint hb = eid * VEC4_PER_EMITTER;
     vec3 gravity = emitters.u[hb + 2u].xyz;
     float drag = emitters.u[hb + 2u].w;
@@ -86,6 +111,80 @@ void main() {
         float acc = flutter * pow(fr, 1.25);
         vel.x += cos(ang) * acc * uDt;
         vel.z += sin(ang) * acc * uDt;
+    }
+
+    // ---- storm swarm steering (boids) ---------------------------------------
+    // Neighbour cohesion/alignment/separation through the spatial hash, a
+    // global attractor toward the wandering centre and player repulsion.
+    // Runs BEFORE the collision sweep so terrain still owns the final move.
+    vec4 stormA = emitters.u[hb + 18u]; // x flag, y ballRadius, z wanderRadius, w maxSpeed
+    if (stormA.x > 0.5) {
+        vec3 anchor = emitters.u[hb + 19u].xyz;
+        vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
+        vec3 acc = vec3(0.0);
+
+        if (idx < STORM_NEXT_CAP) {
+            vec3 centerSum = vec3(0.0);
+            vec3 velSum = vec3(0.0);
+            vec3 sepSum = vec3(0.0);
+            int nCount = 0;
+            ivec3 pc = ivec3(floor(pos / CELL_SIZE));
+            for (int ox = -1; ox <= 1; ox++)
+            for (int oy = -1; oy <= 1; oy++)
+            for (int oz = -1; oz <= 1; oz++) {
+                ivec3 c = pc + ivec3(ox, oy, oz);
+                uint hcell = (uint(c.x) * 92837111u ^ uint(c.y) * 689287499u ^ uint(c.z) * 283923481u)
+                        & (GRID_TABLE - 1u);
+                int s = grid.heads[int(hcell)];
+                while (s != 0) {
+                    int j = s - 1;
+                    s = grid.next[j];
+                    if (j == int(idx))
+                        continue;
+                    uint jb = uint(j) * 4u;
+                    vec3 op = readBuf.data[jb].xyz;
+                    vec3 d = op - pos;
+                    float d2 = dot(d, d);
+                    if (d2 < CELL_SIZE * CELL_SIZE && d2 > 1e-8) {
+                        centerSum += op;
+                        velSum += readBuf.data[jb + 1u].xyz;
+                        nCount++;
+                        if (d2 < STORM_SEP_R * STORM_SEP_R) {
+                            float dl = sqrt(d2);
+                            sepSum -= d * ((STORM_SEP_R - dl) / (dl * STORM_SEP_R));
+                        }
+                    }
+                }
+            }
+            if (nCount > 0) {
+                acc += ((centerSum / float(nCount)) - pos) * STORM_W_COHESION;
+                acc += (velSum / float(nCount) - vel) * STORM_W_ALIGN;
+            }
+            acc += sepSum * STORM_W_SEP;
+        }
+
+        // soft containment shell around the wandering centre
+        vec3 toG = G - pos;
+        float dG = length(toG);
+        float ballR = max(stormA.y, 1.0);
+        if (dG > ballR * 0.75)
+            acc += (toG / dG) * STORM_W_CONTAIN * (dG - ballR * 0.75);
+        else if (dG < ballR * 0.15 && dG > 1e-3)
+            acc -= (toG / dG) * STORM_W_CONTAIN * (ballR * 0.15 - dG);
+
+        // fish avoiding the diver
+        if (uPlayerOn == 1) {
+            vec3 dp = pos - uPlayerPos;
+            float dpL = length(dp);
+            if (dpL < STORM_PLAYER_R && dpL > 1e-3)
+                acc += (dp / dpL) * STORM_PLAYER_W * (STORM_PLAYER_R - dpL) / STORM_PLAYER_R;
+        }
+
+        vel += acc * uDt;
+        float spMax = max(stormA.w, 0.5);
+        float spd = length(vel);
+        if (spd > spMax)
+            vel *= spMax / spd;
     }
 
     // ---- block collision: axis-separated sweep from the PRE-move position ----

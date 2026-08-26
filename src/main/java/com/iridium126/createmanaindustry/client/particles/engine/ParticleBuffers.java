@@ -103,13 +103,24 @@ public final class ParticleBuffers {
     public static final int BAKEMETA_BINDING = 11;
     /** Static baked model geometry (flat float array, MODEL particles). */
     public static final int MODELGEO_BINDING = 12;
-    // 13 = RETIRED (former dense MODEL permutation; both model segments now
-    // walk the combined sort array). The slot stays unused rather than
-    // renumbered so existing bindings/docs keep their values.
+    // 13 was RETIRED (former dense MODEL permutation; both model segments now
+    // walk the combined sort array) and has been RE-PURPOSED for the boids
+    // spatial-hash grid rather than renumbering anything else.
     /** Previous frame's counter slot, read by update.comp for the GPU-exact live count. */
     public static final int PREVCOUNTER_BINDING = 14;
     /** Dense permutation of visible OPAQUE cutout billboards (keygen's fourth bucket). */
     public static final int ORDEROPAQUE_BINDING = 15;
+    /** Boids spatial-hash grid: heads table + next chains in ONE buffer. */
+    public static final int GRID_BB = 13;
+    /** Spatial-hash table size in cells (power of two; masked hashing). */
+    public static final int GRID_TABLE = 16384;
+    /**
+     * Max particles inserted into the boids grid per frame — the {@code next}
+     * chain array is indexed by live index. The storm cap is 4096, so this
+     * leaves generous slack; particles beyond the cap still receive the global
+     * attractor / player forces, they only lose neighbour coupling.
+     */
+    public static final int STORM_NEXT_CAP = 8192;
 
     /**
      * Flat-uint index of field {@code f} of indirect command {@code c}: with
@@ -172,6 +183,7 @@ public final class ParticleBuffers {
     private int bakeMetaSSBO = -1;
     private int modelGeoSSBO = -1;
     private int orderOpaqueSSBO = -1;
+    private int gridSSBO = -1;
     /** Static element indices for the MODEL sub-draws (bound into the VAO). */
     private int modelIndexBuffer = -1;
     private int vao = -1;
@@ -265,6 +277,10 @@ public final class ParticleBuffers {
         this.histSSBO = createBuffer((long) RADIX_BINS * 4, null);
         this.offsetSSBO = createBuffer((long) RADIX_BINS * 4, null);
         this.bakeMetaSSBO = createBuffer(CollisionBake.MAX_SLICES * 16L, null);
+        // Boids spatial hash: heads table followed by the per-live-index next
+        // chain array. heads is cleared every frame before gridbuild.comp runs;
+        // next needs no clearing (written before read via atomicExchange).
+        this.gridSSBO = createBuffer((GRID_TABLE + STORM_NEXT_CAP) * 4L, null);
 
         // initial indirect payload: one command per slot (6 verts / 0 inst
         // each; the 5th uint pads arrays commands to the uniform 20 B stride)
@@ -517,6 +533,31 @@ public final class ParticleBuffers {
         GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.zero2048);
     }
 
+    /** Binds the boids spatial-hash buffer at its fixed binding. */
+    public void bindGrid() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, GRID_BB, this.gridSSBO);
+    }
+
+    /**
+     * Zeroes the heads table ({@link #GRID_TABLE} ints) before each frame's
+     * gridbuild pass; the {@code next} chain half needs no clearing because
+     * every slot is written before it can be traversed.
+     */
+    public void clearGridHeads() {
+        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            java.nio.IntBuffer zero = stack.mallocInt(1);
+            zero.put(0).flip();
+            GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.gridSSBO);
+            GL43.glClearBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, GL30.GL_R32UI,
+                    0, (long) GRID_TABLE * 4, GL30.GL_RED_INTEGER, GL11.GL_UNSIGNED_INT, zero);
+        }
+    }
+
+    /** Physical GL buffer id of the boids grid (heads+next). */
+    public int gridBufferId() {
+        return this.gridSSBO;
+    }
+
     /**
      * Reads one ring slot's counters in an 8-byte readback:
      * {@code {writeSlot, spare}} = {@code {liveCount, translucentCensus}}. The
@@ -676,6 +717,8 @@ public final class ParticleBuffers {
             GL15.glDeleteBuffers(this.offsetSSBO);
         if (this.bakeMetaSSBO > 0)
             GL15.glDeleteBuffers(this.bakeMetaSSBO);
+        if (this.gridSSBO > 0)
+            GL15.glDeleteBuffers(this.gridSSBO);
         for (int[] t : this.mergedTbos)
             if (t[0] > 0)
                 GL11.glDeleteTextures(t[0]);

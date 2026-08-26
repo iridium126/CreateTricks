@@ -354,6 +354,7 @@ public final class CMIPackEntityMergeHook {
         var camPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
         setFloat3(progId, "cmi_CameraPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
         setFloat(progId, "cmi_FadeDist", (float) ClientConfig.particleFadeDistance);
+        setFloat(progId, "uTimeSec", engine.timeSec());
     }
 
     /**

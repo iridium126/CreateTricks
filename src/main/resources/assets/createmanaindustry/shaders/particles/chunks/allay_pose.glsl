@@ -42,6 +42,37 @@ mat4 cmiPart(vec3 pivot, float xr, float yr, float zr) {
     return t * cmiRotX(xr) * cmiRotY(yr) * cmiRotZ(zr);
 }
 
+// ---- storm swarm shared helpers ------------------------------------------
+// Smooth wandering centre for Allay Storm swarms, shared by update.comp (the
+// boids attractor) and both MODEL vertex paths (dance-burst proximity).
+// Deterministic in (anchor, seed, time): every consumer in a frame agrees
+// without any GPU sync.
+vec3 cmiStormCenter(vec3 anchor, float wanderR, float seed, float timeSec) {
+    float t = timeSec * 0.05;
+    float h1 = cmiHash1(seed * 1.31 + 0.7) * 6.2831853;
+    float h2 = cmiHash1(seed * 2.17 + 4.7) * 6.2831853;
+    float h3 = cmiHash1(seed * 3.71 + 9.1) * 6.2831853;
+    return anchor + wanderR * 0.5 * vec3(
+        sin(t * 0.70 + h1) + 0.5 * sin(t * 1.70 + h2),
+        0.35 * sin(t * 0.90 + h3),
+        cos(t * 0.60 + h2) + 0.5 * cos(t * 1.30 + h1));
+}
+
+// Procedural dance-burst arbitration for storm members: FLY-base individuals
+// that are slow AND near the wandering centre periodically run full vanilla
+// dance cycles (spin rhythm included via the dance branch); everyone else
+// keeps flying. Pure function of (seed, speed, distance, time) -- no state.
+int cmiStormAnimOverride(int baseAnim, float speed, float distCenter,
+        float ballRadius, float seed, float timeSec) {
+    if (baseAnim != 0)
+        return baseAnim;
+    if (speed > 1.5 || distCenter > ballRadius * 0.6)
+        return 0;
+    // ~11 s dancing out of each 36 s cycle, phase-staggered per particle
+    float cyc = fract(timeSec / 36.0 + cmiHash1(seed * 7.3));
+    return cyc < 0.3 ? 1 : 0;
+}
+
 // Emitter colour keyframe interpolation over normalized life (headers hb+8..hb+15).
 // frames[] must be filled by the caller from its own emitter-header source.
 vec4 cmiKeyframeColor(vec4 frames[8], int cc, float life) {

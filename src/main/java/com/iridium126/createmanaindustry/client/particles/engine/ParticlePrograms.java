@@ -70,6 +70,12 @@ public final class ParticlePrograms {
         sb.append("#define BIND_MODELGEO ").append(ParticleBuffers.MODELGEO_BINDING).append('\n');
         sb.append("#define BIND_PREV_COUNTER ").append(ParticleBuffers.PREVCOUNTER_BINDING).append('\n');
         sb.append("#define BIND_ORDER_OPAQUE ").append(ParticleBuffers.ORDEROPAQUE_BINDING).append('\n');
+        sb.append("#define BIND_GRID ").append(ParticleBuffers.GRID_BB).append('\n');
+        // NO 'u' suffix: both constants are used as GLSL ARRAY DIMENSIONS, which
+        // want signed integer constants; mixed int/uint arithmetic at the use
+        // sites promotes correctly.
+        sb.append("#define GRID_TABLE ").append(ParticleBuffers.GRID_TABLE).append('\n');
+        sb.append("#define STORM_NEXT_CAP ").append(ParticleBuffers.STORM_NEXT_CAP).append('\n');
         sb.append("#define INDIRECT_COMMANDS ").append(ParticleBuffers.INDIRECT_COMMANDS).append('\n');
         sb.append("#define INDIRECT_STRIDE ").append(ParticleBuffers.INDIRECT_STRIDE).append('\n');
         sb.append("#define INDIRECT_UINTS ").append(ParticleBuffers.INDIRECT_UINTS).append('\n');
@@ -97,6 +103,7 @@ public final class ParticlePrograms {
     private int radixScan;
     private int radixScatter;
     private int capture;
+    private int grid;           // boids spatial-hash build (storm swarms)
     private int render;          // additive billboards (soft circle)
     private int texturedRender;  // textured sprite billboards: uMode 0 blended / 1 OPAQUE cutout
     private int modelRender;     // instanced allay models via one merged multi-draw
@@ -124,22 +131,23 @@ public final class ParticlePrograms {
         this.radixScan = compileCompute(GLSL_DIR + "radix_scan.comp");
         this.radixScatter = compileCompute(GLSL_DIR + "radix_scatter.comp");
         this.capture = compileCompute(GLSL_DIR + "capture.comp");
+        this.grid = compileCompute(GLSL_DIR + "gridbuild.comp");
         this.render = link(GLSL_DIR + "additive.vsh", GLSL_DIR + "additive.fsh");
         this.texturedRender = link(GLSL_DIR + "textured.vsh", GLSL_DIR + "textured.fsh");
         this.modelRender = link(GLSL_DIR + "model.vsh", GLSL_DIR + "model.fsh");
         if (!this.ready()) {
             CreateManaIndustry.LOGGER.error("[CMI particles] program rebuild FAILED: "
-                    + "reset={} update={} emit={} keygen={} hist={} scan={} scatter={} capture={} "
+                    + "reset={} update={} emit={} keygen={} hist={} scan={} scatter={} capture={} grid={} "
                     + "render={} textured={} model={}",
                     this.reset, this.update, this.emit, this.keygen,
-                    this.radixHist, this.radixScan, this.radixScatter, this.capture,
+                    this.radixHist, this.radixScan, this.radixScatter, this.capture, this.grid,
                     this.render, this.texturedRender, this.modelRender);
         } else {
             CreateManaIndustry.LOGGER
                     .info("[CMI particles] programs compiled: reset={} update={} emit={} keygen={} "
-                            + "hist={} scan={} scatter={} capture={} render={} textured={} model={}",
+                            + "hist={} scan={} scatter={} capture={} grid={} render={} textured={} model={}",
                             this.reset, this.update, this.emit, this.keygen,
-                            this.radixHist, this.radixScan, this.radixScatter, this.capture,
+                            this.radixHist, this.radixScan, this.radixScatter, this.capture, this.grid,
                             this.render, this.texturedRender, this.modelRender);
         }
     }
@@ -148,7 +156,7 @@ public final class ParticlePrograms {
         return this.reset != 0 && this.update != 0 && this.emit != 0 && this.render != 0
                 && this.texturedRender != 0 && this.modelRender != 0
                 && this.keygen != 0 && this.radixHist != 0 && this.radixScan != 0
-                && this.radixScatter != 0 && this.capture != 0;
+                && this.radixScatter != 0 && this.capture != 0 && this.grid != 0;
     }
 
     public int reset() {
@@ -181,6 +189,10 @@ public final class ParticlePrograms {
 
     public int capture() {
         return this.capture;
+    }
+
+    public int grid() {
+        return this.grid;
     }
 
     public int render() {
@@ -329,7 +341,7 @@ public final class ParticlePrograms {
         for (int p : new int[] {
                 this.reset, this.update, this.emit, this.keygen,
                 this.radixHist, this.radixScan, this.radixScatter, this.capture,
-                this.render, this.texturedRender, this.modelRender }) {
+                this.grid, this.render, this.texturedRender, this.modelRender }) {
             if (p != 0)
                 GL20.glDeleteProgram(p);
         }

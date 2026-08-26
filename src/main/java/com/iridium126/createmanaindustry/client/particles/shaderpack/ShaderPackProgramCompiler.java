@@ -533,6 +533,7 @@ public final class ShaderPackProgramCompiler {
         sb.append("""
                 uniform vec3 cmi_CameraPos;
                 uniform float cmi_FadeDist;
+                uniform float uTimeSec; // engine simulation time (storm wander/bursts)
 
                 // Sort-buffer metadata tail slot (index == particle capacity,
                 // see ParticleBuffers allocation). capture.comp stores THIS
@@ -609,6 +610,15 @@ public final class ShaderPackProgramCompiler {
                     float scale = (2.0 * size) / 0.625;
 
                     int anim = int(texelFetch(cmi_Emitters, int(hb + 17u)).x);
+                    // Storm members: slow individuals near the wandering centre
+                    // periodically run full vanilla dance cycles.
+                    vec4 stormA = texelFetch(cmi_Emitters, int(hb + 18u));
+                    if (stormA.x > 0.5 && !gone) {
+                        vec3 anchor = texelFetch(cmi_Emitters, int(hb + 19u)).xyz;
+                        vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
+                        anim = cmiStormAnimOverride(anim, length(p1.xyz),
+                                distance(p0.xyz, G), stormA.y, p3.z, uTimeSec);
+                    }
                     float yaw;
                     mat4 M = gone ? mat4(1.0) : cmiAllayPartTransform(p3.x, p3.z, p1.xyz, anim, pid, yaw);
 

@@ -28,6 +28,7 @@ uniform mat4 ModelViewMat;
 uniform mat4 ProjMat;
 uniform vec3 uCamPos;
 uniform float uFadeDist;
+uniform float uTimeSec; // engine-accumulated simulation time (storm wander/bursts)
 
 layout(std430, binding = BIND_POOL_WRITE) readonly buffer ParticleRead { vec4 data[]; } particles; // freshly written pool
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
@@ -86,6 +87,15 @@ void main() {
     float scale = (2.0 * size) / 0.625;
 
     int anim = int(emitters.u[hb + 17u].x);
+    // Storm members: slow individuals near the wandering centre periodically
+    // run full vanilla dance cycles instead of plain flight.
+    vec4 stormA = emitters.u[hb + 18u];
+    if (stormA.x > 0.5) {
+        vec3 anchor = emitters.u[hb + 19u].xyz;
+        vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
+        anim = cmiStormAnimOverride(anim, length(p1.xyz), distance(p0.xyz, G),
+                stormA.y, p3.z, uTimeSec);
+    }
     float yaw;
     mat4 M = cmiAllayPartTransform(p3.x, p3.z, p1.xyz, anim, pid, yaw);
 

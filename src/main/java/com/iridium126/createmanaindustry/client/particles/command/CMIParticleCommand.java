@@ -33,6 +33,7 @@ import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
  *   /cmip spawn &lt;preset&gt; [count]        burst at the player's feet
  *   /cmip stream &lt;preset&gt; &lt;rate&gt; [sec]  streaming (sec &lt;= 0 = until /cmip clear)
  *   /cmip anim &lt;preset&gt; &lt;animation&gt;     live-switch MODEL animation (fly/dance/spin/hold)
+ *   /cmip allaystorm [count ≤4096] [radius]  persistent boids bait ball (stop subcommand)
  *   /cmip bench &lt;count&gt;                 unthrottled stress test
  *   /cmip clear                          drop all particles and streams
  *   /cmip stats                          live count / budget / frame cost
@@ -87,6 +88,18 @@ public final class CMIParticleCommand {
                         .then(Commands.literal("budget")
                                 .then(Commands.argument("ms", FloatArgumentType.floatArg(1f, 50f))
                                         .executes(CMIParticleCommand::budget)))
+                        .then(Commands.literal("allaystorm")
+                                .executes(ctx -> allayStorm(ctx, 2048, 8.0))
+                                .then(Commands.literal("stop")
+                                        .executes(CMIParticleCommand::allayStormStop))
+                                .then(Commands.argument("count", IntegerArgumentType.integer(1, 4096))
+                                        .executes(ctx -> allayStorm(ctx,
+                                                                IntegerArgumentType.getInteger(ctx, "count"), 8.0))
+                                                .then(Commands.argument("radius",
+                                                                FloatArgumentType.floatArg(2.0f, 32.0f))
+                                                        .executes(ctx -> allayStorm(ctx,
+                                                                IntegerArgumentType.getInteger(ctx, "count"),
+                                                                FloatArgumentType.getFloat(ctx, "radius"))))))
                         .then(Commands.literal("shaderpack")
                                 .then(Commands.literal("status")
                                         .executes(CMIParticleCommand::shaderPackStatus))));
@@ -201,6 +214,31 @@ public final class CMIParticleCommand {
         }
         CMIParticleEngine.INSTANCE.setBudget(ms);
         tell(ctx, "Particle frame budget set to " + ms + " ms.");
+        return Command.SINGLE_SUCCESS;
+    }
+
+    /**
+     * /cmip allaystorm [count ≤4096] [radius 2..32] -- persistent boids bait
+     * ball anchored at the player; re-running it moves/re-sizes the storm,
+     * /cmip allaystorm stop disperses it.
+     */
+    private static int allayStorm(CommandContext<CommandSourceStack> ctx, int count, double radius) {
+        if (!engine(ctx)) {
+            return 0;
+        }
+        Vec3 pos = ctx.getSource().getPosition().add(0, 1.0, 0);
+        CMIParticleEngine.INSTANCE.startStorm(pos, count, radius);
+        tell(ctx, "§b[CMI particles]§r Allay Storm assembling: §e" + count
+                + "§r members, ball radius §e" + (int) radius + "§r (stop: /cmip allaystorm stop).");
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int allayStormStop(CommandContext<CommandSourceStack> ctx) {
+        if (!engine(ctx)) {
+            return 0;
+        }
+        CMIParticleEngine.INSTANCE.stopStorm();
+        tell(ctx, "Allay Storm dispersed.");
         return Command.SINGLE_SUCCESS;
     }
 

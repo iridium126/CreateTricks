@@ -101,6 +101,14 @@ public final class CMIParticleEngine {
     private record AnimReq(EmitterSpec spec, EmitterSpec.Animation animation) {
     }
 
+    /** Starts (or restarts) the persistent Allay Storm at a site. */
+    private record StormReq(Vec3 origin, int count, double radius) {
+    }
+
+    /** Stops the active storm; its members expire this frame. */
+    private record StormStop() {
+    }
+
     /** Active stream consumed each frame on the render thread. */
     private static final class Stream {
         final EmitterSpec spec;
@@ -212,6 +220,39 @@ public final class CMIParticleEngine {
     private volatile int streamCount = 0;
     private int simFrame = 0;
     private int frameSeed = 0;
+
+    // ---- Allay Storm state (render thread only) ----------------------------
+    /** Accumulated clamped simulation seconds; drives storm wander/bursts. */
+    private float timeSec = 0f;
+    private boolean stormActive = false;
+    private int stormEmitId = -1;
+    private Vec3 stormAnchor = Vec3.ZERO;
+    private double stormRadius = 8.0;
+    private int pendingStormSpawns = 0;
+    private boolean stormHeaderWritten = false;
+    /** Emitter id force-expired on the NEXT update dispatch (-1 = none). */
+    private int stormKillEmitId = -1;
+    private static final int STORM_MAX_COUNT = 4096;
+    private static final double STORM_WANDER_RADIUS = 12.0;
+    private static final float STORM_MAX_SPEED = 6.0f;
+    /**
+     * The storm spec is deliberately unique (lifetime/speed/drag differ from
+     * every preset) so spec dedupe hands it its own emitter id -- the per-id
+     * header then carries the ANCHOR in slots 18/19, which specs themselves
+     * never do (they stay position-free so one spec can serve many sites).
+     */
+    private static final EmitterSpec ALLAY_STORM_SPEC = EmitterSpec.builder()
+            .shape(com.iridium126.createmanaindustry.client.particles.emitter.EmitterShape.POINT)
+            .speed(2.5, 4.5)
+            .life(3600, 3600) // immortal while active; stop expires them via uKillEmit
+            .sizeOverLife(0.33, 0.33, 1.0)
+            .gravity(0, 0, 0)
+            .drag(0.6)
+            .material(EmitterSpec.Material.MODEL)
+            .animation(EmitterSpec.Animation.FLY)
+            .glow(1.0)
+            .color(1f, 1f, 1f, 1f)
+            .build();
     private long lastErrorTime = 0;
     private final int[] timerQueries = new int[TIMER_RING];
     private int timerSlot = 0;
@@ -248,6 +289,29 @@ public final class CMIParticleEngine {
     /** Streams {@code rate} particles/second for {@code seconds} (<= 0 = until cleared). */
     public void stream(EmitterSpec spec, Vec3 origin, double rate, double seconds) {
         this.pending.add(new StreamReq(spec, origin, rate, seconds));
+    }
+
+    /**
+     * Starts a persistent boids-driven Allay Storm anchored at {@code origin}:
+     * up to {@link #STORM_MAX_COUNT} members trickle in over a few frames,
+     * flock as a bait ball around a wandering centre and live until
+     * {@link #stopStorm()}, {@link #clear()} or level teardown.
+     * Render-thread or thread-safe via the request queue like {@link #spawn}.
+     */
+    public void startStorm(Vec3 origin, int count, double radius) {
+        this.pending.add(new StormReq(origin,
+                Math.max(1, Math.min(STORM_MAX_COUNT, count)),
+                Math.max(2.0, Math.min(32.0, radius))));
+    }
+
+    /** Stops the active storm: members expire this frame, no new spawns queue. */
+    public void stopStorm() {
+        this.pending.add(new StormStop());
+    }
+
+    /** Accumulated clamped simulation seconds (storm wander/burst clock). */
+    public float timeSec() {
+        return this.timeSec;
     }
 
     /**
@@ -432,6 +496,7 @@ public final class CMIParticleEngine {
         this.streams.clear();
         this.gpu.clearParticles();
         resetPoolState();
+        resetStormState();
         this.streamCount = 0;
         this.profiler.reset();
     }
@@ -478,6 +543,10 @@ public final class CMIParticleEngine {
                 this.streams.add(new Stream(sr.spec(), sr.origin(), sr.rate(), sr.duration()));
             } else if (item instanceof AnimReq ar) {
                 applyAnimation(ar.spec(), ar.animation());
+            } else if (item instanceof StormReq sr) {
+                startStormInternal(sr.origin(), sr.count(), sr.radius());
+            } else if (item instanceof StormStop) {
+                stopStormInternal();
             } else if (item instanceof Boolean) {
                 doClear = true;
             }
@@ -486,6 +555,7 @@ public final class CMIParticleEngine {
             this.streams.clear();
             this.gpu.clearParticles();
             resetPoolState();
+            resetStormState();
         }
 
         int cap = this.gpu.capacity();
@@ -493,10 +563,47 @@ public final class CMIParticleEngine {
             pollCounterSnapshot(cap);
 
         float dt = clampDelta(deltaTracker);
+        this.timeSec += dt;
 
-        // 2. Build emit entries (bursts first, then streams).
+        // 2. Build emit entries (storm first, then bursts, then streams).
         int entryCount = 0;
         int totalSpawn = 0;
+
+        // Storm trickle-in: at most MAX_EMIT_COMMANDS members per frame until
+        // the requested population is reached. At 2048 the bait ball assembles
+        // over ~8 frames (~0.4 s) -- reads as fish arriving, not popping in.
+        if (this.stormActive && this.pendingStormSpawns > 0) {
+            int id = ensureEmitter(ALLAY_STORM_SPEC);
+            if (id >= 0 && entryCount < ParticleBuffers.MAX_EMIT_COMMANDS) {
+                if (!this.stormHeaderWritten) {
+                    // Anchor + storm parameters ride the per-id header slots 18/19
+                    // (specs stay position-free; this spec dedupes to its own id).
+                    float[] h = ALLAY_STORM_SPEC
+                            .packedWithAnimation(EmitterSpec.Animation.FLY.index());
+                    h[18 * 4 + 0] = 1f; // boids enabled
+                    h[18 * 4 + 1] = (float) this.stormRadius;
+                    h[18 * 4 + 2] = (float) STORM_WANDER_RADIUS;
+                    h[18 * 4 + 3] = STORM_MAX_SPEED;
+                    h[19 * 4 + 0] = (float) this.stormAnchor.x;
+                    h[19 * 4 + 1] = (float) this.stormAnchor.y;
+                    h[19 * 4 + 2] = (float) this.stormAnchor.z;
+                    h[19 * 4 + 3] = 0f;
+                    this.gpu.setEmitterHeader(id, h); // uploaded below this frame
+                    this.stormEmitId = id;
+                    this.stormHeaderWritten = true;
+                }
+                ensureEmitterRuntime(id, ALLAY_STORM_SPEC, this.stormAnchor);
+                int n = Math.min(this.pendingStormSpawns, ParticleBuffers.MAX_EMIT_COMMANDS);
+                this.emitIds[entryCount] = id;
+                this.emitCounts[entryCount] = n;
+                this.emitOrigins[entryCount] = this.stormAnchor;
+                this.emitTranslucent[entryCount] = isTranslucent(ALLAY_STORM_SPEC);
+                totalSpawn += n;
+                entryCount++;
+                this.pendingStormSpawns -= n;
+            }
+        }
+
         for (Burst b : bursts) {
             int id = ensureEmitter(b.spec);
             if (id < 0)
@@ -632,9 +739,21 @@ public final class CMIParticleEngine {
             GL43.glDispatchCompute(1, 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
 
+            // Boids spatial hash (storm swarms): built from the SAME committed
+            // read pool + prev-counter slot update.comp consumes below.
+            this.gpu.clearGridHeads();
+            GL20.glUseProgram(this.programs.grid());
+            this.gpu.bindParticleRead(0);
+            this.gpu.bindPrevCounter(ParticleBuffers.PREVCOUNTER_BINDING, this.lastGoodSlot);
+            this.gpu.bindEmitters(5);
+            this.gpu.bindGrid();
+            GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
+            GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+
             GL20.glUseProgram(this.programs.update());
             this.gpu.bindParticleRead(0);
             this.gpu.bindParticleWrite(1);
+            this.gpu.bindGrid();
             this.gpu.bindCounter(3, slot);
             // NOT slot - 1: an aborted previous frame leaves its own counter
             // slot half-written; the read pool still belongs to the last
@@ -651,8 +770,20 @@ public final class CMIParticleEngine {
             }
             setUIntUniform(this.programs.update(), "uCapacity", cap);
             setFloatUniform(this.programs.update(), "uDt", dt);
+            setFloatUniform(this.programs.update(), "uTimeSec", this.timeSec);
+            var pl = Minecraft.getInstance().player;
+            if (pl != null) {
+                var pp = pl.position();
+                setFloatUniform(this.programs.update(), "uPlayerPos", (float) pp.x, (float) pp.y, (float) pp.z);
+                setIntUniform(this.programs.update(), "uPlayerOn", 1);
+            } else {
+                setIntUniform(this.programs.update(), "uPlayerOn", 0);
+            }
+            setUIntUniform(this.programs.update(), "uKillEmit", this.stormKillEmitId);
             GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
+            // the kill request is single-shot: one dispatch consumed it
+            this.stormKillEmitId = -1;
 
             if (entryCount > 0) {
                 GL20.glUseProgram(this.programs.emit());
@@ -922,6 +1053,7 @@ public final class CMIParticleEngine {
         Vec3 pos = camera.getPosition();
         setFloatUniform(prog, "uCamPos", (float) pos.x, (float) pos.y, (float) pos.z);
         setFloatUniform(prog, "uFadeDist", (float) ClientConfig.particleFadeDistance);
+        setFloatUniform(prog, "uTimeSec", this.timeSec);
         this.allayAtlas.bind(1);
         setIntUniform(prog, "uSprite", 1);
 
@@ -1128,6 +1260,33 @@ public final class CMIParticleEngine {
      * every emitter created from the spec (the mirror re-uploads next frame,
      * so already-alive particles pick the new animation up immediately).
      */
+    // ---- Allay Storm internals (render thread) ------------------------------
+
+    private void startStormInternal(Vec3 origin, int count, double radius) {
+        stopStormInternal(); // one storm at a time: the anchor rides a per-id header
+        this.stormActive = true;
+        this.stormAnchor = origin;
+        this.stormRadius = radius;
+        this.pendingStormSpawns = count;
+        this.stormHeaderWritten = false;
+    }
+
+    private void stopStormInternal() {
+        if (this.stormActive && this.stormEmitId >= 0)
+            this.stormKillEmitId = this.stormEmitId; // members expire on the next update
+        this.stormActive = false;
+        this.pendingStormSpawns = 0;
+    }
+
+    /** Full storm teardown (level clear/shutdown): forget the emitter id too. */
+    private void resetStormState() {
+        this.stormActive = false;
+        this.pendingStormSpawns = 0;
+        this.stormHeaderWritten = false;
+        this.stormEmitId = -1;
+        this.stormKillEmitId = -1;
+    }
+
     private void applyAnimation(EmitterSpec spec, EmitterSpec.Animation animation) {
         if (spec.material != EmitterSpec.Material.MODEL)
             return;

@@ -4,10 +4,25 @@
 // translucent count for dual-mode selection and radix dispatch sizing --
 // deliberately unculled so a camera swing that reveals hidden translucent
 // particles can never undersize the sort dispatch.
+//
+// Also publishes this generation's exact MODEL item count into the reserved
+// METADATA tail slot of the sort buffer the engine binds for us (slot index ==
+// capacity, see ParticleBuffers allocation). The shader-pack merge derives its
+// reversed near-first cutout iteration order from that count; storing it IN the
+// permutation buffer makes N and the items structurally same-generation -- an
+// aborted frame leaves them stale together instead of pairing a fresh count
+// with a stale permutation. The engine always binds a valid sort buffer here
+// (the committed one when a sort ran, scratch otherwise), so the store below is
+// never to an unbound target.
 layout(local_size_x = 1) in;
 
+layout(std430, binding = BIND_INDIRECT) readonly buffer IndirectBuf { uint cmd[INDIRECT_UINTS]; } indirect;
+layout(std430, binding = BIND_SORT_WRITE) buffer SortMeta { uvec2 kv[]; } sortOut;
 layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
+
+uniform int uMetaSlot; // == particle capacity: the reserved tail slot index
 
 void main() {
     counter.spare = counter.translucentCensus;
+    sortOut.kv[uMetaSlot] = uvec2(indirect.cmd[IDX_CNT_MODELOP], 0u);
 }

@@ -246,8 +246,17 @@ public final class ParticleBuffers {
             this.counterSSBOs[i] = createBuffer(16, null);
         }
         // Radix sort data: (key, payload) per translucent item, double-buffered.
+        // One EXTRA tail slot per buffer (index == capacity) is a reserved METADATA
+        // cell: capture.comp stores this generation's N_MODEL there, next to the
+        // permutation it describes. The shader-pack merge reads N from the same
+        // buffer it reads items from, so N and items are structurally always the
+        // same generation -- an aborted frame leaves them stale TOGETHER instead of
+        // pairing a fresh count with a stale permutation. Safety: radix scatter
+        // writes [0, N_total), forward reads stay < N_total, the reversed cutout
+        // read stays < N_model <= N_total -- the metadata slot at index 'cap' is
+        // never touched by any of them. L0 shaders never fetch this slot either.
         for (int i = 0; i < 2; i++) {
-            this.sortSSBOs[i] = createBuffer(cap * 8L, null);
+            this.sortSSBOs[i] = createBuffer((cap + 1L) * 8L, null);
         }
         // Additive permutation (dense, uint per additive particle).
         this.orderAddSSBO = createBuffer(cap * 4L, null);

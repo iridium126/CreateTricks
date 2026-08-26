@@ -93,7 +93,7 @@ public final class CMIPackEntityMergeHook {
             // L0 drawModels then costs nothing (it would submit the same empty
             // commands), while a CPU-side per-type readback would be a stall.
             engine.markHookModelDrawn();
-            engine.shaderPackPathStatus = "pack entity merge (cutout+ghost dual)";
+            engine.shaderPackPathStatus = "pack entity merge (cutout+ghost dual, model near-first)";
             engine.shaderPackDepthStatus = "hardware (gbuffer)";
             engine.shaderPackErrorStatus = "";
         } catch (RuntimeException | LinkageError e) {
@@ -165,6 +165,9 @@ public final class CMIPackEntityMergeHook {
         ShaderInstance shader = COMPILER.shadowShader();
         shader.apply();
         uploadShadowUniforms(shader.getId());
+        // Depth-led pass: draw order is irrelevant here (every visible instance
+        // contributes its depth exactly once either way), so keep forward reads.
+        uploadSegmentMode(shader.getId(), engine, false);
         RenderSystem.enableDepthTest();
         GL11.glEnable(GL11.GL_CULL_FACE);
         RenderSystem.disableBlend();
@@ -234,6 +237,9 @@ public final class CMIPackEntityMergeHook {
         shader.apply();
         int progId = shader.getId();
         uploadSegmentUniforms(progId, engine);
+        // Nearest-first cutout: early-Z rejects occluded fragments before the
+        // pack's fragment shader runs -- the dense-swarm fragment-pressure fix.
+        uploadSegmentMode(progId, engine, true);
         RenderSystem.enableDepthTest();
         GL11.glEnable(GL11.GL_CULL_FACE);
         RenderSystem.disableBlend();
@@ -251,6 +257,9 @@ public final class CMIPackEntityMergeHook {
         ghost.apply();
         progId = ghost.getId();
         uploadSegmentUniforms(progId, engine);
+        // Ghost keeps forward reads: back-to-front order is load-bearing for
+        // correct translucent compositing of overlapping shells.
+        uploadSegmentMode(progId, engine, false);
         RenderSystem.enableDepthTest();
         GL11.glEnable(GL11.GL_CULL_FACE);
         RenderSystem.enableBlend();
@@ -345,6 +354,19 @@ public final class CMIPackEntityMergeHook {
         var camPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
         setFloat3(progId, "cmi_CameraPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
         setFloat(progId, "cmi_FadeDist", (float) ClientConfig.particleFadeDistance);
+    }
+
+    /**
+     * Segment-selection uniforms shared by every merged program variant. The
+     * metadata slot index is the particle CAPACITY (the reserved tail cell of
+     * each sort buffer where capture.comp published this generation's N_model),
+     * read from the live buffer sizing rather than config so the two can never
+     * drift; {@code nearestFirst} flips only the cutout segment's iteration
+     * direction (see the reversed-read comment in the merged vertex source).
+     */
+    private static void uploadSegmentMode(int progId, CMIParticleEngine engine, boolean nearestFirst) {
+        setInt(progId, "cmi_MetaSlot", engine.gpuBuffers().capacity());
+        setInt(progId, "cmi_ReverseInstance", nearestFirst ? 1 : 0);
     }
 
     /** The pack fragment samples the entity texture through its gtexture sampler. */

@@ -798,6 +798,15 @@ public final class CMIParticleEngine {
 
             GL20.glUseProgram(this.programs.capture());
             this.gpu.bindCounter(3, slot);
+            // Publish N_model into the metadata tail slot of a sort buffer. When
+            // this frame ran a sort, that is THE committed permutation buffer
+            // (the same id lastFinalPermId promotes below), so count and items
+            // stay structurally same-generation; on the fast path there are no
+            // MODEL items at all and scratch buffer zero is a harmless dummy.
+            GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER,
+                    ParticleBuffers.SORTWRITE_BINDING,
+                    finalPerm >= 0 ? finalPerm : this.gpu.sortBuffer(0));
+            setIntUniform(this.programs.capture(), "uMetaSlot", cap);
             GL43.glDispatchCompute(1, 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
             GL15.glEndQuery(GL33.GL_TIME_ELAPSED);

@@ -15,6 +15,15 @@ import java.util.List;
  * consumed by {@code model.vsh} (SSBO vertex pulling through the element
  * buffer). Faces use the exact per-face UV rects and vertex order of vanilla
  * {@code ModelPart.Cube}; degenerate faces (zero-area sides) are skipped.
+ * Some faces are culled at bake time because their UV rects in
+ * {@code allay_0.png} are verified ALL fully transparent -- every fragment
+ * they produce is discarded anyway: the cloak's TOP/BOTTOM caps (x[2,8) x
+ * y[16,18)) and each wing's EAST face (x[24,32) x y[19,24); only the wing's
+ * WEST rect x[16,24) carries the art). Emitting them would cost 8 double-wound
+ * cap triangles plus 4+4 wing triangles per instance, and under shader packs
+ * whose entity alpha test is looser than GREATER 0.1 they form an INVISIBLE
+ * DEPTH-OCCLUDING SHELL (the ghost segment writes depth). If the texture is
+ * ever replaced, re-verify these UV rects before re-enabling those faces.
  * <p>
  * The mesh is split into two contiguous index ranges so the model renders as
  * two sub-draws sharing one instance permutation: the OPAQUE segment (head,
@@ -37,6 +46,11 @@ final class AllayModelGeometry {
      */
     public static final int VERTEX_FLOATS = 7;
 
+    /** Face normalAxis ids, matching the per-vertex attribute from {@link #face}.
+     * Declared before the bake block so its cube() calls can use them. */
+    private static final int AXIS_EAST = 0, AXIS_WEST = 1, AXIS_UP = 2,
+            AXIS_DOWN = 3, AXIS_SOUTH = 4, AXIS_NORTH = 5;
+
     /** Flat vertex array (pos.xyz model units / uv normalised / partId). */
     static final float[] VERTICES;
     /** Triangle indices; wing faces carry both windings (double-sided planes). */
@@ -52,24 +66,32 @@ final class AllayModelGeometry {
         List<Integer> idx = new ArrayList<>(600);
         // ---- opaque segment (cutout + depth write) ----
         // part 0: head  texOffs(0,0)  box(-2.5,-5,-2.5, 5,5,5)
-        cube(verts, idx, 0, 0, 0, -2.5f, -5f, -2.5f, 5f, 5f, 5f, 0f, false);
+        cube(verts, idx, 0, 0, 0, -2.5f, -5f, -2.5f, 5f, 5f, 5f, 0f, false, 0);
         // part 1: body skin texOffs(0,10) box(-1.5,0,-1, 3,4,2)
-        cube(verts, idx, 1, 0, 10, -1.5f, 0f, -1f, 3f, 4f, 2f, 0f, false);
+        cube(verts, idx, 1, 0, 10, -1.5f, 0f, -1f, 3f, 4f, 2f, 0f, false, 0);
         // part 2: right_arm texOffs(23,0) box(-0.75,-0.5,-1, 1,4,2) inflate -0.01
-        cube(verts, idx, 2, 23, 0, -0.75f, -0.5f, -1f, 1f, 4f, 2f, -0.01f, false);
+        cube(verts, idx, 2, 23, 0, -0.75f, -0.5f, -1f, 1f, 4f, 2f, -0.01f, false, 0);
         // part 3: left_arm  texOffs(23,6) box(-0.25,-0.5,-1, 1,4,2) inflate -0.01
-        cube(verts, idx, 3, 23, 6, -0.25f, -0.5f, -1f, 1f, 4f, 2f, -0.01f, false);
+        cube(verts, idx, 3, 23, 6, -0.25f, -0.5f, -1f, 1f, 4f, 2f, -0.01f, false, 0);
         OPAQUE_INDEX_COUNT = idx.size();
         // ---- translucent segment (alpha blend; cloak + wings are double-wound
         // so both shell sides are visible under cull — the sub-draw writes
         // depth, which keeps each pixel to a single blend) ----
         // part 6: body cloak texOffs(0,16) box(-1.5,0,-1, 3,5,2) inflate -0.2
-        // (the texture's cloak texels are alpha 160 — genuinely translucent)
-        cube(verts, idx, 6, 0, 16, -1.5f, 0f, -1f, 3f, 5f, 2f, -0.2f, true);
-        // parts 4/5: wings texOffs(16,14) box(0,1,0, 0,5,8) — zero-thickness,
-        // double-winding indices keep them visible from both sides under cull
-        cube(verts, idx, 4, 16, 14, 0f, 1f, 0f, 0f, 5f, 8f, 0f, true);
-        cube(verts, idx, 5, 16, 14, 0f, 1f, 0f, 0f, 5f, 8f, 0f, true);
+        // (side texels are alpha 131-160 — genuinely translucent; the TOP/BOTTOM
+        // cap texels x[2,8) x y[16,18) are ALL alpha 0, so those two faces are
+        // baked out below — see the class javadoc for the full rationale)
+        cube(verts, idx, 6, 0, 16, -1.5f, 0f, -1f, 3f, 5f, 2f, -0.2f, true,
+                (1 << AXIS_UP) | (1 << AXIS_DOWN));
+        // parts 4/5: wings texOffs(16,14) box(0,1,0, 0,5,8) — zero-thickness:
+        // dx=0 leaves only the WEST/EAST quads, which sample DIFFERENT rects —
+        // WEST x[16,24) carries the wing art, EAST x[24,32) is ALL alpha 0 —
+        // so EAST is baked out and ONE double-wound WEST quad serves both sides
+        // (model.fsh flips the shading normal on !gl_FrontFacing)
+        cube(verts, idx, 4, 16, 14, 0f, 1f, 0f, 0f, 5f, 8f, 0f, true,
+                (1 << AXIS_EAST));
+        cube(verts, idx, 5, 16, 14, 0f, 1f, 0f, 0f, 5f, 8f, 0f, true,
+                (1 << AXIS_EAST));
 
         VERTICES = new float[verts.size()];
         for (int i = 0; i < VERTICES.length; i++)
@@ -83,13 +105,16 @@ final class AllayModelGeometry {
     }
 
     /**
-     * Emits one vanilla {@code ModelPart.Cube}: for each non-degenerate face,
-     * four unique vertices with the cube's exact UV rect and vertex order
-     * (unmirrored — the allay model sets no mirror flag) plus two triangles.
+     * Emits one vanilla {@code ModelPart.Cube}: for each non-degenerate face
+     * NOT masked out by {@code skipFaces}, four unique vertices with the
+     * cube's exact UV rect and vertex order (unmirrored — the allay model sets
+     * no mirror flag) plus two triangles. Bit N of {@code skipFaces} skips the
+     * face whose normalAxis is N (used to bake away the cloak's fully
+     * transparent top/bottom caps — see the class javadoc).
      */
     private static void cube(List<Float> out, List<Integer> idx, int partId, int texU, int texV,
             float ox, float oy, float oz, float dx, float dy, float dz, float grow,
-            boolean doubleSided) {
+            boolean doubleSided, int skipFaces) {
         // grow (CubeDeformation): expand each side; vanilla subtracts for
         // negative values (Cube constructor: origin -= grow, max += grow)
         float x0 = ox - grow, y0 = oy - grow, z0 = oz - grow;
@@ -107,17 +132,23 @@ final class AllayModelGeometry {
         float v0 = texV, vD = texV + dz, vDy = texV + dz + dy;
 
         // DOWN (y0): verts {5,4,0,1} rect (uD,v0)-(uDx,vD)   normal -Y
-        face(out, idx, partId, c, new int[] { 5, 4, 0, 1 }, uD, v0, uDx, vD, dz, dx, doubleSided, 3);
+        if ((skipFaces & (1 << AXIS_DOWN)) == 0)
+            face(out, idx, partId, c, new int[] { 5, 4, 0, 1 }, uD, v0, uDx, vD, dz, dx, doubleSided, AXIS_DOWN);
         // UP (y1): verts {2,3,7,6} rect (uDx,vD)-(u0+dz+2dx,v0)   normal +Y
-        face(out, idx, partId, c, new int[] { 2, 3, 7, 6 }, uDx, vD, texU + dz + dx + dx, v0, dx, dz, doubleSided, 2);
+        if ((skipFaces & (1 << AXIS_UP)) == 0)
+            face(out, idx, partId, c, new int[] { 2, 3, 7, 6 }, uDx, vD, texU + dz + dx + dx, v0, dx, dz, doubleSided, AXIS_UP);
         // WEST (x0): verts {0,4,7,3} rect (u0,vD)-(uD,vDy)   normal -X
-        face(out, idx, partId, c, new int[] { 0, 4, 7, 3 }, u0, vD, uD, vDy, dz, dy, doubleSided, 1);
+        if ((skipFaces & (1 << AXIS_WEST)) == 0)
+            face(out, idx, partId, c, new int[] { 0, 4, 7, 3 }, u0, vD, uD, vDy, dz, dy, doubleSided, AXIS_WEST);
         // NORTH (z0): verts {1,0,3,2} rect (uD,vD)-(uDx,vDy)   normal -Z
-        face(out, idx, partId, c, new int[] { 1, 0, 3, 2 }, uD, vD, uDx, vDy, dx, dy, doubleSided, 5);
+        if ((skipFaces & (1 << AXIS_NORTH)) == 0)
+            face(out, idx, partId, c, new int[] { 1, 0, 3, 2 }, uD, vD, uDx, vDy, dx, dy, doubleSided, AXIS_NORTH);
         // EAST (x1): verts {5,1,2,6} rect (uDx,vD)-(uDxx,vDy)   normal +X
-        face(out, idx, partId, c, new int[] { 5, 1, 2, 6 }, uDx, vD, uDxx, vDy, dz, dy, doubleSided, 0);
+        if ((skipFaces & (1 << AXIS_EAST)) == 0)
+            face(out, idx, partId, c, new int[] { 5, 1, 2, 6 }, uDx, vD, uDxx, vDy, dz, dy, doubleSided, AXIS_EAST);
         // SOUTH (z1): verts {4,5,6,7} rect (uDxx,vD)-(uDxx+dx,vDy)   normal +Z
-        face(out, idx, partId, c, new int[] { 4, 5, 6, 7 }, uDxx, vD, uDxx + dx, vDy, dx, dy, doubleSided, 4);
+        if ((skipFaces & (1 << AXIS_SOUTH)) == 0)
+            face(out, idx, partId, c, new int[] { 4, 5, 6, 7 }, uDxx, vD, uDxx + dx, vDy, dx, dy, doubleSided, AXIS_SOUTH);
     }
 
     /**

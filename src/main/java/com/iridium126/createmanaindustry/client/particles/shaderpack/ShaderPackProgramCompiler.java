@@ -616,7 +616,7 @@ public final class ShaderPackProgramCompiler {
                     if (stormA.x > 0.5 && !gone) {
                         vec3 anchor = texelFetch(cmi_Emitters, int(hb + 19u)).xyz;
                         vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
-                        anim = cmiStormAnimOverride(anim, length(p1.xyz),
+                        anim = cmiStormAnimOverride(int(stormA.x), anim, length(p1.xyz),
                                 distance(p0.xyz, G), stormA.y, p3.z, uTimeSec);
                     }
                     float yaw;

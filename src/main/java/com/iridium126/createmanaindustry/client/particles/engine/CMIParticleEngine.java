@@ -102,7 +102,7 @@ public final class CMIParticleEngine {
     }
 
     /** Starts (or restarts) the persistent Allay Storm at a site. */
-    private record StormReq(Vec3 origin, int count, double radius) {
+    private record StormReq(Vec3 origin, int count, double radius, int mode, float omega) {
     }
 
     /** Stops the active storm; its members expire this frame. */
@@ -228,11 +228,16 @@ public final class CMIParticleEngine {
     private int stormEmitId = -1;
     private Vec3 stormAnchor = Vec3.ZERO;
     private double stormRadius = 8.0;
+    /** SIGNED vortex angular velocity rad/s (0 in ball mode / when idle). */
+    private float stormOmega = 0f;
     private int pendingStormSpawns = 0;
     private boolean stormHeaderWritten = false;
     /** Emitter id force-expired on the NEXT update dispatch (-1 = none). */
     private int stormKillEmitId = -1;
-    private static final int STORM_MAX_COUNT = 4096;
+    /** Stress-test ceiling (user-set): 2^17 members. */
+    private static final int STORM_MAX_COUNT = 131072;
+    /** Vortex-mode cap on |omega| (rad/s). */
+    private static final float STORM_MAX_OMEGA = 3.0f;
     private static final double STORM_WANDER_RADIUS = 12.0;
     private static final float STORM_MAX_SPEED = 6.0f;
     /**
@@ -298,10 +303,12 @@ public final class CMIParticleEngine {
      * {@link #stopStorm()}, {@link #clear()} or level teardown.
      * Render-thread or thread-safe via the request queue like {@link #spawn}.
      */
-    public void startStorm(Vec3 origin, int count, double radius) {
+    public void startStorm(Vec3 origin, int count, double radius, int mode, float omega) {
         this.pending.add(new StormReq(origin,
                 Math.max(1, Math.min(STORM_MAX_COUNT, count)),
-                Math.max(2.0, Math.min(32.0, radius))));
+                Math.max(2.0, Math.min(64.0, radius)), // diameter cap 128
+                mode == 2 ? 2 : 1,
+                Math.max(-STORM_MAX_OMEGA, Math.min(STORM_MAX_OMEGA, omega))));
     }
 
     /** Stops the active storm: members expire this frame, no new spawns queue. */
@@ -544,7 +551,7 @@ public final class CMIParticleEngine {
             } else if (item instanceof AnimReq ar) {
                 applyAnimation(ar.spec(), ar.animation());
             } else if (item instanceof StormReq sr) {
-                startStormInternal(sr.origin(), sr.count(), sr.radius());
+                startStormInternal(sr.origin(), sr.count(), sr.radius(), sr.mode(), sr.omega());
             } else if (item instanceof StormStop) {
                 stopStormInternal();
             } else if (item instanceof Boolean) {
@@ -580,7 +587,7 @@ public final class CMIParticleEngine {
                     // (specs stay position-free; this spec dedupes to its own id).
                     float[] h = ALLAY_STORM_SPEC
                             .packedWithAnimation(EmitterSpec.Animation.FLY.index());
-                    h[18 * 4 + 0] = 1f; // boids enabled
+                    h[18 * 4 + 0] = this.stormOmega != 0f ? 2f : 1f; // motion mode
                     h[18 * 4 + 1] = (float) this.stormRadius;
                     h[18 * 4 + 2] = (float) STORM_WANDER_RADIUS;
                     h[18 * 4 + 3] = STORM_MAX_SPEED;
@@ -593,7 +600,11 @@ public final class CMIParticleEngine {
                     this.stormHeaderWritten = true;
                 }
                 ensureEmitterRuntime(id, ALLAY_STORM_SPEC, this.stormAnchor);
-                int n = Math.min(this.pendingStormSpawns, ParticleBuffers.MAX_EMIT_COMMANDS);
+                // drain in ~60 frames regardless of population: 131072 members
+                // assemble in about one second instead of twenty-five
+                int n = Math.min(this.pendingStormSpawns,
+                        Math.max(ParticleBuffers.MAX_EMIT_COMMANDS,
+                                (this.pendingStormSpawns + 59) / 60));
                 this.emitIds[entryCount] = id;
                 this.emitCounts[entryCount] = n;
                 this.emitOrigins[entryCount] = this.stormAnchor;
@@ -780,6 +791,7 @@ public final class CMIParticleEngine {
                 setIntUniform(this.programs.update(), "uPlayerOn", 0);
             }
             setUIntUniform(this.programs.update(), "uKillEmit", this.stormKillEmitId);
+            setFloatUniform(this.programs.update(), "uStormOmega", this.stormOmega);
             GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
             // the kill request is single-shot: one dispatch consumed it
@@ -1262,11 +1274,14 @@ public final class CMIParticleEngine {
      */
     // ---- Allay Storm internals (render thread) ------------------------------
 
-    private void startStormInternal(Vec3 origin, int count, double radius) {
+    private void startStormInternal(Vec3 origin, int count, double radius, int mode, float omega) {
         stopStormInternal(); // one storm at a time: the anchor rides a per-id header
         this.stormActive = true;
         this.stormAnchor = origin;
         this.stormRadius = radius;
+        // handedness is a per-storm coin flip; the sign rides inside omega
+        this.stormOmega = ((this.frameSeed & 1) == 0 ? 1f : -1f)
+                * (mode == 2 ? omega : 0f);
         this.pendingStormSpawns = count;
         this.stormHeaderWritten = false;
     }
@@ -1275,6 +1290,7 @@ public final class CMIParticleEngine {
         if (this.stormActive && this.stormEmitId >= 0)
             this.stormKillEmitId = this.stormEmitId; // members expire on the next update
         this.stormActive = false;
+        this.stormOmega = 0f;
         this.pendingStormSpawns = 0;
     }
 
@@ -1285,6 +1301,7 @@ public final class CMIParticleEngine {
         this.stormHeaderWritten = false;
         this.stormEmitId = -1;
         this.stormKillEmitId = -1;
+        this.stormOmega = 0f;
     }
 
     private void applyAnimation(EmitterSpec spec, EmitterSpec.Animation animation) {

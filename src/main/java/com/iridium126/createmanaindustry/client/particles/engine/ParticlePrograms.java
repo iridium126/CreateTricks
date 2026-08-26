@@ -71,11 +71,10 @@ public final class ParticlePrograms {
         sb.append("#define BIND_PREV_COUNTER ").append(ParticleBuffers.PREVCOUNTER_BINDING).append('\n');
         sb.append("#define BIND_ORDER_OPAQUE ").append(ParticleBuffers.ORDEROPAQUE_BINDING).append('\n');
         sb.append("#define BIND_GRID ").append(ParticleBuffers.GRID_BB).append('\n');
-        // NO 'u' suffix: both constants are used as GLSL ARRAY DIMENSIONS, which
-        // want signed integer constants; mixed int/uint arithmetic at the use
-        // sites promotes correctly.
+        // NO 'u' suffix: used as a GLSL ARRAY DIMENSION, which wants a signed
+        // integer constant; mixed int/uint arithmetic at the use sites promotes
+        // correctly.
         sb.append("#define GRID_TABLE ").append(ParticleBuffers.GRID_TABLE).append('\n');
-        sb.append("#define STORM_NEXT_CAP ").append(ParticleBuffers.STORM_NEXT_CAP).append('\n');
         sb.append("#define INDIRECT_COMMANDS ").append(ParticleBuffers.INDIRECT_COMMANDS).append('\n');
         sb.append("#define INDIRECT_STRIDE ").append(ParticleBuffers.INDIRECT_STRIDE).append('\n');
         sb.append("#define INDIRECT_UINTS ").append(ParticleBuffers.INDIRECT_UINTS).append('\n');

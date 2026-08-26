@@ -18,15 +18,13 @@ layout(std430, binding = BIND_PREV_COUNTER) readonly buffer PrevCounterBuf { uin
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = BIND_GRID) buffer GridBuf {
     int heads[GRID_TABLE]; // bucket head: live index + 1 (0 = empty bucket)
-    int next[STORM_NEXT_CAP];
+    int next[];            // sized by pool capacity on the Java side
 } grid;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= prevCounter.live)
         return;
-    if (idx >= STORM_NEXT_CAP)
-        return; // beyond neighbour-coupling capacity (see ParticleBuffers)
 
     uint base = idx * 4u;
     uint eid = floatBitsToUint(readBuf.data[base + 3u].w);

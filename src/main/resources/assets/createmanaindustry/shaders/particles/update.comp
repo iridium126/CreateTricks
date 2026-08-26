@@ -38,12 +38,13 @@ uniform int  uCollisionOn; // 1 = collision texture/SSBO bound & valid
 // read pool / previous-frame counter slot this pass consumes.
 layout(std430, binding = BIND_GRID) buffer GridBuf {
     int heads[GRID_TABLE]; // bucket head: live index + 1 (0 = empty bucket)
-    int next[STORM_NEXT_CAP];
+    int next[];            // sized by pool capacity on the Java side
 } grid;
 uniform float uTimeSec;
 uniform vec3  uPlayerPos;
 uniform int   uPlayerOn;   // 1 = uPlayerPos valid
 uniform uint  uKillEmit;   // emitter id force-expired this frame (none = ~0u)
+uniform float uStormOmega; // SIGNED angular velocity rad/s (vortex mode; 0 = n/a)
 
 const float CELL_SIZE        = 2.5;  // == neighbour radius (one cell per axis)
 const float STORM_SEP_R      = 1.0;
@@ -113,17 +114,23 @@ void main() {
         vel.z += sin(ang) * acc * uDt;
     }
 
-    // ---- storm swarm steering (boids) ---------------------------------------
-    // Neighbour cohesion/alignment/separation through the spatial hash, a
-    // global attractor toward the wandering centre and player repulsion.
-    // Runs BEFORE the collision sweep so terrain still owns the final move.
-    vec4 stormA = emitters.u[hb + 18u]; // x flag, y ballRadius, z wanderRadius, w maxSpeed
-    if (stormA.x > 0.5) {
+    // ---- storm swarm steering ------------------------------------------------
+    // Mode 1 (ball): boids neighbour forces + containment shell around G(t).
+    // Mode 2 (vortex): ROTATING-FRAME pseudo-force solution. Each tick the
+    // member's state is expressed in the frame spinning at signed uStormOmega
+    // about G(t); real forces there are the under-damped home-circle springs
+    // (radius + height), separation and player repulsion, while centrifugal
+    // (w^2 r) and Coriolis (-2 w x v_frame) fall out of the transform -- their
+    // interplay etches the persistent spiral arms. Only WORLD-frame
+    // acceleration leaves this block: the collision sweep below still owns
+    // the final position move.
+    vec4 stormA = emitters.u[hb + 18u]; // x mode(0 none|1 ball|2 vortex), y radius, z wanderRadius, w maxSpeed
+    if (stormA.x > 0.5 && stormA.x < 1.5) {
         vec3 anchor = emitters.u[hb + 19u].xyz;
         vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
         vec3 acc = vec3(0.0);
 
-        if (idx < STORM_NEXT_CAP) {
+        {
             vec3 centerSum = vec3(0.0);
             vec3 velSum = vec3(0.0);
             vec3 sepSum = vec3(0.0);
@@ -185,6 +192,86 @@ void main() {
         float spd = length(vel);
         if (spd > spMax)
             vel *= spMax / spd;
+    }
+    else if (stormA.x > 1.5) {
+        // ----- vortex: integrate in the co-rotating frame ---------------------
+        vec3 anchor = emitters.u[hb + 19u].xyz;
+        vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
+        float omega = uStormOmega;
+        float th = omega * uTimeSec;
+        float cth = cos(th);
+        float sth = sin(th);
+        // R_y(-th) into the frame (helper keeps both directions consistent)
+        #define CMIST_ROT(v, c, s) vec3((c) * (v).x + (s) * (v).z, (v).y, -(s) * (v).x + (c) * (v).z)
+
+        vec3 rel = pos - G;
+        vec3 pF = CMIST_ROT(rel, cth, -sth);
+        // frame velocity: rotate world velocity in, subtract the FRAME drag
+        // velocity w x pF (rotation-covariant, so the axis-cross uses pF, not
+        // the world offset -- mixing the two silently skews every spiral)
+        vec3 vF = CMIST_ROT(vel, cth, -sth) - vec3(omega * pF.z, 0.0, -omega * pF.x);
+
+        // per-particle home circle + deck height (stateless from seed)
+        float ballR = max(stormA.y, 2.0);
+        float homeR = mix(ballR * 0.35, ballR, cmiHash1(p3.z * 5.7));
+        float homeY = (cmiHash1(p3.z * 9.1) * 2.0 - 1.0) * 1.2;
+
+        // under-damped springs toward the home circle/deck (frame coords)
+        vec2 pr = pF.xz;
+        float e = length(pr);
+        vec2 dirOut = e > 1e-3 ? pr / e : vec2(1.0, 0.0);
+        float vRad = dot(vF.xz, dirOut);
+        vec2 aRad = dirOut * (-(2.5) * (e - homeR) - (0.55) * vRad);
+        vec3 aF = vec3(aRad, -(2.0) * (pF.y - homeY) - (1.2) * vF.y);
+
+        // pseudo-forces of the rotating frame
+        aF.xz += omega * omega * pF.xz;                       // centrifugal
+        aF += vec3(-2.0 * omega * vF.z, 0.0, 2.0 * omega * vF.x); // Coriolis
+
+        // separation + player repulsion (rotation-invariant distances; the
+        // world-space vectors are rotated back out together with aF below)
+        vec3 sepW = vec3(0.0);
+        if (idx < prevCounter.live) {
+            ivec3 pc = ivec3(floor(pos / CELL_SIZE));
+            for (int ox = -1; ox <= 1; ox++)
+            for (int oy = -1; oy <= 1; oy++)
+            for (int oz = -1; oz <= 1; oz++) {
+                ivec3 c3 = pc + ivec3(ox, oy, oz);
+                uint hcell = (uint(c3.x) * 92837111u ^ uint(c3.y) * 689287499u ^ uint(c3.z) * 283923481u)
+                        & (GRID_TABLE - 1u);
+                int sN = grid.heads[int(hcell)];
+                while (sN != 0) {
+                    int j = sN - 1;
+                    sN = grid.next[j];
+                    if (j == int(idx))
+                        continue;
+                    vec3 op = readBuf.data[uint(j) * 4u].xyz;
+                    vec3 d = pos - op;
+                    float d2 = dot(d, d);
+                    if (d2 < STORM_SEP_R * STORM_SEP_R && d2 > 1e-8) {
+                        float dl = sqrt(d2);
+                        sepW += d * ((STORM_SEP_R - dl) / (dl * STORM_SEP_R));
+                    }
+                }
+            }
+            sepW *= STORM_W_SEP;
+        }
+        vec3 repW = vec3(0.0);
+        if (uPlayerOn == 1) {
+            vec3 dp = pos - uPlayerPos;
+            float dpL = length(dp);
+            if (dpL < STORM_PLAYER_R && dpL > 1e-3)
+                repW = (dp / dpL) * STORM_PLAYER_W * (STORM_PLAYER_R - dpL) / STORM_PLAYER_R;
+        }
+
+        // back to world: rotate the frame-side acceleration out, add the
+        // already-world-space terms, hand ONE acceleration to the integrator
+        vec3 aW = CMIST_ROT(aF, cth, sth) + sepW + repW;
+        vel += aW * uDt;
+        float spMaxV = max(stormA.w, 0.5);
+        float spdV = length(vel);
+        if (spdV > spMaxV)
+            vel *= spMaxV / spdV;
     }
 
     // ---- block collision: axis-separated sweep from the PRE-move position ----

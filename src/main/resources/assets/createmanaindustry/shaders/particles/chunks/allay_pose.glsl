@@ -58,15 +58,20 @@ vec3 cmiStormCenter(vec3 anchor, float wanderR, float seed, float timeSec) {
         cos(t * 0.60 + h2) + 0.5 * cos(t * 1.30 + h1));
 }
 
-// Procedural dance-burst arbitration for storm members: FLY-base individuals
-// that are slow AND near the wandering centre periodically run full vanilla
-// dance cycles (spin rhythm included via the dance branch); everyone else
-// keeps flying. Pure function of (seed, speed, distance, time) -- no state.
-int cmiStormAnimOverride(int baseAnim, float speed, float distCenter,
+// Procedural dance-burst arbitration for storm members, per motion mode.
+//   ball (mode 1): slow individuals near the wandering centre
+//   vortex (mode 2): inner-band members regardless of speed -- tangential
+//     velocity is constant on the orbit, so a speed gate would never fire;
+//     dancers keep orbiting (the pose change does not touch the motion)
+// Everyone else keeps flying. Pure function of its arguments -- no state.
+int cmiStormAnimOverride(int mode, int baseAnim, float speed, float distCenter,
         float ballRadius, float seed, float timeSec) {
     if (baseAnim != 0)
         return baseAnim;
-    if (speed > 1.5 || distCenter > ballRadius * 0.6)
+    bool stage = (mode == 2)
+        ? distCenter < ballRadius * 0.55
+        : (speed <= 1.5 && distCenter <= ballRadius * 0.6);
+    if (!stage)
         return 0;
     // ~11 s dancing out of each 36 s cycle, phase-staggered per particle
     float cyc = fract(timeSec / 36.0 + cmiHash1(seed * 7.3));

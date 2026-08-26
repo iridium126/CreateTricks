@@ -89,17 +89,43 @@ public final class CMIParticleCommand {
                                 .then(Commands.argument("ms", FloatArgumentType.floatArg(1f, 50f))
                                         .executes(CMIParticleCommand::budget)))
                         .then(Commands.literal("allaystorm")
-                                .executes(ctx -> allayStorm(ctx, 2048, 8.0))
+                                .executes(ctx -> allayStorm(ctx, "ball", 2048, 8.0, 0.6f))
                                 .then(Commands.literal("stop")
                                         .executes(CMIParticleCommand::allayStormStop))
-                                .then(Commands.argument("count", IntegerArgumentType.integer(1, 4096))
-                                        .executes(ctx -> allayStorm(ctx,
-                                                                IntegerArgumentType.getInteger(ctx, "count"), 8.0))
+                                .then(Commands.literal("ball")
+                                        .executes(ctx -> allayStorm(ctx, "ball", 2048, 8.0, 0.6f))
+                                        .then(Commands.argument("count", IntegerArgumentType.integer(1, 131072))
+                                                .executes(ctx -> allayStorm(ctx, "ball",
+                                                                IntegerArgumentType.getInteger(ctx, "count"), 8.0, 0.6f))
+                                                        .then(Commands.argument("radius",
+                                                                        FloatArgumentType.floatArg(2.0f, 64.0f))
+                                                                .executes(ctx -> allayStorm(ctx, "ball",
+                                                                        IntegerArgumentType.getInteger(ctx, "count"),
+                                                                        FloatArgumentType.getFloat(ctx, "radius"), 0.6f)))))
+                                .then(Commands.literal("vortex")
+                                        .executes(ctx -> allayStorm(ctx, "vortex", 2048, 8.0, 0.6f))
+                                        .then(Commands.argument("count", IntegerArgumentType.integer(1, 131072))
+                                                .executes(ctx -> allayStorm(ctx, "vortex",
+                                                                IntegerArgumentType.getInteger(ctx, "count"), 8.0, 0.6f))
+                                                        .then(Commands.argument("radius",
+                                                                        FloatArgumentType.floatArg(2.0f, 64.0f))
+                                                                .executes(ctx -> allayStorm(ctx, "vortex",
+                                                                        IntegerArgumentType.getInteger(ctx, "count"),
+                                                                        FloatArgumentType.getFloat(ctx, "radius"), 0.6f))
+                                                                        .then(Commands.argument("omega",
+                                                                                        FloatArgumentType.floatArg(0.05f, 3.0f))
+                                                                                .executes(ctx -> allayStorm(ctx, "vortex",
+                                                                                        IntegerArgumentType.getInteger(ctx, "count"),
+                                                                                        FloatArgumentType.getFloat(ctx, "radius"),
+                                                                                        FloatArgumentType.getFloat(ctx, "omega")))))))
+                                .then(Commands.argument("count", IntegerArgumentType.integer(1, 131072))
+                                        .executes(ctx -> allayStorm(ctx, "ball",
+                                                                IntegerArgumentType.getInteger(ctx, "count"), 8.0, 0.6f))
                                                 .then(Commands.argument("radius",
-                                                                FloatArgumentType.floatArg(2.0f, 32.0f))
-                                                        .executes(ctx -> allayStorm(ctx,
+                                                                FloatArgumentType.floatArg(2.0f, 64.0f))
+                                                        .executes(ctx -> allayStorm(ctx, "ball",
                                                                 IntegerArgumentType.getInteger(ctx, "count"),
-                                                                FloatArgumentType.getFloat(ctx, "radius"))))))
+                                                                FloatArgumentType.getFloat(ctx, "radius"), 0.6f)))))
                         .then(Commands.literal("shaderpack")
                                 .then(Commands.literal("status")
                                         .executes(CMIParticleCommand::shaderPackStatus))));
@@ -218,18 +244,23 @@ public final class CMIParticleCommand {
     }
 
     /**
-     * /cmip allaystorm [count ≤4096] [radius 2..32] -- persistent boids bait
-     * ball anchored at the player; re-running it moves/re-sizes the storm,
-     * /cmip allaystorm stop disperses it.
+     * /cmip allaystorm [ball|vortex] [count ≤131072] [radius 2..64] [omega]
+     * -- persistent storm anchored at the player; ball = boids bait ball,
+     * vortex = rotating-frame orbital swarm (omega rad/s, signed flip is
+     * chosen per storm). Re-running moves/re-sizes/re-types it; stop disperses.
      */
-    private static int allayStorm(CommandContext<CommandSourceStack> ctx, int count, double radius) {
+    private static int allayStorm(CommandContext<CommandSourceStack> ctx, String mode,
+            int count, double radius, float omega) {
         if (!engine(ctx)) {
             return 0;
         }
         Vec3 pos = ctx.getSource().getPosition().add(0, 1.0, 0);
-        CMIParticleEngine.INSTANCE.startStorm(pos, count, radius);
-        tell(ctx, "§b[CMI particles]§r Allay Storm assembling: §e" + count
-                + "§r members, ball radius §e" + (int) radius + "§r (stop: /cmip allaystorm stop).");
+        CMIParticleEngine.INSTANCE.startStorm(pos, count, radius,
+                "vortex".equals(mode) ? 2 : 1, omega);
+        tell(ctx, "§b[CMI particles]§r Allay Storm (§e" + mode + "§r) assembling: §e" + count
+                + "§r members, radius §e" + (int) radius
+                + ("vortex".equals(mode) ? "§r, ω §e" + omega : "")
+                + "§r (stop: /cmip allaystorm stop).");
         return Command.SINGLE_SUCCESS;
     }
 

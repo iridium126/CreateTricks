@@ -114,13 +114,6 @@ public final class ParticleBuffers {
     public static final int GRID_BB = 13;
     /** Spatial-hash table size in cells (power of two; masked hashing). */
     public static final int GRID_TABLE = 16384;
-    /**
-     * Max particles inserted into the boids grid per frame — the {@code next}
-     * chain array is indexed by live index. The storm cap is 4096, so this
-     * leaves generous slack; particles beyond the cap still receive the global
-     * attractor / player forces, they only lose neighbour coupling.
-     */
-    public static final int STORM_NEXT_CAP = 8192;
 
     /**
      * Flat-uint index of field {@code f} of indirect command {@code c}: with
@@ -278,9 +271,12 @@ public final class ParticleBuffers {
         this.offsetSSBO = createBuffer((long) RADIX_BINS * 4, null);
         this.bakeMetaSSBO = createBuffer(CollisionBake.MAX_SLICES * 16L, null);
         // Boids spatial hash: heads table followed by the per-live-index next
-        // chain array. heads is cleared every frame before gridbuild.comp runs;
-        // next needs no clearing (written before read via atomicExchange).
-        this.gridSSBO = createBuffer((GRID_TABLE + STORM_NEXT_CAP) * 4L, null);
+        // chain array, sized by POOL CAPACITY so every storm member (up to the
+        // 131072 stress cap) keeps neighbour coupling regardless of how sprite
+        // indices interleave in the dense prefix. heads is cleared every frame
+        // before gridbuild.comp runs; next needs no clearing (written before
+        // read via atomicExchange).
+        this.gridSSBO = createBuffer((GRID_TABLE + (long) cap) * 4L, null);
 
         // initial indirect payload: one command per slot (6 verts / 0 inst
         // each; the 5th uint pads arrays commands to the uniform 20 B stride)

@@ -93,8 +93,8 @@ void main() {
     if (stormA.x > 0.5) {
         vec3 anchor = emitters.u[hb + 19u].xyz;
         vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
-        anim = cmiStormAnimOverride(anim, length(p1.xyz), distance(p0.xyz, G),
-                stormA.y, p3.z, uTimeSec);
+        anim = cmiStormAnimOverride(int(stormA.x), anim, length(p1.xyz),
+                distance(p0.xyz, G), stormA.y, p3.z, uTimeSec);
     }
     float yaw;
     mat4 M = cmiAllayPartTransform(p3.x, p3.z, p1.xyz, anim, pid, yaw);

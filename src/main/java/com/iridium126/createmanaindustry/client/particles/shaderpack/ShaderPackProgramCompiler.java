@@ -4,6 +4,8 @@ import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.accessor.CMIProgramDirectivesAccessor;
 import com.iridium126.createmanaindustry.client.particles.engine.ParticlePrograms;
 
+import com.mojang.blaze3d.shaders.Uniform;
+
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.gl.blending.AlphaTest;
 import net.irisshaders.iris.gl.blending.AlphaTestFunction;
@@ -63,6 +65,14 @@ import org.lwjgl.opengl.GL20;
  * patch -> jcpp preprocess -> ProgramSource (+ its withDirectiveOverride step)
  * -> invokeCreateShader.</p>
  *
+ * <p>Two structural notes on the merged sources: the pack's optional geometry /
+ * tessellation stages are carried over verbatim by {@link #makeSource} (only
+ * the vertex stage is injected), and each created ShaderInstance is seeded with
+ * a dummy {@code ModelViewMat} via {@link #seedDummyModelViewUniform} -- which
+ * requires {@code META-INF/accesstransformer.cfg} to strip {@code final} from
+ * {@code ShaderInstance.MODEL_VIEW_MATRIX}, letting vanilla {@code apply()}
+ * run to completion exactly as for native programs.</p>
+ *
  * <p>All iris-veil-compat type references in this class require the mod to be
  * loaded -- instantiate only under {@link CreateManaIndustry#IRISVEIL_ACTIVE}.</p>
  */
@@ -77,10 +87,15 @@ public final class ShaderPackProgramCompiler {
     private static final String GHOST_SHADER_NAME = "cmi_model_entities_ghost";
     private static final String SHADOW_SHADER_NAME = "cmi_model_shadow";
 
-    /** Shadow-path alpha-test fallback, mirroring the reference linker: the
-     * gbuffer pair discards like native cutout entities, while the shadow map
-     * keeps every fragment unless the pack defines alphaTest.shadow itself. */
-    private static final AlphaTest FALLBACK_ALPHA_TEST_SHADOW = AlphaTest.ALWAYS;
+    /** Shadow-path alpha-test fallbacks, PER RESOLVED VARIANT. The entities
+     * variant mirrors Iris's native SHADOW_ENTITIES_CUTOUT key exactly
+     * ({@code GREATER 0.1}), so particle shadows discard like native entity
+     * shadows when the pack defines no alphaTest.shadow of its own; the plain
+     * terrain-fallback variant keeps the reference linker's ALWAYS (its native
+     * sub-keys span OFF/NON_ZERO/ONE_TENTH with no single faithful value). */
+    private static final AlphaTest FALLBACK_ALPHA_TEST_SHADOW_ENTITIES =
+            new AlphaTest(AlphaTestFunction.GREATER, 0.1f);
+    private static final AlphaTest FALLBACK_ALPHA_TEST_SHADOW_PLAIN = AlphaTest.ALWAYS;
 
     /** L0 ghost semantics pinned onto the ghost program regardless of what the
      * pack's entity blend directive carries (design doc §12.2): standard
@@ -190,7 +205,7 @@ public final class ShaderPackProgramCompiler {
             // absent fields fall through unchanged (alpha -> FALLBACK_ALPHA_TEST,
             // blend -> ProgramId.Entities' built-in default).
             this.entitiesShader = this.compileMerged(accessor, programSet, properties,
-                    patched, fragRef, SHADER_NAME, refProgram.getDirectives(), null);
+                    patched, fragRef, refProgram, SHADER_NAME, refProgram.getDirectives(), null);
             if (this.entitiesShader == null)
                 return fail("Iris returned no shader instance");
             this.gtextureUnit = findSamplerUnit(this.entitiesShader);
@@ -203,7 +218,7 @@ public final class ShaderPackProgramCompiler {
             var ghostDirectives = refProgram.getDirectives()
                     .withOverriddenDrawBuffers(refProgram.getDirectives().getDrawBuffers());
             this.ghostShader = this.compileMerged(accessor, programSet, properties,
-                    patched, fragRef, GHOST_SHADER_NAME, ghostDirectives, GHOST_BLEND_OVERRIDE);
+                    patched, fragRef, refProgram, GHOST_SHADER_NAME, ghostDirectives, GHOST_BLEND_OVERRIDE);
             if (this.ghostShader == null)
                 return fail("Iris returned no ghost shader instance");
             this.ghostGtextureUnit = findSamplerUnit(this.ghostShader);
@@ -369,13 +384,16 @@ public final class ShaderPackProgramCompiler {
 
             // Route-A again: inherit the resolved Shadow directives wholesale so
             // alphaTest.shadow/blend.shadow behave exactly as for native draws;
-            // absent fields fall through to ALWAYS (reference shadow semantics).
-            var source = this.makeSource(programSet, properties, patched, fragRef)
+            // absent fields fall through to the VARIANT fallback chosen above.
+            var source = this.makeSource(programSet, properties, patched, fragRef, refProgram)
                     .withDirectiveOverride(refProgram.getDirectives());
+            AlphaTest shadowFallback = shadowVariant == ProgramId.ShadowEntities
+                    ? FALLBACK_ALPHA_TEST_SHADOW_ENTITIES : FALLBACK_ALPHA_TEST_SHADOW_PLAIN;
             this.shadowShader = accessor.invokeCreateShadowShader(SHADOW_SHADER_NAME, source, shadowVariant,
-                    FALLBACK_ALPHA_TEST_SHADOW, IrisVertexFormats.TERRAIN, false, false, false, false);
+                    shadowFallback, IrisVertexFormats.TERRAIN, false, false, false, false);
             if (this.shadowShader == null)
                 { shadowDown("Iris returned no shadow shader instance"); return; }
+            seedDummyModelViewUniform(this.shadowShader);
 
             this.shadowGtextureUnit = findSamplerUnit(this.shadowShader);
             this.shadowReady = true;
@@ -406,10 +424,10 @@ public final class ShaderPackProgramCompiler {
      */
     private ShaderInstance compileMerged(IrisRenderingPipelineAccessor accessor, ProgramSet programSet,
                                          net.irisshaders.iris.shaderpack.properties.ShaderProperties properties,
-                                         String patchedVertex, String fragRef, String name,
+                                         String patchedVertex, String fragRef, ProgramSource refProgram, String name,
                                          net.irisshaders.iris.shaderpack.properties.ProgramDirectives directives,
                                          BlendModeOverride pinBlend) throws IOException {
-        var source = this.makeSource(programSet, properties, patchedVertex, fragRef)
+        var source = this.makeSource(programSet, properties, patchedVertex, fragRef, refProgram)
                 .withDirectiveOverride(directives);
         if (pinBlend != null) {
             if (source.getDirectives() instanceof CMIProgramDirectivesAccessor mutable) {
@@ -423,15 +441,46 @@ public final class ShaderPackProgramCompiler {
         ShaderInstance shader = accessor.invokeCreateShader(name, source, ProgramId.Entities,
                 FALLBACK_ALPHA_TEST, IrisVertexFormats.TERRAIN, FogMode.OFF,
                 false, false, false, false, false);
+        if (shader != null)
+            seedDummyModelViewUniform(shader);
         CreateManaIndustry.LOGGER.info("[CMI particles] invokeCreateShader({}) -> {}",
                 name, shader == null ? "null" : "ShaderInstance#" + shader.getId());
         return shader;
     }
 
+    /**
+     * Builds one synthetic ProgramSource that carries the PACK's optional
+     * geometry / tessellation stages over verbatim -- same as iris-flw-compat's
+     * {@code programSourceOverrideVertexSource}: only the vertex stage is
+     * injected here, while a geometry/tess stage consumes the pack varyings our
+     * rewritten vertex writes, so dropping those sources would silently lose
+     * packs that ship an entity geometry pipeline. The constructor blend
+     * argument stays null -- the effective blend comes from the wholesale
+     * directive inheritance at the call sites.
+     */
     private ProgramSource makeSource(ProgramSet programSet, net.irisshaders.iris.shaderpack.properties.ShaderProperties properties,
-                                     String vertex, String fragment) {
+                                     String vertex, String fragment, ProgramSource refProgram) {
         return new ProgramSource(SHADER_NAME, vertex,
-                null, null, null, fragment, programSet, properties, null);
+                refProgram.getGeometrySource().orElse(null),
+                refProgram.getTessControlSource().orElse(null),
+                refProgram.getTessEvalSource().orElse(null),
+                fragment, programSet, properties, null);
+    }
+
+    /**
+     * Seeds a dummy {@code ModelViewMat} uniform so vanilla
+     * {@link ShaderInstance#apply()} survives on merged programs whose generated
+     * JSON declares only {@code iris_*} matrices -- without it the vanilla
+     * static handle stays null and apply() NPEs mid-upload, skipping every
+     * later ExtendedShader side effect. Same runtime assignment as
+     * iris-flw-compat's IrisFlwCompatGlProgram constructor; requires the
+     * accesstransformer.cfg final-strip on MODEL_VIEW_MATRIX. Type 10 is
+     * blaze3d's abstracted matrix4x4 with 16 floats -- apply() uploads the real
+     * values on every use.
+     */
+    private static void seedDummyModelViewUniform(ShaderInstance shader) {
+        if (shader.MODEL_VIEW_MATRIX == null)
+            shader.MODEL_VIEW_MATRIX = new Uniform("ModelViewMat", 10, 16, shader);
     }
 
     /** Finds which texture unit Iris bound the pack fragment's main sampler to. */
@@ -466,7 +515,11 @@ public final class ShaderPackProgramCompiler {
             throw new IllegalStateException("cannot load chunks/allay_pose.glsl");
 
         StringBuilder sb = new StringBuilder(8192);
-        sb.append("#version 430 core\n"); // feature-level placeholder (SSBOs); the injector rewrites the PACK header, not this one
+        // Placeholder header only -- the injector floors the PACK header
+        // separately and parses this block under the same profile. Highest
+        // language need in this block is usamplerBuffer/floatBitsToUint
+        // (GLSL 330); no SSBOs remain since the TBO migration.
+        sb.append("#version 400 core\n");
         // constants ride the AST as plain const declarations -- #define lines
         // vanish when declarations transplant across glsl-transformer trees
         sb.append("const uint MODEL_VERTEX_FLOATS = ").append(ParticlePrograms.modelVertexFloats()).append("u;\n");

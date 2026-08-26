@@ -229,8 +229,8 @@ M2 起以 /cmip gself status + 附录 A 场景矩阵复核。
 | 编译链配方 | accessor→resolver→注入→jcpp→createShader 七步同构；偏差与修复见 13.2 |
 | 注入器骨架 | 与 veil GlslTransformerVeilPatcher 同构；glsl-transformer 停留 2.0.1 为既定决策 |
 | 绘制期协议 | flw 式 apply 后补传 iris_* 矩阵/法线一致，且中性化 entityId/entityColor 超出参考 |
-| 槽位隔离 | Flywheel SSBO 0–7 / UBO 0–4 / 纹理 T0–T9 数字级核对，本引擎 12–15 无冲突 |
-| 阴影轨 | 未实施（两参考均有现成配方：MixinShadowRenderer / invokeCreateShadowShader） |
+| 槽位隔离 | Flywheel SSBO 0–7 / UBO 0–4 / 纹理 T0–T9 数字级核对；TBO 化后采样器单元 10–13 经自有 MixinProgramSamplers 进入 Iris 预留集（flw 同款手法，原 13.4 观察项已闭环） |
+| 阴影轨 | **已实施**：compileShadow 以 ShadowEntities 优先、plain Shadow 兜底解析，invokeCreateShadowShader 编译第三程序；MixinIrisShadowRenderer 锚定 ldc="draw entities"，并以 shouldRenderEntities 门控（实体阴影被包禁用时粒子同步停投，原生悦灵同等待遇） |
 
 ### 13.2 已落地修复
 
@@ -268,8 +268,21 @@ M2 起以 /cmip gself status + 附录 A 场景矩阵复核。
 
 ### 13.4 遗留观察项
 
-- 采样器单元 10–13 未进 Iris 预留集（flw 同款 MixinProgramSamplers 为候选后续）；
 - gtexture 单元 0 图集不归还（原版每绘制重绑，暂无实害）；
-- shadow 轨（S）未实施；
 - "接口块剥除者"身份未定（与 sodium/FML 活跃相关），TBO 化已绕开；未来若需真 SSBO 再议。
+
+---
+
+## 14. 对齐修复第二轮（审查驱动，A–F）
+
+> 独立复审以 .refs/Flywheel 1.0.6 / iris-flw-compat 2.4.0 / iris-veil-compat / Iris 运行时同源逐行核对后落地的六项修正。
+
+| # | 结论与处置 |
+|---|---|
+| A | makeSource 原丢弃 geometry/tessControl/tessEval——改为三处合并程序（cutout/ghost/shadow）全部透传 refProgram 的可选阶段，对齐 flw 的 programSourceOverrideVertexSource；仅顶点段被注入，几何段原样消费注入后 varying |
+| B | 阴影 fallbackAlpha 按变体拆分：ShadowEntities → GREATER 0.1（逐位对齐原生 SHADOW_ENTITIES_CUTOUT）；plain Shadow → 保持 ALWAYS（其原生子键无单一忠实值，且与 flw 一致） |
+| C | GLSL 下限 430→400（两参考同为 400）：注入器 floor、cmiTransformer 词法 Version.GLSL40、合并源占位头三处同步；"std430 SSBO"注释失实删除——TBO 迁移后最高语言需求仅 usamplerBuffer（330） |
+| D | gl_Vertex=level-space 为固有契约而非缺陷：flywheel 式 inverse(proj*mv) 反变换在本引擎无意义（全实例共享单一 gbuffer MV，无法重建逐实例模型系），保持数学不动；契约边界（模型局部坐标语义不支持、判别方法）固化于注入器 javadoc 与本文档 |
+| E | 新增 META-INF/accesstransformer.cfg 去 MODEL_VIEW_MATRIX 的 final；编译后按 flw 同款播种 dummy Uniform("ModelViewMat",10,16)；applyGuarded 裸 glUseProgram 回退整体删除——apply() 异常上抛走钩子失败记录路径，当帧回落自绘，静默降级面清零 |
+| F | MixinIrisShadowRenderer 补 @Final @Shadow shouldRenderEntities 门控（用户裁定取实体门控而非 flw 的方块实体门控：粒子内容属实体流）；玩家单独开启的包不给非玩家实体影子 |
 

@@ -49,7 +49,16 @@ import java.util.regex.Pattern;
  *       gl_ModelViewMatrix} is left UNTOUCHED (Iris feeds the real matrix), so
  *       positioning, fog-distance math AND any non-positioning MV use keep
  *       native-entity semantics -- same contract as the iris-flw-compat /
- *       iris-veil-compat patchers, which never collapse the matrices either;</li>
+ *       iris-veil-compat patchers, which never collapse the matrices either.
+ *       CONTRACT BOUNDARY: gl_Vertex here is LEVEL space, NOT model-local.
+ *       flywheel-compat can back-transform through inverse(proj*mv) because it
+ *       owns a real per-draw model matrix; this engine bakes every instance's
+ *       pose into level space against ONE shared gbuffer MV, so no faithful
+ *       per-instance model frame exists and none is emulated. Pack vertex math
+ *       that assumes MODEL-LOCAL coordinates (relative offsets from
+ *       gl_Vertex, length(gl_Vertex)-style radii, gl_ModelViewMatrix[3] as
+ *       entity origin) is OUTSIDE the supported contract; when a pack misbehaves,
+ *       dump its merged vertex stage and check for such reads first;</li>
  *   <li>{@code ftransform()} -> {@code gl_ProjectionMatrix *
  *       gl_ModelViewMatrix * cmi_VertexLevel};</li>
  *   <li>{@code gl_Color} -> {@code cmi_Tint} (emitter colour keyframes);</li>
@@ -106,13 +115,12 @@ public final class ParticleVertexInjector {
                     throw new IllegalArgumentException("No #version directive found in pack vertex source!");
                 }
                 int originalVersion = Integer.parseInt(matcher.group(1));
-                // Floor at 430: the injected CMI block declares std430 SSBOs
-                // (GLSL 430+). The primary target pack (Photon v1.3b) ships
-                // gbuffers_block.vsh as #version 400 compatibility -- without
-                // this floor the merged program only links where drivers accept
-                // SSBOs below 4.30 (spec-illegal) and silently falls back to the
-                // self-drawn path everywhere else.
-                int finalVersion = Math.max(originalVersion, 430);
+                // Floor at 400 compatibility -- exactly what both reference
+                // patchers (iris-flw-compat / iris-veil-compat) do: the injected
+                // CMI block needs uint bit math, floatBitsToUint and
+                // usamplerBuffer fetches (GLSL 330+), and one uniform profile
+                // across every merged program keeps parsing/linking predictable.
+                int finalVersion = Math.max(originalVersion, 400);
                 input = matcher.replaceAll("#version " + finalVersion + " compatibility\n");
                 transformer.getLexer().version = Version.fromNumber(finalVersion);
                 return super.parseTranslationUnit(rootInstance, input);
@@ -122,9 +130,11 @@ public final class ParticleVertexInjector {
 
         cmiTransformer = new SingleASTTransformer<>();
         cmiTransformer.setRootSupplier(RootSupplier.PREFIX_UNORDERED_ED_EXACT);
-        // match the injected source's feature level -- the merged CMI source
-        // contains uint/uvec2 arithmetic and std430 buffer blocks (430 syntax)
-        cmiTransformer.getLexer().version = Version.fromNumber(430);
+        // match the injected source's feature level -- uint/uvec2 arithmetic
+        // and samplerBuffer fetches parse under the same 400-compatibility
+        // profile the pack side is floored to (same constant the reference
+        // patchers use for their foreign translation units)
+        cmiTransformer.getLexer().version = Version.GLSL40;
     }
 
     /**

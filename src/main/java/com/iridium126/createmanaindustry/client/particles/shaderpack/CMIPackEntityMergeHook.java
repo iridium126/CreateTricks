@@ -66,9 +66,6 @@ public final class CMIPackEntityMergeHook {
     private static final Map<Integer, Map<String, Integer>> UNIFORMS = new HashMap<>();
     private static boolean rebuildListenerRegistered = false;
 
-    /** Warn-once latch for {@link #applyGuarded}'s fallback path. */
-    private static boolean applyFallbackWarned;
-
     private CMIPackEntityMergeHook() {}
 
     // ------------------------------------------------------------------
@@ -166,7 +163,7 @@ public final class CMIPackEntityMergeHook {
         gpu.bindDrawIndirect();
 
         ShaderInstance shader = COMPILER.shadowShader();
-        applyGuarded(shader);
+        shader.apply();
         uploadShadowUniforms(shader.getId());
         RenderSystem.enableDepthTest();
         GL11.glEnable(GL11.GL_CULL_FACE);
@@ -234,7 +231,7 @@ public final class CMIPackEntityMergeHook {
         // writes everywhere (early-Z feeder for later passes). The program
         // inherits the pack's entity directives wholesale.
         ShaderInstance shader = COMPILER.entitiesShader();
-        applyGuarded(shader);
+        shader.apply();
         int progId = shader.getId();
         uploadSegmentUniforms(progId, engine);
         RenderSystem.enableDepthTest();
@@ -251,7 +248,7 @@ public final class CMIPackEntityMergeHook {
         // tracker stays consistent). Depth writes stay ON -- the documented L0
         // tradeoff lets ghost surfaces occlude later translucent passes.
         ShaderInstance ghost = COMPILER.ghostShader();
-        applyGuarded(ghost);
+        ghost.apply();
         progId = ghost.getId();
         uploadSegmentUniforms(progId, engine);
         RenderSystem.enableDepthTest();
@@ -313,27 +310,6 @@ public final class CMIPackEntityMergeHook {
                 gpu.particleReadBufferId(),
                 permId >= 0 ? permId : gpu.sortBuffer(0));
         gpu.bindVao();
-    }
-
-    /**
-     * Applies an Iris-created ShaderInstance. When the merged program optimised
-     * the vanilla ModelViewMat away, apply() can throw inside its uniform
-     * iteration (the reference wrapper seeded a dummy; that field is final under
-     * the NeoForge mappings, so fall back to a bare glUseProgram instead -- our
-     * uploads below do not depend on the vanilla uniform state).
-     */
-    private static void applyGuarded(ShaderInstance shader) {
-        try {
-            shader.apply();
-        } catch (RuntimeException e) {
-            if (!applyFallbackWarned) {
-                applyFallbackWarned = true;
-                CreateManaIndustry.LOGGER.warn(
-                        "[CMI particles] ShaderInstance.apply() failed on the merged program "
-                                + "(optimized-away vanilla uniform); using bare glUseProgram from now on", e);
-            }
-            GL20.glUseProgram(shader.getId());
-        }
     }
 
     /**

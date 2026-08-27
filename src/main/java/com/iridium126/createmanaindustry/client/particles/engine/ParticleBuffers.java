@@ -84,9 +84,18 @@ public final class ParticleBuffers {
     // The binding constants below are the SINGLE SOURCE OF TRUTH for the
     // GLSL side too: ParticlePrograms#commonPrelude generates #define lines
     // from them and injects the prelude into every shader source.
-    /** Read pool of the double-buffered particle SSBOs (update/keygen read side). */
+    /**
+     * Read pool of the double-buffered particle SSBOs — update/gridbuild/keygen
+     * (keygen via a WRITE-slot binding while pre-swap) source, and, after each
+     * AFTER_SKY commit, ALSO every render pass's data source.
+     */
     public static final int PARTICLE_BB_READ = 0;
-    /** Write pool of the double-buffered particle SSBOs (also what render passes read). */
+    /**
+     * Write pool of the double-buffered particle SSBOs — compute-phase output
+     * target only (update/emit write it pre-swap). Since the frame split,
+     * render passes must NEVER bind this side: by draw time the freshly written
+     * generation already moved to the read side via {@link #swap()}.
+     */
     public static final int PARTICLE_BB_WRITE = 1;
     public static final int INDIRECT_BB = 2;
     public static final int COUNTER_BB = 3;
@@ -314,6 +323,19 @@ public final class ParticleBuffers {
 
     public boolean initialized() {
         return this.initialized;
+    }
+
+    /**
+     * Binds the NEWEST fully-written generation's backing buffer — the write
+     * side while called inside the compute phase (pre-swap), which becomes the
+     * read side for every consumer after the AFTER_SKY commit. The {@code
+     * binding} ARGUMENT is a shader-declared binding POINT, not a side
+     * selector: pass the constant the consuming GLSL block actually declares
+     * (the L0 render vertex shaders use PARTICLE_BB_WRITE even though they
+     * mean "fresh data"). Callers choose generation, this class owns buffers.
+     */
+    public void bindNewestPool(int binding) {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, binding, this.particleSSBOs[this.readIndex]);
     }
 
     public int capacity() {

@@ -51,15 +51,25 @@ public class CreateManaIndustryClient {
     }
 
     /**
-     * GPU particle engine frame hook. Uses the native NeoForge level-stage
-     * event (the same AFTER_LEVEL slot the mod's mist/glow pipelines use, but
-     * served through the platform event so the engine works with or without Veil).
+     * GPU particle engine split-frame hooks. The compute half runs at
+     * AFTER_SKY — the earliest level-stage event of the pass — so its keygen
+     * culls against THIS frame's camera before anything else renders; the
+     * shader-pack merge hook fires mid-renderLevel, between AFTER_SKY and
+     * AFTER_LEVEL, and thereby consumes a current-frame permutation (fixes the
+     * one-frame entry lag of MODEL particles under fast view rotation). Every
+     * draw call stays at AFTER_LEVEL reading the just-committed pool.
      */
     @SubscribeEvent
     private static void onRenderLevelStage(RenderLevelStageEvent event) {
-        if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_LEVEL) {
-            CMIParticleEngine.INSTANCE.renderFrame(event.getCamera(),
+        // NB: Stage is a plain class of constants (not an enum) in this NeoForge
+        // version, so stage dispatch must use identity comparison, not switch.
+        var stage = event.getStage();
+        if (stage == RenderLevelStageEvent.Stage.AFTER_SKY) {
+            CMIParticleEngine.INSTANCE.beginFrame(event.getCamera(),
                     event.getModelViewMatrix(), event.getProjectionMatrix(), event.getPartialTick());
+        } else if (stage == RenderLevelStageEvent.Stage.AFTER_LEVEL) {
+            CMIParticleEngine.INSTANCE.endFrame(event.getCamera(),
+                    event.getModelViewMatrix(), event.getProjectionMatrix());
         }
     }
 

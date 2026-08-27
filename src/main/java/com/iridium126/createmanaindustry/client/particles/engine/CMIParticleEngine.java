@@ -62,6 +62,16 @@ import org.lwjgl.system.MemoryStack;
  * </ul>
  * All GL programs are created from the mod's bundled GLSL with raw LWJGL
  * ({@link ParticlePrograms}) — no dependency on Veil's shader manager.
+ * <p>
+ * The frame is SPLIT across two {@code RenderLevelStageEvent} stages of the
+ * same {@code renderLevel} pass: {@link #beginFrame} at AFTER_SKY runs every
+ * compute dispatch (integrate/emit/cull/sort/capture) and commits a generation;
+ * the shader-pack merge hook consumes that commit mid-renderLevel so merged
+ * programs cull against THIS frame's camera; {@link #endFrame} at AFTER_LEVEL
+ * then submits all draw passes from the committed pool. This removes the
+ * previous one-generation entry lag for pack-path MODEL particles; the Iris
+ * shadow track (which runs before renderSky, ahead of any stage event) keeps
+ * reading the prior generation by design.
  */
 public final class CMIParticleEngine {
 
@@ -76,7 +86,12 @@ public final class CMIParticleEngine {
     private static final float FADE_RAMP_BLOCKS = 24.0f;
     /** Counting-sort passes over the 8-bit depth-band key (one, by design). */
     private static final int RADIX_SHIFTS[] = { 0 };
-    /** GL_TIME_ELAPSED query ring — reads a 3-frame-old sample, never blocking. */
+    /**
+     * GL_TIME_ELAPSED query ring depth — each ring reads a 3-frame-old sample,
+     * never blocking. The split frame runs TWO rings ({@link #computeTimer}
+     * for the AFTER_SKY phase, {@link #drawTimer} for the AFTER_LEVEL phase);
+     * their latest samples are summed as the throttle input.
+     */
     private static final int TIMER_RING = 4;
 
     /** One-shot burst request posted from a client thread. */
@@ -195,15 +210,20 @@ public final class CMIParticleEngine {
     private int lastGoodSlot = 0;
     /**
      * Sort buffer GL id holding the newest COMMITTED translucent permutation --
-     * pointer-local {@code finalPerm} dies with runFrame, but the pack entity
-     * merge hook runs inside renderLevel before AFTER_LEVEL and binds exactly
-     * the last committed permutation. -1 until the first sorted frame commits.
+     * pointer-local {@code finalPerm} dies with runCompute, but the pack entity
+     * merge hook runs inside renderLevel AFTER the AFTER_SKY compute commit and
+     * BEFORE the AFTER_LEVEL draw phase, binding exactly the committed
+     * permutation of this frame. -1 until the first sorted frame commits.
      */
     private int lastFinalPermId = -1;
+    /** simFrame stamp of that newest committed permutation (consumption-age diagnostic). */
+    private int lastFinalPermFrameSim = 0;
     /**
      * Set by the pack entity merge hook when it drew the MODEL segments this
-     * frame; runFrame skips its own drawModels accordingly (render arbitration) and
-     * clears the latch afterwards. Written only from the render thread.
+     * frame (it fires mid-renderLevel, between the AFTER_SKY compute phase and
+     * the AFTER_LEVEL draw phase); {@code endFrame} skips its own drawModels
+     * accordingly (render arbitration) and clears the latch afterwards.
+     * Written only from the render thread.
      */
     private boolean hookModelsDrawn = false;
     /** Accumulated GPU ms measured inside the shader-pack hook (timer ring). */
@@ -214,12 +234,94 @@ public final class CMIParticleEngine {
     public volatile String shaderPackDepthStatus = "n/a";
     /** S-track state for /cmip shaderpack status: n/a / active / no shadow track / ... */
     public volatile String shaderPackShadowStatus = "n/a";
+    /**
+     * Diagnostics for /cmip shaderpack status: how many frames old the sort
+     * permutation a pack hook last consumed was. 0 = the merged programs drew
+     * THIS frame's cull/sort result; >= 1 = stale generation (shadow track by
+     * design — Iris renders shadows before renderSky, ahead of every
+     * level-stage event).
+     */
+    public volatile String shaderPackPermStatus = "n/a";
     public volatile String shaderPackErrorStatus = "";
     private volatile int liveDisplay = 0;
     private volatile float scale = 1f;
     private volatile int streamCount = 0;
     private int simFrame = 0;
     private int frameSeed = 0;
+
+    // ---- Split-frame handoff (AFTER_SKY compute -> AFTER_LEVEL draws) ------
+    /** Set by beginFrame when its guards passed; drives endFrame accounting. */
+    private boolean frameAttempted = false;
+    /** Set only when the compute phase committed fully; gates ALL draw submission. */
+    private boolean frameArmed = false;
+    /** beginFrame submission clock; endFrame falls back to it before timer samples flow. */
+    private long frameStartNanos = 0;
+    /**
+     * Per-frame handoff values computed by runCompute, consumed by runDraws —
+     * the draws repeat the compute section's own guard so a frame where nothing
+     * is alive still skips vertex work but keeps every buffer binding valid.
+     */
+    private int frameAliveEstimate = 0;
+    private int frameEntryCount = 0;
+    private boolean frameSorted = false;
+    private int frameFinalPerm = -1;
+
+    /**
+     * One GL_TIME_ELAPSED query ring. Collects the oldest sample on rotation
+     * ONLY when available (zero stalls); otherwise the previous value stands.
+     * Two instances cover the split frame: one brackets the AFTER_SKY compute
+     * phase, the other the AFTER_LEVEL draw phase. Their latest samples are
+     * summed as the throttle input so the budget sees the whole per-frame
+     * particle cost exactly as when one bracket covered everything.
+     */
+    private static final class GpuTimerRing {
+        final int[] queries = new int[TIMER_RING];
+        int slot = 0;
+        int issued = 0;
+        boolean ready = false;
+        /** True once any completed sample has ever landed in {@link #lastMs}. */
+        boolean sampled = false;
+        double lastMs = 0;
+
+        void ensureCreated() {
+            if (!this.ready) {
+                GL15.glGenQueries(this.queries);
+                this.ready = true;
+            }
+        }
+
+        void begin() {
+            GL15.glBeginQuery(GL33.GL_TIME_ELAPSED, this.queries[this.slot]);
+        }
+
+        /** Ends an open bracket exactly once (mirrors the old partial-query discipline). */
+        void endBracket() {
+            GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
+        }
+
+        /** Rotates the cursor and polls the oldest sample — never blocks. */
+        void rotateAndPoll() {
+            this.slot = (this.slot + 1) % TIMER_RING;
+            if (++this.issued >= TIMER_RING) {
+                int oldest = this.queries[this.slot];
+                if (GL15.glGetQueryObjecti(oldest, GL15.GL_QUERY_RESULT_AVAILABLE) == GL11.GL_TRUE) {
+                    this.lastMs = (GL15.glGetQueryObjectui(oldest, GL15.GL_QUERY_RESULT) & 0xFFFFFFFFL) / 1_000_000.0;
+                    this.sampled = true;
+                }
+            }
+        }
+
+        void free() {
+            if (this.ready) {
+                GL15.glDeleteQueries(this.queries);
+                this.ready = false;
+            }
+            this.slot = 0;
+            this.issued = 0;
+            this.sampled = false;
+            this.lastMs = 0;
+        }
+    }
 
     // ---- Allay Storm state (render thread only) ----------------------------
     /** Accumulated clamped simulation seconds; drives storm wander/bursts. */
@@ -263,12 +365,8 @@ public final class CMIParticleEngine {
             .color(1f, 1f, 1f, 1f)
             .build();
     private long lastErrorTime = 0;
-    private final int[] timerQueries = new int[TIMER_RING];
-    private int timerSlot = 0;
-    private int timerIssued = 0;
-    private boolean timerReady = false;
-    /** Last completed GPU-side frame cost (ms), 3 frames lagged; 0 = none yet. */
-    private double lastGpuMs = 0;
+    private final GpuTimerRing computeTimer = new GpuTimerRing();
+    private final GpuTimerRing drawTimer = new GpuTimerRing();
     /** Scratch Proj*View and its 6 normalized frustum planes (keygen cull test). */
     private final Matrix4f projView = new Matrix4f();
     private final float[] frustumPlanes = new float[24];
@@ -370,13 +468,8 @@ public final class CMIParticleEngine {
             CreateManaIndustry.LOGGER.warn("[CMI particles] GPU free failed", e);
         }
         this.programs.delete();
-        if (this.timerReady) {
-            GL15.glDeleteQueries(this.timerQueries);
-            this.timerReady = false;
-        }
-        this.timerSlot = 0;
-        this.timerIssued = 0;
-        this.lastGpuMs = 0;
+        this.computeTimer.free();
+        this.drawTimer.free();
         try {
             this.cherryAtlas.free();
             this.allayAtlas.free();
@@ -400,6 +493,18 @@ public final class CMIParticleEngine {
     /** Buffer id of the newest committed translucent sort permutation (-1 = none yet). */
     public int lastFinalPermBufferId() {
         return this.lastFinalPermId;
+    }
+
+    /**
+     * Frames elapsed since the newest committed sort permutation was generated
+     * (diagnostic surface for {@code /cmip shaderpack status}; -1 before the
+     * first sorted frame commits). Split-frame expectation: 0 for every
+     * gbuffer-phase consumer, >= 1 only on the shadow track by design.
+     */
+    public int lastFinalPermAgeFrames() {
+        if (this.lastFinalPermId < 0)
+            return -1;
+        return Math.max(0, this.simFrame - this.lastFinalPermFrameSim);
     }
 
     /** Lazily loads and returns the MODEL particle atlas texture id. */
@@ -435,10 +540,30 @@ public final class CMIParticleEngine {
     }
 
     // ------------------------------------------------------------------
-    // Frame hook — RenderLevelStageEvent.AFTER_LEVEL (native NeoForge)
+    // Frame hooks — RenderLevelStageEvent, SPLIT across two stages:
+    //   AFTER_SKY   -> beginFrame  (compute: integrate/cull/sort/commit)
+    //   AFTER_LEVEL -> endFrame    (draws: every billboard/model pass)
+    //
+    // The shader-pack merge hook fires mid-renderLevel (after regular
+    // entities, before block entities) — strictly BETWEEN these two stages in
+    // the same frame — so the committed permutation it binds was built against
+    // THIS frame's camera: fast view rotation no longer shows entering MODEL
+    // particles one generation late. Draws stay at AFTER_LEVEL because a
+    // gbuffer-phase slot would leave sprites behind solid terrain depth.
+    // Iris's shadow track runs BEFORE renderSky, ahead of every level-stage
+    // event, so it keeps consuming the previous generation by design
+    // (documented leave-open item, reported via shaderPackPermStatus).
     // ------------------------------------------------------------------
 
-    public void renderFrame(Camera camera, Matrix4fc view, Matrix4fc projectionMatrix, DeltaTracker deltaTracker) {
+    /**
+     * Phase C of the split frame. Drains requests, maintains collision bakes,
+     * integrates particles, emits newcomers, runs keygen (+ the translucent
+     * counting sort when needed), captures the census, arms the counter fence
+     * and swaps the pool — committing a fresh generation. Nothing is drawn.
+     */
+    public void beginFrame(Camera camera, Matrix4fc view, Matrix4fc projectionMatrix, DeltaTracker deltaTracker) {
+        this.frameAttempted = false;
+        this.frameArmed = false;
         if (this.disabled)
             return;
         if (!ClientConfig.particleEnabled) {
@@ -478,27 +603,53 @@ public final class CMIParticleEngine {
             return; // shaders not compiled yet (or compile failed) — retry on reload
         this.profiler.setBudget((float) ClientConfig.particleBudgetMs);
 
-        long t0 = System.nanoTime();
+        this.frameAttempted = true;
+        this.frameStartNanos = System.nanoTime();
         try {
-            runFrame(camera, view, projectionMatrix, deltaTracker);
+            runCompute(camera, view, projectionMatrix, deltaTracker);
         } catch (RuntimeException | LinkageError e) {
             long now = System.currentTimeMillis();
             if (now - this.lastErrorTime > 5000) {
                 this.lastErrorTime = now;
-                CreateManaIndustry.LOGGER.error("[CMI particles] frame failed", e);
+                CreateManaIndustry.LOGGER.error("[CMI particles] compute phase failed", e);
             }
         }
-        // Prefer the (lagged) GPU-side cost; fall back to CPU submit time until
-        // the first timer query has completed. Hook-side GPU work (shader-pack
-        // MODEL draw) is measured by its own timer ring and folded in so the
-        // throttle can see the full per-frame cost of the particle system.
-        double baseMs = this.lastGpuMs > 0 ? this.lastGpuMs : (System.nanoTime() - t0) / 1_000_000.0;
-        synchronized (this) {
-            baseMs += this.externalHookGpuMs;
-            this.externalHookGpuMs = 0;
+    }
+
+    /**
+     * Phase D of the split frame: submits every draw pass (honouring the
+     * merge-hook arbitration latch) and folds the lagged timer samples of BOTH
+     * phases into the throttle. Always records costing whenever the compute
+     * phase attempted, so throttle continuity survives aborted frames.
+     */
+    public void endFrame(Camera camera, Matrix4fc view, Matrix4fc projectionMatrix) {
+        if (this.disabled || !ClientConfig.particleEnabled || !this.initialized || !this.frameAttempted)
+            return;
+        try {
+            // An aborted compute phase leaves frameArmed clear; the last fully
+            // committed generation simply persists one more frame undrawn.
+            if (this.frameArmed)
+                runDraws(camera, view, projectionMatrix);
+        } finally {
+            // Prefer the lagged GPU-side cost of BOTH phases (each ring reads a
+            // 3-frame-old completed sample, summed); fall back to CPU submit
+            // time across beginFrame..endFrame until samples flow. Hook-side
+            // GPU work (shader-pack MODEL draw) is measured by its own timer
+            // ring and folded in so the throttle sees the full per-frame cost.
+            double baseMs;
+            if (this.computeTimer.sampled || this.drawTimer.sampled)
+                baseMs = this.computeTimer.lastMs + this.drawTimer.lastMs;
+            else
+                baseMs = (System.nanoTime() - this.frameStartNanos) / 1_000_000.0;
+            synchronized (this) {
+                baseMs += this.externalHookGpuMs;
+                this.externalHookGpuMs = 0;
+            }
+            this.profiler.record(baseMs, ClientConfig.particleAutoThrottle);
+            this.scale = this.profiler.emissionScale();
+            this.frameAttempted = false;
+            this.frameArmed = false;
         }
-        this.profiler.record(baseMs, ClientConfig.particleAutoThrottle);
-        this.scale = this.profiler.emissionScale();
     }
 
     /** Clears every particle, stream and queued request (render thread only). */
@@ -526,8 +677,17 @@ public final class CMIParticleEngine {
         }
     }
 
-    private void runFrame(Camera camera, Matrix4fc view, Matrix4fc projectionMatrix, DeltaTracker deltaTracker) {
+    private void runCompute(Camera camera, Matrix4fc view, Matrix4fc projectionMatrix, DeltaTracker deltaTracker) {
         this.frameSeed++;
+
+        // Draw-phase handoff resets: stale values from an aborted frame never
+        // reach runDraws — the frameArmed gate is set only at this phase's
+        // success tail, but keeping the handoff consistent anyway makes every
+        // consumer read a value that belongs to THIS invocation.
+        this.frameEntryCount = 0;
+        this.frameAliveEstimate = 0;
+        this.frameSorted = false;
+        this.frameFinalPerm = -1;
 
         int slot = this.simFrame % ParticleBuffers.COUNTER_RING;
         this.simFrame++;
@@ -712,6 +872,8 @@ public final class CMIParticleEngine {
         // aliveEstimate, translucentUpper) already saw these spawns included.
         this.spawnDelta += totalSpawn;
         this.translucentSpawnDelta += translucentSpawnTotal;
+        // Handoff for runDraws' empty-guard: final count after free-pool capping.
+        this.frameEntryCount = entryCount;
 
         // 4. Upload emit commands into the next ring slot + emitters.
         int ringId = this.gpu.nextEmitBuffer();
@@ -738,25 +900,25 @@ public final class CMIParticleEngine {
         // itself runs in both paths — it is the fast path's frustum-cull pass
         // and owns the draw counts in both.
         boolean sorted = this.translucentLatched;
+        this.frameSorted = sorted; // draw-phase handoff (see runDraws)
 
-        // 5. Compute passes: reset -> update -> emit. The elapsed-time query
-        //    brackets all GPU work (dispatches + draws) of this frame.
+        // 5. Compute passes: reset -> [grid] -> update -> emit -> keygen
+        //    (+ sort) -> capture. The elapsed-time query brackets ALL GPU work
+        //    of THIS phase only; the draw phase runs its own ring (drawTimer)
+        //    and endFrame sums both as the throttle input.
         // Upper bound on the read buffer's live count (snapshot + spawns since
         // — deaths only shrink it); update threads beyond the GPU-exact count
         // (read from the LAST COMMITTED frame's counter slot, binding 14 — see
         // lastGoodSlot) exit immediately.
         int updateBound = Math.min(cap, this.aliveKnown + this.spawnDelta + 64);
-        if (!this.timerReady) {
-            GL15.glGenQueries(this.timerQueries);
-            this.timerReady = true;
-        }
-        // From the timer-query begin to the end-of-frame bookkeeping everything
-        // runs under try/finally: a mid-frame failure ends the partial query,
-        // restores program/VAO/SSBO/texture/blend state, and skips the pool
+        this.computeTimer.ensureCreated();
+        // From the timer-query begin to the phase-tail bookkeeping everything
+        // runs under try/finally: a mid-phase failure ends the partial bracket,
+        // restores program/VAO/SSBO/texture state, and skips the pool
         // swap — the last fully-written pool stays the next read source.
         boolean queryActive = false;
         try {
-            GL15.glBeginQuery(GL33.GL_TIME_ELAPSED, this.timerQueries[this.timerSlot]);
+            this.computeTimer.begin();
             queryActive = true;
             GL20.glUseProgram(this.programs.reset());
             this.gpu.bindIndirect(2);
@@ -843,6 +1005,7 @@ public final class CMIParticleEngine {
             // spawnDelta now includes this frame's spawns; aliveEstimate is an
             // upper bound on the freshly written pool's live count
             int aliveEstimate = this.aliveKnown + this.spawnDelta;
+            this.frameAliveEstimate = aliveEstimate; // draw-phase handoff
             if (aliveEstimate > 0 || entryCount > 0) {
                 int sortUpper = Math.min(cap, Math.max(0, aliveEstimate + 64));
 
@@ -922,53 +1085,31 @@ public final class CMIParticleEngine {
                             | GL42.GL_COMMAND_BARRIER_BIT);
                 }
             }
+            this.frameFinalPerm = finalPerm; // draw-phase handoff (-1 = fast path)
 
-            // 7. Draw. Every DEPTH-WRITING pass first (OPAQUE cutout sprites, then
-            //    ONE merged model multi-draw: opaque cutout segment -> translucent
-            //    ghost segment), so early-Z rejects occluded fragments of all later
-            //    blended passes. When translucent items exist, the combined sort
-            //    runs and the ALPHA sprites follow back-to-front (blend, no depth
-            //    write; ghosts before sprites is the documented tradeoff). Additive
-            //    draws LAST: it is order-independent, so position costs nothing but
-            //    lets ghost depth occlude glow behind cloaks.
-            if (aliveEstimate > 0 || entryCount > 0) {
-                // Bind the FINAL sorted permutation up front: both translucent
-                // draws (model ghost segment here, ALPHA sprites below) read their
-                // own contiguous partition of it. On the fast path nothing reads
-                // it, but the programs statically declare the sort SSBO, so keep a
-                // valid buffer bound regardless.
-                this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING,
-                        sorted ? finalPerm : this.gpu.sortBuffer(0));
-                this.gpu.bindOrderOpaque();
-                drawPass(1, view, projectionMatrix, camera);
-                if (this.hookModelsDrawn) {
-                    // The pack entity merge hook drew the MODEL segments earlier
-                    // in this frame against the committed previous generation;
-                    // skipping ours prevents a double-draw (render arbitration).
-                } else {
-                    drawModels(view, projectionMatrix, camera);
-                }
-                if (sorted) {
-                    drawPass(2, view, projectionMatrix, camera);
-                }
-                this.gpu.bindOrderAdd();
-                drawPass(0, view, projectionMatrix, camera);
-            }
-
-            // 8. Capture this frame's UNculled translucent census (counter.translucentCensus,
-            //    maintained by keygen before the frustum test) into the counter
-            //    ring spare, then fence the frame: next frame POLLS the fence and
-            //    only reads the counters once the GPU has finished writing them
-            //    (a raw readback is a pipeline stall, however lagged the slot).
-            // Re-arm the merge-hook arbitration latch for the next frame: the
-            // hook runs inside renderLevel (before AFTER_LEVEL), so it will set
-            // this again before the next runFrame reads it.
-            this.hookModelsDrawn = false;
-
+            // 7. Census capture + commit markers. NO DRAW SUBMISSION happens in
+            //    this phase any more — the old "Draw" section moved to runDraws
+            //    (AFTER_LEVEL), so on pack-active frames the merge hook fires
+            //    BETWEEN this phase and those draws, mid-renderLevel, and binds
+            //    THIS frame's camera-culled permutation (was: previous frame's,
+            //    the one-frame entry-lag this split exists to remove). Draw
+            //    ordering inside runDraws still puts every depth-writing pass
+            //    first (OPAQUE cutout sprites, then ONE merged model multi-draw)
+            //    so early-Z rejects occluded fragments of later blended passes;
+            //    ALPHA sprites follow back-to-front through the combined sort;
+            //    additive stays LAST — order-independent, and ghost depth
+            //    occludes glow behind cloaks.
+            //
+            //    Capture this frame's UNculled translucent census
+            //    (counter.translucentCensus, maintained by keygen before the
+            //    frustum test) into the counter ring spare, then fence the
+            //    phase: next frame POLLS the fence and only reads the counters
+            //    once the GPU has finished writing them (a raw readback is a
+            //    pipeline stall, however lagged the slot).
             GL20.glUseProgram(this.programs.capture());
             this.gpu.bindCounter(3, slot);
             // Publish N_model into the metadata tail slot of a sort buffer. When
-            // this frame ran a sort, that is THE committed permutation buffer
+            // this phase ran a sort, that is THE committed permutation buffer
             // (the same id lastFinalPermId promotes below), so count and items
             // stay structurally same-generation; on the fast path there are no
             // MODEL items at all and scratch buffer zero is a harmless dummy.
@@ -978,26 +1119,23 @@ public final class CMIParticleEngine {
             setIntUniform(this.programs.capture(), "uMetaSlot", cap);
             GL43.glDispatchCompute(1, 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
-            GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
+            this.computeTimer.endBracket();
             queryActive = false;
             if (this.pendingFence != 0)
                 GL32.glDeleteSync(this.pendingFence);
             this.pendingFence = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
             this.pendingSlot = slot;
 
-            // Collect the oldest query in the ring (issued TIMER_RING-1 frames ago,
-            // virtually always complete): the true GPU-side cost of a frame. Never
-            // blocks — skipped when the GPU is running that far behind.
-            this.timerSlot = (this.timerSlot + 1) % TIMER_RING;
-            if (++this.timerIssued >= TIMER_RING) {
-                int oldest = this.timerQueries[this.timerSlot];
-                if (GL15.glGetQueryObjecti(oldest, GL15.GL_QUERY_RESULT_AVAILABLE) == GL11.GL_TRUE)
-                    this.lastGpuMs = (GL15.glGetQueryObjectui(oldest, GL15.GL_QUERY_RESULT) & 0xFFFFFFFFL) / 1_000_000.0;
-            }
+            // Collect the oldest sample in the compute ring (issued TIMER_RING-1
+            // phases ago, virtually always complete): the true GPU-side cost of
+            // this phase. Never blocks — skipped when the GPU runs that far
+            // behind. The draw ring polls itself after runDraws; endFrame sums
+            // both as the throttle input.
+            this.computeTimer.rotateAndPoll();
 
-            // 9. Swap the ping-pong pool — success only: an aborted frame keeps
-            // the last fully-written pool as the next frame's read source, and
-            // the finally below restores the post-frame GL state instead.
+            // 8. Swap the ping-pong pool — success only: an aborted phase keeps
+            // the last fully-written pool as the next read source, and
+            // the finally below restores the post-phase GL state instead.
             this.gpu.swap();
             // The swap committed this frame's output as the next read source —
             // only NOW does this frame's counter slot become the authoritative
@@ -1007,29 +1145,135 @@ public final class CMIParticleEngine {
             this.lastGoodSlot = slot;
             // Same success-only discipline: the sort permutation id is promoted
             // only when the frame fully committed (finalPerm is -1 on the fast
-            // path, leaving the previous generation's binding in place).
-            if (finalPerm >= 0)
+            // path, leaving the previous generation's binding in place). The
+            // simFrame stamp beside it feeds the consumption-age diagnostic:
+            // hooks run later in this SAME frame report age 0; the shadow track
+            // (before renderSky, i.e. before any stage event) reports >= 1.
+            if (finalPerm >= 0) {
                 this.lastFinalPermId = finalPerm;
+                this.lastFinalPermFrameSim = this.simFrame;
+            }
             // Same success-only discipline retires uKillEmit: the just-swapped
             // pool is now the authoritative read source, so every kill target
             // provably compacted away. Until then the pending id keeps the
             // grid pass armed and refires the kill (see the update dispatch).
             this.stormKillEmitId = -1;
+
+            // Compute phase committed in full: pool swapped, permutation
+            // promoted, kill retired. Only NOW may the draw phase submit — any
+            // failure above leaves frameArmed clear so runDraws is skipped and
+            // the last fully-committed generation persists one more frame.
+            this.frameArmed = true;
         } finally {
             if (queryActive) {
-                // Mid-frame failure: end the partial sample so the query object
+                // Mid-phase failure: end the partial bracket so the query object
                 // stays reusable, and leave the ring cursor alone — the slot is
-                // simply reused (its partial result overwritten) next frame
+                // simply reused (its partial result overwritten) next phase
                 // rather than feeding a bogus time into the throttle.
                 try {
-                    GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
+                    this.computeTimer.endBracket();
                 } catch (RuntimeException | LinkageError ignoredCleanup) {
                     // context is going away; nothing further to do
                 }
             }
-            // Restore the exact post-frame state the success path leaves behind.
-            // Best-effort with each group isolated: a secondary failure here must
-            // not mask the original exception nor skip the remaining groups.
+            // Restore the exact post-phase state the success path leaves behind.
+            // Blend/depth state is deliberately NOT touched here — the compute
+            // phase issues no draws and cannot modify it; runDraws owns those
+            // restores. Each group stays isolated: a secondary failure must not
+            // mask the original exception nor skip the remaining groups.
+            try {
+                GL20.glUseProgram(0);
+                GL30.glBindVertexArray(0);
+            } catch (RuntimeException | LinkageError ignoredCleanup) {
+                // see above
+            }
+            try {
+                // SSBO bases 0-15 (permutations, sort data, counters, model geo…)
+                this.gpu.unbindShaders();
+            } catch (RuntimeException | LinkageError ignoredCleanup) {
+                // see above
+            }
+            try {
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                GL11.glBindTexture(GL12.GL_TEXTURE_3D, 0);
+                GL13.glActiveTexture(GL13.GL_TEXTURE1);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+            } catch (RuntimeException | LinkageError ignoredCleanup) {
+                // see above
+            }
+        }
+    }
+
+    /**
+     * Phase D body (AFTER_LEVEL): submits the ENTIRE draw schedule. Ordering
+     * rationale: every DEPTH-WRITING pass first (OPAQUE cutout sprites, then
+     * ONE merged model multi-draw: opaque cutout segment -> translucent ghost
+     * segment), so early-Z rejects occluded fragments of all later blended
+     * passes. When translucent items exist, the combined sort runs and the
+     * ALPHA sprites follow back-to-front (blend, no depth write; ghosts before
+     * sprites is the documented tradeoff). Additive draws LAST: it is order-
+     * independent, so position costs nothing but lets ghost depth occlude glow
+     * behind cloaks.
+     * <p>
+     * Every draw reads the pool the compute phase just committed (write side,
+     * unswapped until next frame's AFTER_SKY), plus the promotion of
+     * {@code lastFinalPermId} that happened at compute-tail — on pack frames
+     * the merge hook already drew the MODEL segments against THAT permutation
+     * earlier this frame; its latch makes us skip our own drawModels so the
+     * model geometry is submitted exactly once per frame regardless of path.
+     */
+    private void runDraws(Camera camera, Matrix4fc view, Matrix4fc projectionMatrix) {
+        boolean queryActive = false;
+        this.drawTimer.ensureCreated();
+        try {
+            this.drawTimer.begin();
+            queryActive = true;
+
+            // Repeat of the compute section's empty-guard from the handoff
+            // values: nothing alive and nothing spawned skips vertex work while
+            // keeping bindings correct for a valid buffer anyway.
+            if (this.frameAliveEstimate > 0 || this.frameEntryCount > 0) {
+                // Bind the FINAL sorted permutation up front: both translucent
+                // draws (model ghost segment here, ALPHA sprites below) read their
+                // own contiguous partition of it. On the fast path nothing reads
+                // it, but the programs statically declare the sort SSBO, so keep a
+                // valid buffer bound regardless.
+                this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING,
+                        this.frameSorted ? this.frameFinalPerm : this.gpu.sortBuffer(0));
+                this.gpu.bindOrderOpaque();
+                drawPass(1, view, projectionMatrix, camera);
+                if (this.hookModelsDrawn) {
+                    // The pack entity merge hook drew the MODEL segments earlier
+                    // this frame against the freshly promoted permutation;
+                    // skipping ours prevents a double-draw (render arbitration).
+                } else {
+                    drawModels(view, projectionMatrix, camera);
+                }
+                if (this.frameSorted) {
+                    drawPass(2, view, projectionMatrix, camera);
+                }
+                this.gpu.bindOrderAdd();
+                drawPass(0, view, projectionMatrix, camera);
+            }
+
+            // Clear the merge-hook arbitration latch at the DRAW TAIL: the hook
+            // fires mid-renderLevel — between our two phases within one frame —
+            // and will set it again before endFrame's skip-check below runs.
+            this.hookModelsDrawn = false;
+
+            this.drawTimer.endBracket();
+            queryActive = false;
+            this.drawTimer.rotateAndPoll();
+        } finally {
+            if (queryActive) {
+                // Same partial-bracket discipline as the compute phase.
+                try {
+                    this.drawTimer.endBracket();
+                } catch (RuntimeException | LinkageError ignoredCleanup) {
+                    // context is going away; nothing further to do
+                }
+            }
             try {
                 GL20.glUseProgram(0);
                 GL30.glBindVertexArray(0);
@@ -1086,7 +1330,16 @@ public final class CMIParticleEngine {
         if (prog == 0)
             return;
         GL20.glUseProgram(prog);
-        this.gpu.bindParticleWrite(1);
+        // Draw the NEWEST committed generation. Two mistakes have lived on this
+        // line across the frame split — learn them both: (1) generation — after
+        // the AFTER_SKY swap the fresh data lives on the read side, binding the
+        // stale write side flickered the swarm; (2) binding POINT — the render
+        // vsh block declares PARTICLE_BB_WRITE (misleadingly named "fresh
+        // data"), so the buffer must attach AT THAT point even though its side
+        // is the post-swap read one; attaching it at binding 0 left the
+        // declared slot empty and made every L0 allay invisible. The pack path
+        // was immune to both: its TBO view always pinned particleReadBufferId().
+        this.gpu.bindNewestPool(ParticleBuffers.PARTICLE_BB_WRITE);
         this.gpu.bindEmitters(5);
         this.gpu.bindModelGeo(); // unbindShaders() clears binding 12 every frame
         this.gpu.bindVao();
@@ -1135,8 +1388,10 @@ public final class CMIParticleEngine {
         if (prog == 0)
             return;
         GL20.glUseProgram(prog);
-        // draw the freshly written (this frame) pool
-        this.gpu.bindParticleWrite(1);
+        // Newest committed generation at the binding POINT the vsh declares
+        // (PARTICLE_BB_WRITE); generation and point selection rationale lives
+        // on the drawModels twin of this line.
+        this.gpu.bindNewestPool(ParticleBuffers.PARTICLE_BB_WRITE);
         this.gpu.bindEmitters(5);
         this.gpu.bindVao();
 

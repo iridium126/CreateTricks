@@ -93,9 +93,11 @@ public final class CMIPackEntityMergeHook {
             // L0 drawModels then costs nothing (it would submit the same empty
             // commands), while a CPU-side per-type readback would be a stall.
             engine.markHookModelDrawn();
-            engine.shaderPackPathStatus = "pack entity merge (cutout+ghost dual, model near-first)";
+            engine.shaderPackPathStatus = "pack entity merge (cutout+ghost dual, model near-first, current-frame perm)";
             engine.shaderPackDepthStatus = "hardware (gbuffer)";
             engine.shaderPackErrorStatus = "";
+            engine.shaderPackPermStatus = "gbuffer permutation age " + engine.lastFinalPermAgeFrames()
+                    + "f (0 = this frame's cull)";
         } catch (RuntimeException | LinkageError e) {
             CreateManaIndustry.LOGGER.warn("[CMI particles] pack entity merge draw failed", e);
             engine.shaderPackErrorStatus = String.valueOf(e);
@@ -144,6 +146,12 @@ public final class CMIPackEntityMergeHook {
 
             drawShadow(engine);
             engine.shaderPackShadowStatus = "active";
+            // The shadow track deliberately consumes the previous generation:
+            // Iris renders shadows before renderSky, ahead of every level-stage
+            // event (including the AFTER_SKY compute commit). Age >= 1 here is
+            // the documented exception, surfaced so regressions are observable.
+            engine.shaderPackPermStatus = "shadow permutation age " + engine.lastFinalPermAgeFrames()
+                    + "f (>=1 expected: shadows precede AFTER_SKY compute)";
         } catch (RuntimeException | LinkageError e) {
             CreateManaIndustry.LOGGER.warn("[CMI particles] shadow-track draw failed", e);
             engine.shaderPackShadowStatus = "draw failed";

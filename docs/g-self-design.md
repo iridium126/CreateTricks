@@ -62,6 +62,10 @@ renderWorldBorder 钩子位于 renderLevel **内部**，而现有计算块（模
 （RenderLevelStageEvent.BEFORE_ENTITIES 或更早的自定义时点），保证钩子消费当帧
 模拟结果；ping-pong 交换、fence 轮询与节流逻辑不受影响（它们只依赖相对顺序）。
 
+> 实施勘误注记（0.2.6 周期）：本版本 NeoForge 的 RenderLevelStageEvent 全部为
+> `AFTER_*` 系、**不存在 BEFORE_ENTITIES**；实际落地取最早的 `Stage.AFTER_SKY`
+>（见 §15）。另注意 Stage 是普通常量类而非枚举、不能作 switch case 标签。
+
 ### 3.3 已知限制
 - 该窗口晚于 deferred 表面光照计算：粒子表面不接受包的延迟光照/彩色光。
   对全亮语义的悦灵（blockLight=15）影响有限；G3 再评估是否补光项。
@@ -208,7 +212,7 @@ M2 起以 /cmip gself status + 附录 A 场景矩阵复核。
 
 - **apply() 哨兵**：NeoForge 映射下 ShaderInstance.MODEL_VIEW_MATRIX 为 final，无法像参考包装器那样预置 dummy；改为 try/catch 回退裸 glUseProgram(shader.getId())——我方后续上传不依赖 vanilla uniform 状态。
 - **鬼影段混合**：Block 程序默认不透明，ghost 段以 BlendModeOverride 强制标准透明混合并保留深度写入（L0 同款取舍：隔墙遮挡正确，跨段排序由绘制顺序固定）。
-- **D2 前移触发条件**（留观）：若实测出现可感知一帧滞后伪影，再实施计算块前移至 BEFORE_ENTITIES——数据通路已就绪（钩子侧全部经由显式绑定，无指针局部依赖）。
+- **D2 前移触发条件**（留观 → **已触发并实施**）：快转视角下 MODEL 入场迟一帧已实测确认；计算块前移至 AFTER_SKY 已落地（NeoForge 无 BEFORE_ENTITIES；勘误与完整定案链见 §15）——数据通路如预期：钩子侧全部经由显式绑定，无指针局部依赖。
 - **待运行验收**（M1/M2 通过线，需游戏内执行）：Photon 下 /summon minecraft:allay 并排对比矩阵（正午/夜晚/洞穴 × dance/spin/hold × 近/中/远景淡出缘）、无双绘抓帧、Complementary 冒烟、SHADOW_QUALITY 低配不崩属 S 轨另验。
 
 
@@ -352,3 +356,39 @@ M2 起以 /cmip gself status + 附录 A 场景矩阵复核。
 | E | 新增 META-INF/accesstransformer.cfg 去 MODEL_VIEW_MATRIX 的 final；编译后按 flw 同款播种 dummy Uniform("ModelViewMat",10,16)；applyGuarded 裸 glUseProgram 回退整体删除——apply() 异常上抛走钩子失败记录路径，当帧回落自绘，静默降级面清零 |
 | F | MixinIrisShadowRenderer 补 @Final @Shadow shouldRenderEntities 门控（用户裁定取实体门控而非 flw 的方块实体门控：粒子内容属实体流）；玩家单独开启的包不给非玩家实体影子 |
 
+
+---
+
+## 15. 实施记录：计算块前移 AFTER_SKY（D2 触发，grilling 定案链）
+
+> 决策方式：grilling 逐项确认；状态：**已实施（compileJava 通过）**；游戏内验收清单见文末
+
+### 15.1 症状与根因
+- 症状（用户实测确认）：光影包路径快转视角，新入视野的悦灵迟一帧出现；其他类型粒子与 L0 路径均正常。
+- 根因：`CMIPackEntityMergeHook` 在 renderLevel 中段绘制模型时消费 `lastFinalPermId`——那是上一帧 keygen 针对**上一帧相机**算出的视锥剔除/深度带排列；其晋升发生在帧尾 AFTER_LEVEL。位置数据与变换矩阵均为当帧，故滞后只体现在"可见集 + 排序键"，与症状签名完全闭环。
+- 文档呼应：§3.5 D2 早已预判该偏差并给出"计算块前移"预案，留观触发条件正是"实测出现可感知一帧滞后伪影"——本轮成立。
+
+### 15.2 定案记录（Q&A）
+| 决策点 | 定案 | 备注 |
+|---|---|---|
+| Q1 前移时点 | **AFTER_SKY**（主轨） | NeoForge 21.1 无 BEFORE_ENTITIES（全部 `AFTER_*`，Stage 为常量类非枚举）；阴影轨在 renderSky **之前**运行（Iris MixinLevelRenderer 实测），任何事件点都覆盖不到 → 阴影轨维持现状、记为已知例外 |
+| Q2 拆分方式 | **最小拆分，绘制全留 AFTER_LEVEL** | 计算段（请求排空/烘焙维护/storm/reset→grid→update→emit→keygen→radix→capture/fence/swap/promote）整体随 beginFrame 迁移；成功才提交纪律原样搬迁 |
+| 计时口径 | 双 GL_TIME_ELAPSED 环求和入节流预算 | computeTimer@AFTER_SKY + drawTimer@AFTER_LEVEL（各读 3 帧旧样本）+ externalHookGpuMs；节流语义与拆分前等价 |
+| latch 生命周期 | 清理点挪至绘制段尾部 | merge hook 在同帧内晚于 AFTER_SKY 早于 AFTER_LEVEL 触发，仲裁语义不变（aborted 帧 frameArmed 门禁防脏绘） |
+| 验收标准 | 目测 + status 观测项 + 回归清单 | 见 15.3 |
+
+### 15.3 新增观测面与验收清单
+- `/cmip shaderpack status` 新增 `permutation:` 行：gbuffer 消费应为 age **0f**；shadow 轨打印 `>=1 expected`（设计例外可视化了）。
+- 游戏内待验：① 光影包下快转视角无入场闪烁；② aborted 帧（可用 /cmip storm start+stop 与瞬时高负载诱导）不死粒子复活、storm stop 下帧生效不变；③ 双环 GPU 时间之和 ≈ 拆分前单环值（EMA 对比）；④ L0 无光影路径观感零变化。
+
+### 15.4 行为差与风险登记
+- 同帧序列化取代跨帧解耦：hook 绘制前本帧排序必然完成（GPU 提交顺序保证），代价为微秒级（§14.4 已证），换取正确性。
+- 绘制段失败不再连带丢弃模拟提交（swap 已提前）：池/计数器一致性不受影响，仅当帧渲染损失部分片段——较旧单相行为更稳。
+### 15.5 回归修复：L0 绘制相池代际错绑（拆帧次日修复）
+- 症状：光影包正常无闪烁；关闭光影包后悦灵持续闪烁。
+- 根因：原实现 swap 在绘制**之后**，drawPass/drawModels 绑"写侧"即刚写好的当代池；计算块前移后 swap 提前到 AFTER_SKY 尾部，绘制时读侧才是新世代——L0 自绘路径仍绑写侧（=上一代），当帧置换/计数的槽位语义作用在旧代行数据上，逐帧错位渲染残行 → 闪烁。光影包路径无此病，因其 TBO 视图本就钉在 `particleReadBufferId()`。
+- 修复：drawPass/drawModels 改绑 `bindParticleRead(0)`（已提交世代）；ParticleBuffers 常量注释同步勘误。绑定全表复查：其余 bindParticleWrite 调用点均在 swap 前（grid/update/emit/keygen），语义不变。
+### 15.6 二次回归修复：L0 全灭 = 绑定点与世代选择混淆
+- 症状：光影包正常；关闭光影包后悦灵**完全不可见**。
+- 根因：15.5 的修复选对了世代（读侧）却挂错了绑定点——L0 渲染 vsh 的池接口块声明在 `BIND_POOL_WRITE`(=1，变量名 ParticleRead 实指"新数据")；把读侧缓冲挂到绑定号 0 使声明槽位空置，顶点拉取读到未绑定内存 → 全部实例不可见。本引擎既有约定：Java 选代际、绑定点参数须等于着色器声明。
+- 修复：新增 `ParticleBuffers.bindNewestPool(binding)`（写侧→swap 后即读侧的"最新已完整写入"语义），drawPass/drawModels 以 `PARTICLE_BB_WRITE` 绑定点调用；注释固化两次教训。

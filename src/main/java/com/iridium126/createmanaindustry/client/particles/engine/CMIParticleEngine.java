@@ -765,15 +765,25 @@ public final class CMIParticleEngine {
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
 
             // Boids spatial hash (storm swarms): built from the SAME committed
-            // read pool + prev-counter slot update.comp consumes below.
-            this.gpu.clearGridHeads();
-            GL20.glUseProgram(this.programs.grid());
-            this.gpu.bindParticleRead(0);
-            this.gpu.bindPrevCounter(ParticleBuffers.PREVCOUNTER_BINDING, this.lastGoodSlot);
-            this.gpu.bindEmitters(5);
-            this.gpu.bindGrid();
-            GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
-            GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+            // read pool + prev-counter slot update.comp consumes below. Gated to
+            // frames where storm steering can actually execute: an active storm,
+            // or a kill request still standing (a stop whose frame aborted
+            // before the swap leaves its targets alive in the READ pool — the
+            // re-fired uKillEmit below expires them the moment a frame commits,
+            // and any thread reaching the storm blocks then finds THIS frame's
+            // freshly built grid). Non-storm emitters carry motion mode 0 in
+            // header slot 18 and never touch the structure, so skipping both the
+            // heads clear and the dispatch on stormless frames is safe.
+            if (this.stormActive || this.stormKillEmitId >= 0) {
+                this.gpu.clearGridHeads();
+                GL20.glUseProgram(this.programs.grid());
+                this.gpu.bindParticleRead(0);
+                this.gpu.bindPrevCounter(ParticleBuffers.PREVCOUNTER_BINDING, this.lastGoodSlot);
+                this.gpu.bindEmitters(5);
+                this.gpu.bindGrid();
+                GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
+                GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+            }
 
             GL20.glUseProgram(this.programs.update());
             this.gpu.bindParticleRead(0);
@@ -808,8 +818,10 @@ public final class CMIParticleEngine {
             setFloatUniform(this.programs.update(), "uStormOmega", this.stormOmega);
             GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
-            // the kill request is single-shot: one dispatch consumed it
-            this.stormKillEmitId = -1;
+            // uKillEmit is retired at the SUCCESS TAIL (after the pool swap), not
+            // here: an aborted frame discards its output pool, so a stop whose
+            // kill was consumed by this dispatch must refire next frame or the
+            // untouched storm members would survive on a never-rebuilt grid.
 
             if (entryCount > 0) {
                 GL20.glUseProgram(this.programs.emit());
@@ -998,6 +1010,11 @@ public final class CMIParticleEngine {
             // path, leaving the previous generation's binding in place).
             if (finalPerm >= 0)
                 this.lastFinalPermId = finalPerm;
+            // Same success-only discipline retires uKillEmit: the just-swapped
+            // pool is now the authoritative read source, so every kill target
+            // provably compacted away. Until then the pending id keeps the
+            // grid pass armed and refires the kill (see the update dispatch).
+            this.stormKillEmitId = -1;
         } finally {
             if (queryActive) {
                 // Mid-frame failure: end the partial sample so the query object

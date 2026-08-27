@@ -273,9 +273,9 @@ public final class ParticleBuffers {
         // Boids spatial hash: heads table followed by the per-live-index next
         // chain array, sized by POOL CAPACITY so every storm member (up to the
         // 131072 stress cap) keeps neighbour coupling regardless of how sprite
-        // indices interleave in the dense prefix. heads is cleared every frame
-        // before gridbuild.comp runs; next needs no clearing (written before
-        // read via atomicExchange).
+        // indices interleave in the dense prefix. heads is cleared every time
+        // gridbuild.comp runs (the pass itself is storm-gated in the engine);
+        // next needs no clearing (written before read via atomicExchange).
         this.gridSSBO = createBuffer((GRID_TABLE + (long) cap) * 4L, null);
 
         // initial indirect payload: one command per slot (6 verts / 0 inst
@@ -535,8 +535,8 @@ public final class ParticleBuffers {
     }
 
     /**
-     * Zeroes the heads table ({@link #GRID_TABLE} ints) before each frame's
-     * gridbuild pass; the {@code next} chain half needs no clearing because
+     * Zeroes the heads table ({@link #GRID_TABLE} ints) ahead of each
+     * gridbuild dispatch; the {@code next} chain half needs no clearing because
      * every slot is written before it can be traversed.
      */
     public void clearGridHeads() {

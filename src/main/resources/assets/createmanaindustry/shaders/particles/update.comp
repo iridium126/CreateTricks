@@ -54,6 +54,15 @@ const float STORM_W_SEP      = 6.0;
 const float STORM_W_CONTAIN  = 3.0;
 const float STORM_PLAYER_R   = 3.0;
 const float STORM_PLAYER_W   = 14.0;
+// Per-particle cap on grid-chain NODE VISITS across the 27-cell sweep. Chain
+// length scales with swarm density (and hash collisions pull far particles in
+// too), so an unbounded walk degraded toward O(N^2) at the 131072-member stress
+// cap (~25k node hops per particle inside a shrunken bait ball). The budget
+// bounds each thread's whole sweep at a worst case of ~34M hops fleet-wide
+// (parallel lanes, latency-cheap); under ordinary densities it never engages,
+// and above it steering samples an arrival-order (spatially arbitrary) prefix
+// of each chain -- a bounded random neighbourhood, acceptable for flocking.
+const int   STORM_MAX_VISITS = 256;
 
 #pragma cmi_include chunks/allay_pose.glsl
 
@@ -135,10 +144,12 @@ void main() {
             vec3 velSum = vec3(0.0);
             vec3 sepSum = vec3(0.0);
             int nCount = 0;
+            int visits = 0;
+            bool budgetGone = false;
             ivec3 pc = ivec3(floor(pos / CELL_SIZE));
-            for (int ox = -1; ox <= 1; ox++)
-            for (int oy = -1; oy <= 1; oy++)
-            for (int oz = -1; oz <= 1; oz++) {
+            for (int ox = -1; ox <= 1 && !budgetGone; ox++)
+            for (int oy = -1; oy <= 1 && !budgetGone; oy++)
+            for (int oz = -1; oz <= 1 && !budgetGone; oz++) {
                 ivec3 c = pc + ivec3(ox, oy, oz);
                 uint hcell = (uint(c.x) * 92837111u ^ uint(c.y) * 689287499u ^ uint(c.z) * 283923481u)
                         & (GRID_TABLE - 1u);
@@ -146,6 +157,10 @@ void main() {
                 while (s != 0) {
                     int j = s - 1;
                     s = grid.next[j];
+                    if (++visits > STORM_MAX_VISITS) {
+                        budgetGone = true;
+                        break;
+                    }
                     if (j == int(idx))
                         continue;
                     uint jb = uint(j) * 4u;
@@ -230,32 +245,38 @@ void main() {
 
         // separation + player repulsion (rotation-invariant distances; the
         // world-space vectors are rotated back out together with aF below)
+        // Same visit budget as the ball-mode sweep. The old idx-live guard was
+        // dead code: main() already returned past prevCounter.live.
         vec3 sepW = vec3(0.0);
-        if (idx < prevCounter.live) {
-            ivec3 pc = ivec3(floor(pos / CELL_SIZE));
-            for (int ox = -1; ox <= 1; ox++)
-            for (int oy = -1; oy <= 1; oy++)
-            for (int oz = -1; oz <= 1; oz++) {
-                ivec3 c3 = pc + ivec3(ox, oy, oz);
-                uint hcell = (uint(c3.x) * 92837111u ^ uint(c3.y) * 689287499u ^ uint(c3.z) * 283923481u)
-                        & (GRID_TABLE - 1u);
-                int sN = grid.heads[int(hcell)];
-                while (sN != 0) {
-                    int j = sN - 1;
-                    sN = grid.next[j];
-                    if (j == int(idx))
-                        continue;
-                    vec3 op = readBuf.data[uint(j) * 4u].xyz;
-                    vec3 d = pos - op;
-                    float d2 = dot(d, d);
-                    if (d2 < STORM_SEP_R * STORM_SEP_R && d2 > 1e-8) {
-                        float dl = sqrt(d2);
-                        sepW += d * ((STORM_SEP_R - dl) / (dl * STORM_SEP_R));
-                    }
+        int sepVisits = 0;
+        bool sepBudgetGone = false;
+        ivec3 pc = ivec3(floor(pos / CELL_SIZE));
+        for (int ox = -1; ox <= 1 && !sepBudgetGone; ox++)
+        for (int oy = -1; oy <= 1 && !sepBudgetGone; oy++)
+        for (int oz = -1; oz <= 1 && !sepBudgetGone; oz++) {
+            ivec3 c3 = pc + ivec3(ox, oy, oz);
+            uint hcell = (uint(c3.x) * 92837111u ^ uint(c3.y) * 689287499u ^ uint(c3.z) * 283923481u)
+                    & (GRID_TABLE - 1u);
+            int sN = grid.heads[int(hcell)];
+            while (sN != 0) {
+                int j = sN - 1;
+                sN = grid.next[j];
+                if (++sepVisits > STORM_MAX_VISITS) {
+                    sepBudgetGone = true;
+                    break;
+                }
+                if (j == int(idx))
+                    continue;
+                vec3 op = readBuf.data[uint(j) * 4u].xyz;
+                vec3 d = pos - op;
+                float d2 = dot(d, d);
+                if (d2 < STORM_SEP_R * STORM_SEP_R && d2 > 1e-8) {
+                    float dl = sqrt(d2);
+                    sepW += d * ((STORM_SEP_R - dl) / (dl * STORM_SEP_R));
                 }
             }
-            sepW *= STORM_W_SEP;
         }
+        sepW *= STORM_W_SEP;
         vec3 repW = vec3(0.0);
         if (uPlayerOn == 1) {
             vec3 dp = pos - uPlayerPos;

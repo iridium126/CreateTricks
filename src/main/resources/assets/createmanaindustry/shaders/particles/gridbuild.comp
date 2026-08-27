@@ -3,6 +3,10 @@
 // previous-frame counter slot that update consumes, so the indices inserted
 // here are exactly the indices update integrates.
 //
+// Dispatch is ENGINE-GATED: CMIParticleEngine runs this pass only on frames
+// where storm steering can execute (active storm or a pending uKillEmit), so
+// an unbuilt grid is never read and stormless frames skip clear+dispatch.
+//
 // Only particles whose emitter header enables the storm (vec4 #18.x > 0.5)
 // are inserted; every other particle type ignores this structure entirely.
 // Classic lock-free linked-list hashing: one atomicExchange per particle

@@ -69,6 +69,10 @@ public final class ServerConfig {
     private static ModConfigSpec.IntValue FUEL_ROD_MAX_RADIUS;
     private static ModConfigSpec.BooleanValue FUEL_ROD_STRICT_STACKING;
 
+    // ---- allay storm -------------------------------------------------------
+
+    private static ModConfigSpec.DoubleValue STORM_CORRECTION_HZ;
+
     // ---- hexcasting --------------------------------------------------------
 
     private static ModConfigSpec.LongValue CYPHER_MAX_MEDIA;
@@ -147,6 +151,12 @@ public final class ServerConfig {
                 .define("fuelRodStrictStacking", true);
         BUILDER.pop();
 
+        BUILDER.comment("Allay Storm — the GPU-driven boss swarm (persistence + network sync).").push("allay_storm");
+        STORM_CORRECTION_HZ = BUILDER
+                .comment("Authoritative-client position correction snapshots per second for storm members near players. Higher = tighter cross-player position agreement, more bandwidth (~4 KB/s per snapshot at the 256-member cap). Delivered to the authority client with its assignment; changes apply from the next snapshot.")
+                .defineInRange("stormCorrectionHz", 5.0, 0.5, 20.0);
+        BUILDER.pop();
+
         BUILDER.comment("Incomplete Hexcasting item media capacities (in Hexcasting dust units, 1 dust = 10,000).").push("hexcasting");
         CYPHER_MAX_MEDIA = BUILDER
                 .comment("Maximum media capacity for incomplete cyphers.")
@@ -212,6 +222,7 @@ public final class ServerConfig {
     public static int fuelTankMaxBlocks = 4096;
     public static int fuelRodMaxRadius = 5;
     public static boolean fuelRodStrictStacking = true;
+    public static double stormCorrectionHz = 5.0;
     public static long cypherMaxMedia = 6400000L;
     public static long trinketMaxMedia = 64000000L;
     public static long artifactMaxMedia = 640000000L;
@@ -289,6 +300,7 @@ public final class ServerConfig {
             fuelTankMaxBlocks = FUEL_TANK_MAX_BLOCKS.get();
             fuelRodMaxRadius = FUEL_ROD_MAX_RADIUS.get();
             fuelRodStrictStacking = FUEL_ROD_STRICT_STACKING.get();
+            stormCorrectionHz = STORM_CORRECTION_HZ.get();
             cypherMaxMedia = CYPHER_MAX_MEDIA.get();
             trinketMaxMedia = TRINKET_MAX_MEDIA.get();
             artifactMaxMedia = ARTIFACT_MAX_MEDIA.get();

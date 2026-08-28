@@ -84,7 +84,10 @@ void main() {
     float sizeEnd = emitters.u[hb + 5u].w;
     // pow(life, 0) at life=0 is undefined GLSL -- keep the exponent positive
     float sizeEase = max(emitters.u[hb + 6u].x, 0.001);
-    float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * p0.w;
+    // STORM members carry their identity (memberIdx+1) in p0.w, not a size
+    // multiplier -- the header's storm slot 18.x selects the constant 1.0.
+    float pmul = emitters.u[hb + 18u].x > 0.5 ? 1.0 : p0.w;
+    float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * pmul;
     // above-feet body height = 2*size blocks exactly: MODEL_ABOVE_FEET is the
     // rest-pose model's above-feet height in blocks, derived from the bake
     // (AllayModelGeometry) -- the old hardcoded 0.625 was ~5.5% too tall.

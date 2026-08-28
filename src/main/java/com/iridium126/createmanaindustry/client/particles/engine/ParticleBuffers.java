@@ -136,24 +136,59 @@ public final class ParticleBuffers {
     public static final int DAMAGE_BB = 16;
     /** Per-frame crosshair hit-query result (see hit.comp / capture.comp). */
     public static final int HIT_BB = 17;
+    /**
+     * Storm player-repulsion source: up to {@link #MAX_STORM_PLAYERS} vec4
+     * player positions (xyz), uploaded every frame the storm can steer. All
+     * SYNCED players repel on every client (positions come from vanilla
+     * entity sync — no extra packets), so the force field is near-identical
+     * across clients; only each client's own local player is exact-to-itself.
+     */
+    public static final int PLAYERS_BB = 18;
+    /**
+     * Storm correction slots, indexed by member identity: two vec4 per member
+     * ({target.xyz, arrivalTime}, {targetVel.xyz, strengthScale}; 0 = invalid).
+     * Written sparsely by network snapshots / hit corrections, read O(1) by
+     * update.comp; expiry is by timestamp, so slots never need clearing.
+     */
+    public static final int CORRECTION_BB = 19;
+    /** Authority readback staging (see stormpos.comp): uint count + entry floats. */
+    public static final int STORMPOS_BB = 20;
+    /** Players fed to the storm repulsion / readback passes. */
+    public static final int MAX_STORM_PLAYERS = 16;
+    /** Entries per authority readback snapshot (nearest-to-players cap). */
+    public static final int STORMPOS_CAP = 256;
+    /** Floats per readback entry: memberIdx, pad, pos.xyz, vel.xyz. */
+    public static final int STORMPOS_ENTRY_FLOATS = 8;
     /** Damage-queue capacity in entries (player melee clicks, a few per frame). */
     public static final int DAMAGE_QUEUE_CAP = 64;
     /**
      * CPU-side layout of the damage queue upload: an std430 uvec4 header
      * (x = entry count) followed by 24-byte entries of 6 floats each:
-     * (particleIndex, damage, kbVecX, kbVecZ, lightPacked, 0). The light is
-     * the vanilla packed-light levels sampled at the hit position; update.comp
-     * stashes it into the target's p1.w so the GPU death chain can spawn poof
-     * particles with the same lighting.
+     * (key, damage, kbVecX, kbVecZ, lightPacked, flags). {@code key} is the
+     * POOL INDEX for legacy local damage (non-storm MODEL debug particles,
+     * client-authoritative) or the MEMBER INDEX for storm damage; flags bit 0
+     * selects the interpretation and bit 1 carries the server-decided death
+     * bit (storm path only — a client must never decide a storm member's
+     * death from its local HP mirror). The light is the vanilla packed-light
+     * levels sampled at the hit position; update.comp stashes it into the
+     * target's p1.w so the GPU death chain can spawn poof particles with the
+     * same lighting.
      */
     public static final int DAMAGE_HEADER_BYTES = 16;
     public static final int DAMAGE_ENTRY_BYTES = 24;
+    /** Damage-entry flags: key is a storm MEMBER index (vs pool index). */
+    public static final int DAMAGE_FLAG_MEMBER = 1;
+    /** Damage-entry flags: server-authoritative death — force the corpse. */
+    public static final int DAMAGE_FLAG_DIED = 2;
     /**
      * Vanilla pick forgiveness: GameRenderer inflates a picked entity's AABB
      * by this much (Entity.getPickRadius default). Unscaled, like vanilla.
      */
     public static final float HIT_INFLATE = 0.1f;
-    /** Hit-query result word: no hit. */
+    /**
+     * Hit-query result words: no hit. (Also the memberIdx sentinel in word 2
+     * for non-storm MODEL particles.)
+     */
     public static final int HIT_MISS = 0xFFFFFFFF;
     /** Hit-result key packing: 10 quantized distance bits above 22 index bits. */
     public static final int HIT_KEY_INDEX_BITS = 22;
@@ -222,6 +257,9 @@ public final class ParticleBuffers {
     private int gridSSBO = -1;
     private int damageSSBO = -1;
     private int hitSSBO = -1;
+    private int playersSSBO = -1;
+    private int correctionSSBO = -1;
+    private int stormPosSSBO = -1;
     /** Static element indices for the MODEL sub-draws (bound into the VAO). */
     private int modelIndexBuffer = -1;
     private int vao = -1;
@@ -249,6 +287,15 @@ public final class ParticleBuffers {
     // buffer.remaining() bytes, so these must be sized to the value widths.
     private final ByteBuffer readTmp = BufferUtils.createByteBuffer(4);
     private final ByteBuffer readTmp8 = BufferUtils.createByteBuffer(8);
+    /** 16-byte hit readback: {key, hpBits, memberIdx, unused}. */
+    private final ByteBuffer readTmp16 = BufferUtils.createByteBuffer(16);
+    /** Authority snapshot readback: count header + capped entries. */
+    private final ByteBuffer readTmpStorm = BufferUtils.createByteBuffer(
+            4 + STORMPOS_CAP * STORMPOS_ENTRY_FLOATS * 4);
+    /** Staging for per-frame player positions (MAX_STORM_PLAYERS vec4). */
+    private final FloatBuffer playersTmp = BufferUtils.createFloatBuffer(MAX_STORM_PLAYERS * 4);
+    /** Staging for one correction-slot write (2 vec4). */
+    private final FloatBuffer correctionTmp = BufferUtils.createFloatBuffer(8);
 
     /**
      * Allocates all buffers. Fails (logs + returns false) if the GPU cannot
@@ -328,13 +375,21 @@ public final class ParticleBuffers {
         // frame it has entries plus one zero-count upload the frame after.
         this.damageSSBO = createBuffer(
                 DAMAGE_HEADER_BYTES + (long) DAMAGE_QUEUE_CAP * DAMAGE_ENTRY_BYTES, null);
-        // Crosshair hit-query result: {packed key, winner HP bits}.
-        this.hitSSBO = createBuffer(8, null);
+        // Crosshair hit-query result uvec4: {packed key, winner HP bits,
+        // memberIdx (HIT_MISS for non-storm MODEL), unused}.
+        this.hitSSBO = createBuffer(16, null);
         this.tmp4.clear();
-        this.tmp4.putInt(HIT_MISS).putInt(0);
+        this.tmp4.putInt(HIT_MISS).putInt(0).putInt(HIT_MISS).putInt(0);
         this.tmp4.flip();
         GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.hitSSBO);
         GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.tmp4);
+        // Storm player-repulsion source (vec4 per player, up to 16).
+        this.playersSSBO = createBuffer(MAX_STORM_PLAYERS * 16L, null);
+        // Storm correction slots: 2 vec4 per pool slot, indexed by member id.
+        this.correctionSSBO = createBuffer((long) cap * 32L, null);
+        // Authority readback staging: uint count + capped entry floats.
+        this.stormPosSSBO = createBuffer(
+                4L + (long) STORMPOS_CAP * STORMPOS_ENTRY_FLOATS * 4L, null);
 
         // initial indirect payload: one command per slot (6 verts / 0 inst
         // each; the 5th uint pads arrays commands to the uniform 20 B stride)
@@ -615,6 +670,87 @@ public final class ParticleBuffers {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, HIT_BB, this.hitSSBO);
     }
 
+    /** Binds the storm player-position array at its fixed binding. */
+    public void bindPlayers() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, PLAYERS_BB, this.playersSSBO);
+    }
+
+    /**
+     * Uploads up to {@link #MAX_STORM_PLAYERS} player positions (xyz packed
+     * into vec4s, stride 4 floats). {@code count} entries are read from the
+     * head of the flat array.
+     */
+    public void uploadPlayers(float[] xyz, int count) {
+        int n = Math.min(count, MAX_STORM_PLAYERS);
+        this.playersTmp.clear();
+        for (int i = 0; i < n; i++) {
+            this.playersTmp.put(xyz[i * 3]).put(xyz[i * 3 + 1]).put(xyz[i * 3 + 2]).put(0f);
+        }
+        this.playersTmp.flip();
+        GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.playersSSBO);
+        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.playersTmp);
+    }
+
+    /** Binds the storm correction-slot buffer at its fixed binding. */
+    public void bindCorrections() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, CORRECTION_BB, this.correctionSSBO);
+    }
+
+    /**
+     * Writes one member's correction slot (32 bytes at
+     * {@code memberIdx * 32}): {target.xyz, arrivalTime} and
+     * {targetVel.xyz, strengthScale} (scale &gt; 2 marks a hit correction with
+     * its fixed short window; 0 disables).
+     */
+    public void writeCorrection(int memberIdx, float tx, float ty, float tz, float arrival,
+            float vx, float vy, float vz, float scale) {
+        this.correctionTmp.clear();
+        this.correctionTmp.put(tx).put(ty).put(tz).put(arrival);
+        this.correctionTmp.put(vx).put(vy).put(vz).put(scale);
+        this.correctionTmp.flip();
+        GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.correctionSSBO);
+        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, memberIdx * 32L, this.correctionTmp);
+    }
+
+    /** Binds the authority readback staging buffer at its fixed binding. */
+    public void bindStormPos() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, STORMPOS_BB, this.stormPosSSBO);
+    }
+
+    /** Zeroes the readback entry count ahead of a dispatch (4-byte write). */
+    public void clearStormPosCount() {
+        this.tmp4.clear();
+        this.tmp4.putInt(0);
+        this.tmp4.flip();
+        GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.stormPosSSBO);
+        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.tmp4);
+    }
+
+    /**
+     * Reads one completed readback snapshot (fence-covered — same stall
+     * discipline as {@link #readbackCounts(int)}): returns a float array of
+     * {@code min(count, STORMPOS_CAP)} entries at stride
+     * {@link #STORMPOS_ENTRY_FLOATS} ({@code memberIdx, pad, pos.xyz, vel.xyz})
+     * or {@code null} when the snapshot was empty.
+     */
+    public float[] readbackStormPos() {
+        this.readTmpStorm.clear();
+        this.readTmpStorm.limit(4);
+        GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.stormPosSSBO);
+        GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.readTmpStorm);
+        int count = this.readTmpStorm.getInt(0);
+        if (count <= 0)
+            return null;
+        int n = Math.min(count, STORMPOS_CAP);
+        this.readTmpStorm.clear();
+        this.readTmpStorm.limit(4 + n * STORMPOS_ENTRY_FLOATS * 4);
+        GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.readTmpStorm);
+        float[] out = new float[n * STORMPOS_ENTRY_FLOATS];
+        for (int i = 0; i < out.length; i++)
+            out[i] = this.readTmpStorm.getFloat(4 + i * 4);
+        return out;
+    }
+
     /**
      * Zeroes the heads table ({@link #GRID_TABLE} ints) ahead of each
      * gridbuild dispatch; the {@code next} chain half needs no clearing because
@@ -654,18 +790,19 @@ public final class ParticleBuffers {
     }
 
     /**
-     * Reads the crosshair hit-query snapshot: {@code {key, hpBits}} where key
-     * packs (quantized ray distance &lt;&lt; 22 | particle index) or
-     * {@link #HIT_MISS}, and hpBits holds the winner's HP as float bits
-     * (capture.comp publishes it beside the key in the same generation).
-     * <b>Call only under the frame fence that covers the compute phase</b> --
-     * the same stall discipline as {@link #readbackCounts(int)}.
+     * Reads the crosshair hit-query snapshot (fence-covered): uvec4
+     * {@code {key, hpBits, memberIdx, unused}} where key packs
+     * {@code (quantized ray distance << 22 | particle index)} or
+     * {@link #HIT_MISS}, hpBits holds the winner's HP as float bits and
+     * memberIdx the storm member identity ({@link #HIT_MISS} = non-storm
+     * MODEL particle — the legacy local damage path).
      */
     public int[] readbackHit() {
-        this.readTmp8.clear();
+        this.readTmp16.clear();
         GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.hitSSBO);
-        GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.readTmp8);
-        return new int[] { this.readTmp8.getInt(0), this.readTmp8.getInt(4) };
+        GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.readTmp16);
+        return new int[] { this.readTmp16.getInt(0), this.readTmp16.getInt(4),
+                this.readTmp16.getInt(8), this.readTmp16.getInt(12) };
     }
 
     /**
@@ -740,18 +877,18 @@ public final class ParticleBuffers {
         GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.damageSSBO);
         GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.tmp4);
         this.tmp4.clear();
-        this.tmp4.putInt(HIT_MISS).putInt(0);
+        this.tmp4.putInt(HIT_MISS).putInt(0).putInt(HIT_MISS).putInt(0);
         this.tmp4.flip();
         GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.hitSSBO);
         GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.tmp4);
     }
 
     /**
-     * Unbinds the engine's SSBO bases so they don't linger bound into the rest of
-     * the world's rendering after our frame.
+     * Unbinds the engine's SSBO bases so they don't linger bound into the rest
+     * of the world's rendering after our frame.
      */
     public void unbindShaders() {
-        for (int i = 0; i <= HIT_BB; i++) {
+        for (int i = 0; i <= STORMPOS_BB; i++) {
             GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, i, 0);
         }
     }
@@ -839,6 +976,12 @@ public final class ParticleBuffers {
             GL15.glDeleteBuffers(this.damageSSBO);
         if (this.hitSSBO > 0)
             GL15.glDeleteBuffers(this.hitSSBO);
+        if (this.playersSSBO > 0)
+            GL15.glDeleteBuffers(this.playersSSBO);
+        if (this.correctionSSBO > 0)
+            GL15.glDeleteBuffers(this.correctionSSBO);
+        if (this.stormPosSSBO > 0)
+            GL15.glDeleteBuffers(this.stormPosSSBO);
         for (int[] t : this.mergedTbos)
             if (t[0] > 0)
                 GL11.glDeleteTextures(t[0]);

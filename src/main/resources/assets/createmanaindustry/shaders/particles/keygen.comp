@@ -89,8 +89,11 @@ void main() {
     // between the keyframes; p0.w is the per-particle multiplier). MODEL
     // particles are a full 3D body ~2*size tall -- use a 1.5x margin so a
     // partially-offscreen allay never pops at the screen edge.
+    // STORM members carry their identity (memberIdx+1) in p0.w instead — the
+    // header's storm slot 18.x selects the constant 1.0 multiplier for them.
     float matId = emitters.u[hb + 7u].x;
-    float keySize = max(emitters.u[hb + 5u].z, emitters.u[hb + 5u].w) * p0.w;
+    bool storm = emitters.u[hb + 18u].x > 0.5;
+    float keySize = max(emitters.u[hb + 5u].z, emitters.u[hb + 5u].w) * (storm ? 1.0 : p0.w);
     float radius = matId >= 1.5 && matId < 2.5 ? keySize * 1.5 : keySize;
 
     // translucent census BEFORE the cull test: every live ALPHA/MODEL particle

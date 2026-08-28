@@ -20,7 +20,7 @@ layout(std430, binding = BIND_INDIRECT) readonly buffer IndirectBuf { uint cmd[I
 layout(std430, binding = BIND_SORT_WRITE) buffer SortMeta { uvec2 kv[]; } sortOut;
 layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
 layout(std430, binding = BIND_POOL_WRITE) readonly buffer Pool { vec4 data[]; } pool;
-layout(std430, binding = BIND_HIT) buffer HitBuf { uvec2 pair; } hitOut;
+layout(std430, binding = BIND_HIT) buffer HitBuf { uvec4 pair; } hitOut;
 
 uniform int uMetaSlot; // == particle capacity: the reserved tail slot index
 
@@ -30,11 +30,16 @@ void main() {
 
     // Publish the crosshair hit-query winner's current HP beside its key (see
     // hit.comp) so the CPU can pick hurt vs death sounds when it consumes the
-    // snapshot. Same buffer, same generation, readable under this frame's
-    // fence -- no extra dispatch or sync.
-    uvec2 h = hitOut.pair;
+    // snapshot. The third word publishes the winner's STORM MEMBER identity
+    // (p0.w >= 1.5 ⇒ memberIdx = p0.w - 1; HIT_MISS for non-storm MODEL
+    // particles, which keep the legacy local-authority damage path). Same
+    // buffer, same generation, readable under this frame's fence -- no extra
+    // dispatch or sync.
+    uvec4 h = hitOut.pair;
     if (h.x != 0xFFFFFFFFu) {
         uint idx = h.x & 0x3FFFFFu;
+        vec4 wp0 = pool.data[idx * 4u];
         hitOut.pair.y = floatBitsToUint(pool.data[idx * 4u + 3u].y);
+        hitOut.pair.z = wp0.w >= 1.5 ? uint(wp0.w + 0.5) - 1u : 0xFFFFFFFFu;
     }
 }

@@ -697,7 +697,10 @@ public final class ShaderPackProgramCompiler {
                     float sizeStart = gone ? 0.0 : texelFetch(cmi_Emitters, int(hb + 5u)).z;
                     float sizeEnd = gone ? 0.0 : texelFetch(cmi_Emitters, int(hb + 5u)).w;
                     float sizeEase = max(texelFetch(cmi_Emitters, int(hb + 6u)).x, 0.001);
-                    float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * p0.w;
+                    // storm members carry their IDENTITY in p0.w — the header's
+                    // storm slot 18.x selects the constant 1.0 multiplier
+                    float pmul = texelFetch(cmi_Emitters, int(hb + 18u)).x > 0.5 ? 1.0 : p0.w;
+                    float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * pmul;
                     float scale = (2.0 * size) / MODEL_ABOVE_FEET;
 
                     int anim = int(texelFetch(cmi_Emitters, int(hb + 17u)).x);

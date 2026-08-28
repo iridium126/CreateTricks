@@ -32,6 +32,8 @@ public final class AllayStormSpec {
     public static final int MAX_COUNT = 131072;
     /** Vortex-mode cap on |omega| (rad/s). */
     public static final float MAX_OMEGA = 3.0f;
+    /** Client-side mirror of the server's 24-bit seed mask (StormData.SEED_MASK). */
+    public static final int SEED_MASK_CLIENT = (1 << 24) - 1;
     /** Wandering-centre radius packed into header #18.z (blocks). */
     public static final float WANDER_RADIUS = 12.0f;
     /** Steering speed cap packed into header #18.w (blocks/s). */
@@ -61,11 +63,13 @@ public final class AllayStormSpec {
 
     /**
      * Packs the storm's per-id header: the spec fields with the FLY animation
-     * pinned, plus the motion parameters and anchor in the reserved slots
-     * 18/19. {@code omega} selects the motion mode (non-zero = vortex).
+     * pinned, the member spawn style 3 (server-synced analytic orbit placement
+     * — see emit.comp), plus the motion parameters and anchor in the reserved
+     * slots 18/19. {@code omega} selects the motion mode (non-zero = vortex).
      */
     public static float[] packedHeader(float omega, double radius, Vec3 anchor) {
         float[] h = SPEC.packedWithAnimation(EmitterSpec.Animation.FLY.index());
+        h[17 * 4 + 1] = 3.0f; // spawnStyle 3: storm member (identity + analytic spawn)
         h[18 * 4 + 0] = omega != 0f ? (float) MODE_VORTEX : (float) MODE_BALL;
         h[18 * 4 + 1] = (float) radius;
         h[18 * 4 + 2] = WANDER_RADIUS;

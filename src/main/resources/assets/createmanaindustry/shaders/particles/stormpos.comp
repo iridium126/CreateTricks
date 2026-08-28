@@ -1,0 +1,67 @@
+// Authority-client readback for storm position snapshots (storm sync).
+// One thread per live pool particle: storm MODEL members within the
+// NEAR-PLAYER radius (4 blocks -- everything melee-reachable in one sweep)
+// of ANY synced player append their identity + position + velocity to the
+// compact staging buffer, capped at STORMPOS_CAP entries. Positions are
+// STORM-ANCHOR RELATIVE (the receiver adds its own anchor back -- identical
+// per-storm on every client, immune to quantization drift at large coords).
+// The result is read back under the frame fence (8 bytes... well, ~3 KB max)
+// and shipped to the server at the configured Hz; other clients ease toward
+// the extrapolated targets through the soft correction layer in update.comp.
+// The steady-state cost is the distance tests alone -- only the handful of
+// members a player is actually touching reach the atomic append.
+layout(local_size_x = 64) in;
+
+layout(std430, binding = BIND_POOL_WRITE) readonly buffer Pool { vec4 data[]; } pool;
+layout(std430, binding = BIND_COUNTER) readonly buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
+layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+// all synced players feed the near test (same set as the repulsion source)
+layout(std430, binding = BIND_PLAYERS) readonly buffer PlayersBuf { vec4 pl[]; } players;
+// {uint count; float entries[];} -- entries begin at byte 4 (std430 stride 4)
+layout(std430, binding = BIND_STORMPOS) buffer StormPosBuf { uint count; float entries[]; } result;
+
+uniform vec3 uAnchor;     // storm anchor (world space)
+uniform int  uPlayerCount;
+
+const float NEAR_R = 4.0;
+const float NEAR_R_SQ = NEAR_R * NEAR_R;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= counter.writeSlot)
+        return;
+
+    uint base = idx * 4u;
+    vec4 p0 = pool.data[base];
+    if (p0.w < 1.5)
+        return; // not a storm member (identity lives in p0.w)
+    vec4 p1 = pool.data[base + 1u];
+    vec4 p3 = pool.data[base + 3u];
+    if (p3.y <= 0.0)
+        return; // corpse: position is not worth correcting
+    uint eid = floatBitsToUint(p3.w);
+    uint hb = eid * VEC4_PER_EMITTER;
+    if (emitters.u[hb + 18u].x < 0.5)
+        return; // MODEL particle of a non-storm emitter
+
+    bool near = false;
+    for (int pi = 0; pi < uPlayerCount && !near; pi++) {
+        vec3 d = p0.xyz - players.pl[pi].xyz;
+        near = dot(d, d) <= NEAR_R_SQ;
+    }
+    if (!near)
+        return;
+
+    uint slot = atomicAdd(result.count, 1u);
+    if (slot >= STORMPOS_CAP)
+        return; // snapshot cap: the next frame's sweep covers the rest
+    uint o = slot * 8u;
+    result.entries[o + 0u] = p0.w - 1.0; // memberIdx (exact below 2^24)
+    result.entries[o + 1u] = 0.0;
+    result.entries[o + 2u] = p0.x - uAnchor.x;
+    result.entries[o + 3u] = p0.y - uAnchor.y;
+    result.entries[o + 4u] = p0.z - uAnchor.z;
+    result.entries[o + 5u] = p1.x;
+    result.entries[o + 6u] = p1.y;
+    result.entries[o + 7u] = p1.z;
+}

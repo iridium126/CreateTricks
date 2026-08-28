@@ -24,7 +24,9 @@ layout(local_size_x = 64) in;
 layout(std430, binding = BIND_POOL_WRITE) readonly buffer Pool { vec4 data[]; } pool;
 layout(std430, binding = BIND_COUNTER) readonly buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
-layout(std430, binding = BIND_HIT) buffer HitBuf { uvec2 pair; } hitOut;
+// z is written by capture.comp (the winner's storm member identity, HIT_MISS
+// for a non-storm MODEL particle); hit.comp itself only reduces x.
+layout(std430, binding = BIND_HIT) buffer HitBuf { uvec4 pair; } hitOut;
 
 uniform vec3 uEye;    // player eye position (world space)
 uniform vec3 uLook;   // normalized view direction
@@ -49,13 +51,15 @@ void main() {
     // AABB matching the rendered model EXACTLY (identical size formula to
     // model.vsh, so what you see is what you hit); the vanilla AABB does not
     // rotate with the body yaw -- XZ centered on the feet position, bottom at
-    // the feet, height = 0.6 x scale.
+    // the feet, height = 0.6 x scale. Storm members carry identity in p0.w —
+    // their multiplier is the constant 1.0 (header storm slot 18.x).
     float life = clamp(p3.x / max(p3.y, 1e-5), 0.0, 1.0);
     float sizeStart = emitters.u[hb + 5u].z;
     float sizeEnd = emitters.u[hb + 5u].w;
     // pow(life, 0) at life=0 is undefined GLSL -- keep the exponent positive
     float sizeEase = max(emitters.u[hb + 6u].x, 0.001);
-    float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * p0.w;
+    float pmul = emitters.u[hb + 18u].x > 0.5 ? 1.0 : p0.w;
+    float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * pmul;
     float scale = (2.0 * size) / MODEL_ABOVE_FEET;
     float halfW = 0.175 * scale + HIT_INFLATE;
     vec3 mn = vec3(p0.x - halfW, p0.y - HIT_INFLATE, p0.z - halfW);

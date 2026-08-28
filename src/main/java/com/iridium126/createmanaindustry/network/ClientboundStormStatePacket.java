@@ -1,0 +1,129 @@
+package com.iridium126.createmanaindustry.network;
+
+import com.iridium126.createmanaindustry.CreateManaIndustry;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.codec.ByteBufCodecs;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.neoforged.neoforge.network.handling.IPayloadContext;
+
+/**
+ * Allay Storm lifecycle state, server → client, event-driven (zero per-tick
+ * traffic). One packet covers four actions:
+ * <ul>
+ *   <li><b>ACTIVATE</b> (also the join / dimension-change / re-enter-range
+ *       path): full parameters + stormSeed + the dead-member bitmap. The
+ *       client spawns exactly the alive members with seed-derived identity,
+ *       so member counts agree across clients and restarts by construction.
+ *   <li><b>UPDATE</b>: parameter-only change (anchor/radius/mode/omega);
+ *       member identity, HP and deaths are preserved — springs retarget.
+ *       A count change is never an UPDATE (the server restarts the storm
+ *       with a fresh seed instead).
+ *   <li><b>DEACTIVATE</b>: the player left the activation range — the client
+ *       disperses its local swarm; server state is untouched.
+ *   <li><b>STOP</b>: the storm is over — clients disperse and forget state.
+ * </ul>
+ * The {@code authority} bit tells THIS recipient it is the authority client
+ * (runs the position-snapshot readback at {@code correctionHz}); it flips
+ * only via re-sent UPDATE packets on handoff.
+ * <p>
+ * Wire format (quantized once at creation server-side): anchor as
+ * {@code BlockPos} VAR_LONG, count varint, radius byte (×2 = 0.5-block
+ * steps), mode varint, omega signed byte (÷16 rad/s), seed varint, dead
+ * bitmap length-prefixed raw bytes (worst case 16 KB once per activation).
+ */
+public record ClientboundStormStatePacket(
+        int action, boolean authority, double correctionHz,
+        BlockPos anchor, int count, float radius, int mode, float omega, int stormSeed,
+        byte[] deadBitmap) implements CustomPacketPayload {
+
+    public static final int ACTION_ACTIVATE = 0;
+    public static final int ACTION_UPDATE = 1;
+    public static final int ACTION_DEACTIVATE = 2;
+    public static final int ACTION_STOP = 3;
+
+    public static final ClientboundStormStatePacket ACTIVATE(BlockPos anchor, int count, float radius,
+            int mode, float omega, int stormSeed, boolean authority, double hz, byte[] deadBitmap) {
+        return new ClientboundStormStatePacket(ACTION_ACTIVATE, authority, hz,
+                anchor, count, radius, mode, omega, stormSeed, deadBitmap);
+    }
+
+    public static final ClientboundStormStatePacket UPDATE(BlockPos anchor, int count, float radius,
+            int mode, float omega, int stormSeed, boolean authority, double hz) {
+        return new ClientboundStormStatePacket(ACTION_UPDATE, authority, hz,
+                anchor, count, radius, mode, omega, stormSeed, null);
+    }
+
+    public static final ClientboundStormStatePacket DEACTIVATE() {
+        return new ClientboundStormStatePacket(ACTION_DEACTIVATE, false, 0, BlockPos.ZERO, 0, 0, 0, 0, 0, null);
+    }
+
+    public static final ClientboundStormStatePacket STOP() {
+        return new ClientboundStormStatePacket(ACTION_STOP, false, 0, BlockPos.ZERO, 0, 0, 0, 0, 0, null);
+    }
+
+    public static final CustomPacketPayload.Type<ClientboundStormStatePacket> TYPE =
+            new CustomPacketPayload.Type<>(CreateManaIndustry.modLoc("storm_state"));
+
+    public static final StreamCodec<RegistryFriendlyByteBuf, ClientboundStormStatePacket> STREAM_CODEC =
+            StreamCodec.of(ClientboundStormStatePacket::encode, ClientboundStormStatePacket::decode);
+
+    private static void encode(RegistryFriendlyByteBuf buffer, ClientboundStormStatePacket p) {
+        buffer.writeByte((p.action & 3) | (p.authority ? 4 : 0));
+        ByteBufCodecs.VAR_INT.encode(buffer, (int) Math.round(p.correctionHz * 10));
+        if (p.action == ACTION_ACTIVATE || p.action == ACTION_UPDATE) {
+            BlockPos.STREAM_CODEC.encode(buffer, p.anchor);
+            ByteBufCodecs.VAR_INT.encode(buffer, p.count);
+            buffer.writeByte((int) Math.round(p.radius * 2));
+            ByteBufCodecs.VAR_INT.encode(buffer, p.mode);
+            buffer.writeByte((int) Math.round(p.omega * 16));
+            ByteBufCodecs.VAR_INT.encode(buffer, p.stormSeed);
+        }
+        if (p.action == ACTION_ACTIVATE) {
+            byte[] bm = p.deadBitmap == null ? new byte[0] : p.deadBitmap;
+            ByteBufCodecs.VAR_INT.encode(buffer, bm.length);
+            buffer.writeBytes(bm);
+        }
+    }
+
+    private static ClientboundStormStatePacket decode(RegistryFriendlyByteBuf buffer) {
+        int flags = buffer.readByte() & 0xFF;
+        int action = flags & 3;
+        boolean authority = (flags & 4) != 0;
+        double hz = ByteBufCodecs.VAR_INT.decode(buffer) / 10.0;
+        BlockPos anchor = BlockPos.ZERO;
+        int count = 0;
+        float radius = 0;
+        int mode = 0;
+        float omega = 0;
+        int seed = 0;
+        if (action == ACTION_ACTIVATE || action == ACTION_UPDATE) {
+            anchor = BlockPos.STREAM_CODEC.decode(buffer);
+            count = ByteBufCodecs.VAR_INT.decode(buffer);
+            radius = (buffer.readByte() & 0xFF) * 0.5f;
+            mode = ByteBufCodecs.VAR_INT.decode(buffer);
+            omega = buffer.readByte() / 16.0f;
+            seed = ByteBufCodecs.VAR_INT.decode(buffer);
+        }
+        byte[] dead = null;
+        if (action == ACTION_ACTIVATE) {
+            int len = ByteBufCodecs.VAR_INT.decode(buffer);
+            dead = new byte[Math.max(0, len)];
+            buffer.readBytes(dead);
+        }
+        return new ClientboundStormStatePacket(action, authority, hz,
+                anchor, count, radius, mode, omega, seed, dead);
+    }
+
+    @Override
+    public Type<? extends CustomPacketPayload> type() {
+        return TYPE;
+    }
+
+    /** Called on the client; body only executes client-side (see MistSyncPacket). */
+    public static void handle(ClientboundStormStatePacket packet, IPayloadContext ctx) {
+        ctx.enqueueWork(() -> com.iridium126.createmanaindustry.client.particles.storm.StormClientHandler.onState(packet));
+    }
+}

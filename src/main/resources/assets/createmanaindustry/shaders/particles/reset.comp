@@ -22,9 +22,10 @@ layout(std430, binding = BIND_COUNTER) buffer CounterBuf {
 
 // Per-frame crosshair hit-query result (see hit.comp): x = packed sort key
 // (quantized ray distance << 22 | particle index), y = winner's HP bits
-// (published by capture.comp). 0xFFFFFFFF = miss.
+// (published by capture.comp), z = storm member identity (HIT_MISS for
+// non-storm MODEL particles, published by capture.comp). 0xFFFFFFFF = miss.
 layout(std430, binding = BIND_HIT) buffer HitBuf {
-    uvec2 pair;
+    uvec4 pair;
 } hitOut;
 
 void main() {
@@ -37,5 +38,5 @@ void main() {
     indirect.cmd[IDX_CNT_MODELOP] = 0u;
     indirect.cmd[IDX_CNT_XLU] = 0u;
     indirect.cmd[IDX_CNT_ALPHA] = 0u;
-    hitOut.pair = uvec2(0xFFFFFFFFu, 0u);
+    hitOut.pair = uvec4(0xFFFFFFFFu, 0u, 0xFFFFFFFFu, 0u);
 }

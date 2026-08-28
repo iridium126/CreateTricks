@@ -48,6 +48,11 @@ import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 import com.iridium126.createmanaindustry.network.ClientboundMistSyncPacket;
+import com.iridium126.createmanaindustry.network.ClientboundStormDamagePacket;
+import com.iridium126.createmanaindustry.network.ClientboundStormPositionsPacket;
+import com.iridium126.createmanaindustry.network.ClientboundStormStatePacket;
+import com.iridium126.createmanaindustry.network.ServerboundStormHitPacket;
+import com.iridium126.createmanaindustry.network.ServerboundStormPositionsPacket;
 
 @Mod(CreateManaIndustry.MODID)
 public class CreateManaIndustry {
@@ -151,6 +156,28 @@ public class CreateManaIndustry {
                 ClientboundMistSyncPacket.TYPE,
                 ClientboundMistSyncPacket.STREAM_CODEC,
                 ClientboundMistSyncPacket::handle);
+        // Allay Storm sync: server -> client lifecycle/damage/corrections,
+        // client -> server hit reports + authority position snapshots.
+        registrar.playToClient(
+                ClientboundStormStatePacket.TYPE,
+                ClientboundStormStatePacket.STREAM_CODEC,
+                ClientboundStormStatePacket::handle);
+        registrar.playToClient(
+                ClientboundStormDamagePacket.TYPE,
+                ClientboundStormDamagePacket.STREAM_CODEC,
+                ClientboundStormDamagePacket::handle);
+        registrar.playToClient(
+                ClientboundStormPositionsPacket.TYPE,
+                ClientboundStormPositionsPacket.STREAM_CODEC,
+                ClientboundStormPositionsPacket::handle);
+        registrar.playToServer(
+                ServerboundStormHitPacket.TYPE,
+                ServerboundStormHitPacket.STREAM_CODEC,
+                ServerboundStormHitPacket::handle);
+        registrar.playToServer(
+                ServerboundStormPositionsPacket.TYPE,
+                ServerboundStormPositionsPacket.STREAM_CODEC,
+                ServerboundStormPositionsPacket::handle);
     }
 
     /**

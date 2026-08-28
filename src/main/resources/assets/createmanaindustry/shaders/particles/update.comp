@@ -38,14 +38,23 @@ layout(std430, binding = BIND_PREV_COUNTER) readonly buffer PrevCounterBuf { uin
 // orders this frame's update before the next frame's CPU header rewrite, and
 // reset.comp never touches it; the CPU uploads the header every frame it has
 // entries plus one zero-count upload the frame after). Each thread scans for
-// ITS OWN index, so entries apply inside the owning particle's integration --
+// ITS OWN particle, so entries apply inside the owning particle's integration --
 // no cross-thread races, and only MODEL threads scan. Entry word 4 carries the
 // packed light (blockLight + 16*skyLight) sampled at the hit position; it is
 // stashed into the target's p1.w (unused by the model path) so the GPU death
-// chain can spawn its poof burst with the same lighting.
+// chain can spawn its poof burst with the same lighting. Entry word 5 packs
+// the key type and the server death verdict:
+//   key (word 0) = POOL INDEX when flags bit0 = 0 (legacy local-authority
+//     damage, non-storm MODEL debug particles)
+//   key           = MEMBER INDEX when flags bit0 = 1 (storm damage: matches
+//     p0.w identity, so pool recompaction can never mis-address it)
+//   flags bit1    = server-decided DEATH: force the corpse immediately. A
+//     client must NEVER decide a storm member's death from its local HP
+//     mirror (mid-fight joiners have a full-HP baseline); the bit clamps
+//     hp to 0 unconditionally. Entries landing on a corpse are idempotent.
 layout(std430, binding = BIND_DAMAGE) readonly buffer DamageBuf {
     uvec4 header;      // x = entry count (y..z unused)
-    float entries[];   // stride 6: (particleIndex, damage, kbVecX, kbVecZ, lightPacked, 0)
+    float entries[];   // stride 6: (key, damage, kbVecX, kbVecZ, lightPacked, flags)
 } damageQ;
 
 layout(binding = 0) uniform sampler3D uCollision;
@@ -62,8 +71,21 @@ layout(std430, binding = BIND_GRID) buffer GridBuf {
     int next[];            // sized by pool capacity on the Java side
 } grid;
 uniform float uTimeSec;
-uniform vec3  uPlayerPos;
-uniform int   uPlayerOn;   // 1 = uPlayerPos valid
+// All-player repulsion source: up to MAX_STORM_PLAYERS synced player
+// positions (vanilla entity sync feeds them -- no extra packets). Every
+// client repels against the SAME set (each seeing others 1-2 blocks lagged
+// by interpolation), so the force field stays near-identical across clients.
+layout(std430, binding = BIND_PLAYERS) readonly buffer PlayersBuf { vec4 pl[]; } players;
+uniform int   uPlayerCount;
+// Network correction slots, indexed by MEMBER identity (p0.w - 1): two vec4
+// per member -- {target.xyz, arrivalTime}, {targetVel.xyz, strengthScale}.
+// strengthScale 0 = inactive; 1 = regular snapshot correction (age-ramped,
+// ~1.5 s window); >2.5 = hit correction (fixed 0.25 s window, strong) written
+// when a server DAMAGE broadcast lands so every client eases the struck
+// member to the attacker's exact hit spot. Corrections are SOFT: they only
+// add spring acceleration and blend velocity -- positions keep moving
+// through the integrator, never teleport (see the design doc).
+layout(std430, binding = BIND_CORRECTION) readonly buffer CorrectionBuf { vec4 c[]; } correction;
 uniform uint  uKillEmit;   // emitter id force-expired this frame (none = ~0u)
 uniform float uStormOmega; // SIGNED angular velocity rad/s (vortex mode; 0 = n/a)
 
@@ -117,7 +139,11 @@ void spawnDeathPoof(uint hb, vec4 p0, vec4 p1, vec4 p3) {
     if (chain < 0.5)
         return;
     uint cb = uint(chain) * VEC4_PER_EMITTER;
-    float ssize = emitters.u[hb + 5u].w * p0.w; // corpse life clamps to 1 → sizeEnd
+    // storm members carry their IDENTITY in p0.w (memberIdx+1, up to 131073)
+    // -- the size multiplier for them is a constant 1.0 (header storm slot
+    // 18.x > 0.5), or the poof metrics would scale with the member index
+    float pmul = emitters.u[hb + 18u].x > 0.5 ? 1.0 : p0.w;
+    float ssize = emitters.u[hb + 5u].w * pmul; // corpse life clamps to 1 → sizeEnd
     float sscale = (2.0 * ssize) / MODEL_ABOVE_FEET;
     float sw = 0.35 * sscale; // vanilla Allay bbWidth × render scale
     float sh = 0.6 * sscale;  // vanilla Allay bbHeight × render scale
@@ -189,28 +215,44 @@ void main() {
     vec3 pos = p0.xyz;
     vec3 vel = p1.xyz;
 
-    // ---- damage queue (MODEL): CPU melee attacks land here ----------------
+    // ---- damage queue (MODEL): local + server-relayed attacks land here ----
     float hurt = p2.w; // MODEL: hurt-flash timer; other materials: intensity
     // p1.w (billboard roll, unused by the model path) doubles as the packed
     // light stash once a damage entry lands; the death chain reads it.
     float roll = p1.w;
     if (isModel) {
+        bool isStorm = p0.w >= 1.5; // identity in p0.w (memberIdx+1)
         uint n = min(damageQ.header.x, uint(DAMAGE_QUEUE_CAP));
         for (uint i = 0u; i < n; i++) {
             uint ob = i * 6u;
-            if (uint(damageQ.entries[ob + 0u] + 0.5) == idx) {
-                bool wasAlive = hp > 0.0;
-                hp -= damageQ.entries[ob + 1u];
-                // vanilla LivingEntity.knockback (airborne target):
-                // vel = vel/2 - dir*strength -- the CPU pre-multiplies
-                // dir*strength into the entry's zw
-                vel.x = vel.x * 0.5 - damageQ.entries[ob + 2u];
-                vel.z = vel.z * 0.5 - damageQ.entries[ob + 3u];
-                hurt = 1.0;
-                roll = damageQ.entries[ob + 4u]; // packed light at the hit
-                if (wasAlive && hp <= 0.0)
-                    hp = 0.0; // kill frame: start the death countdown at zero
+            float flags = damageQ.entries[ob + 5u];
+            bool memberKey = mod(flags, 2.0) >= 0.5; // bit 0: key is member id
+            bool died = flags >= 2.5;                // bit 1: server death verdict
+            uint key = uint(damageQ.entries[ob + 0u] + 0.5);
+            if (memberKey) {
+                // storm entry: match by MEMBER identity, immune to pool
+                // recompaction; a corpse consumes it idempotently (a second
+                // entry must never restart the death countdown)
+                if (!isStorm || hp <= 0.0 || key != uint(p0.w + 0.5) - 1u)
+                    continue;
+            } else {
+                if (isStorm || key != idx)
+                    continue;
             }
+            bool wasAlive = hp > 0.0;
+            hp -= damageQ.entries[ob + 1u];
+            // vanilla LivingEntity.knockback (airborne target):
+            // vel = vel/2 - dir*strength -- the CPU pre-multiplies
+            // dir*strength into the entry's zw
+            vel.x = vel.x * 0.5 - damageQ.entries[ob + 2u];
+            vel.z = vel.z * 0.5 - damageQ.entries[ob + 3u];
+            hurt = 1.0;
+            roll = damageQ.entries[ob + 4u]; // packed light at the hit
+            // the server's died bit is VERDICT, not arithmetic: mid-fight
+            // joiners have a full-HP local mirror, so clamp to the corpse
+            // state unconditionally (legacy entries keep the old semantics)
+            if ((died && memberKey) || (wasAlive && hp <= 0.0))
+                hp = 0.0; // kill frame: start the death countdown at zero
         }
     }
     bool corpse = isModel && hp <= 0.0;
@@ -322,9 +364,10 @@ void main() {
         else if (dG < ballR * 0.15 && dG > 1e-3)
             acc -= (toG / dG) * STORM_W_CONTAIN * (ballR * 0.15 - dG);
 
-        // fish avoiding the diver
-        if (uPlayerOn == 1) {
-            vec3 dp = pos - uPlayerPos;
+        // fish avoiding EVERY diver (all synced players — same force set on
+        // every client; see the PlayersBuf note above)
+        for (int pi = 0; pi < uPlayerCount; pi++) {
+            vec3 dp = pos - players.pl[pi].xyz;
             float dpL = length(dp);
             if (dpL < STORM_PLAYER_R && dpL > 1e-3)
                 acc += (dp / dpL) * STORM_PLAYER_W * (STORM_PLAYER_R - dpL) / STORM_PLAYER_R;
@@ -406,11 +449,12 @@ void main() {
         }
         sepW *= STORM_W_SEP;
         vec3 repW = vec3(0.0);
-        if (uPlayerOn == 1) {
-            vec3 dp = pos - uPlayerPos;
+        // every synced player repels (all-client-consistent force set)
+        for (int pi = 0; pi < uPlayerCount; pi++) {
+            vec3 dp = pos - players.pl[pi].xyz;
             float dpL = length(dp);
             if (dpL < STORM_PLAYER_R && dpL > 1e-3)
-                repW = (dp / dpL) * STORM_PLAYER_W * (STORM_PLAYER_R - dpL) / STORM_PLAYER_R;
+                repW += (dp / dpL) * STORM_PLAYER_W * (STORM_PLAYER_R - dpL) / STORM_PLAYER_R;
         }
 
         // back to world: rotate the frame-side acceleration out, add the
@@ -421,6 +465,40 @@ void main() {
         float spdV = length(vel);
         if (spdV > spMaxV)
             vel *= spMaxV / spdV;
+    }
+
+    // ---- network correction (storm members, server-synced positions) -------
+    // SOFT convergence only: an acceleration toward the extrapolated target
+    // plus a velocity blend. Positions always travel through the integrator
+    // (velocity × time, speed-capped by the storm clamp above), so a stale or
+    // multi-block correction reads as "flying back into formation", never a
+    // teleport. Regular snapshots ramp their strength with slot age -- early
+    // window lets local physics speak, late window converges before the next
+    // snapshot lands; hit corrections (server DAMAGE broadcasts) run a fixed
+    // short window at high strength so the corpse/poof plays at the exact
+    // spot the attacker struck.
+    if (!corpse && p0.w >= 1.5) {
+        uint memberIdx = uint(p0.w + 0.5) - 1u;
+        // correction slots are sized by the POOL capacity (2 vec4 per member);
+        // an identity beyond it can never have a slot, so skip instead of
+        // addressing outside the buffer
+        if (memberIdx < uCapacity) {
+            uint ci = memberIdx * 2u;
+            vec4 cA = correction.c[ci];
+            vec4 cB = correction.c[ci + 1u];
+            float cage = uTimeSec - cA.w;
+            if (cB.w > 0.5 && cage >= 0.0) {
+                bool hitC = cB.w > 2.5;
+                float window = hitC ? 0.25 : 1.5;
+                if (cage <= window) {
+                    vec3 target = cA.xyz + cB.xyz * cage; // velocity extrapolation
+                    float ramp = hitC ? 1.0 : (0.25 + 0.75 * clamp(cage / window, 0.0, 1.0));
+                    float k = (hitC ? 24.0 : 8.0) * ramp;
+                    vel += (target - pos) * min(k * uDt, 0.5);
+                    vel += (cB.xyz - vel) * min(2.5 * uDt, 0.35);
+                }
+            }
+        }
     }
 
     // ---- block collision: axis-separated sweep from the PRE-move position ----

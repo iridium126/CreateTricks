@@ -95,6 +95,12 @@ public final class ParticlePrograms {
         sb.append("#define BIND_DAMAGE ").append(ParticleBuffers.DAMAGE_BB).append('\n');
         sb.append("#define BIND_HIT ").append(ParticleBuffers.HIT_BB).append('\n');
         sb.append("#define DAMAGE_QUEUE_CAP ").append(ParticleBuffers.DAMAGE_QUEUE_CAP).append("u\n");
+        // storm sync: all-player repulsion, correction slots, authority readback
+        sb.append("#define BIND_PLAYERS ").append(ParticleBuffers.PLAYERS_BB).append('\n');
+        sb.append("#define BIND_CORRECTION ").append(ParticleBuffers.CORRECTION_BB).append('\n');
+        sb.append("#define BIND_STORMPOS ").append(ParticleBuffers.STORMPOS_BB).append('\n');
+        sb.append("#define MAX_STORM_PLAYERS ").append(ParticleBuffers.MAX_STORM_PLAYERS).append("u\n");
+        sb.append("#define STORMPOS_CAP ").append(ParticleBuffers.STORMPOS_CAP).append("u\n");
         // vanilla pick forgiveness (unscaled AABB inflation, like GameRenderer)
         sb.append("#define HIT_INFLATE ").append(ParticleBuffers.HIT_INFLATE).append('\n');
         // rest-pose model above-feet height in blocks (vanilla size divisor)
@@ -112,6 +118,7 @@ public final class ParticlePrograms {
     private int capture;
     private int grid;           // boids spatial-hash build (storm swarms)
     private int hit;            // per-frame crosshair hit query (melee targeting)
+    private int stormPos;       // authority readback: near-player members (storm sync)
     private int render;          // additive billboards (soft circle)
     private int texturedRender;  // textured sprite billboards: uMode 0 blended / 1 OPAQUE cutout
     private int modelRender;     // instanced allay models via one merged multi-draw
@@ -141,23 +148,25 @@ public final class ParticlePrograms {
         this.capture = compileCompute(GLSL_DIR + "capture.comp");
         this.grid = compileCompute(GLSL_DIR + "gridbuild.comp");
         this.hit = compileCompute(GLSL_DIR + "hit.comp");
+        this.stormPos = compileCompute(GLSL_DIR + "stormpos.comp");
         this.render = link(GLSL_DIR + "additive.vsh", GLSL_DIR + "additive.fsh");
         this.texturedRender = link(GLSL_DIR + "textured.vsh", GLSL_DIR + "textured.fsh");
         this.modelRender = link(GLSL_DIR + "model.vsh", GLSL_DIR + "model.fsh");
         if (!this.ready()) {
             CreateManaIndustry.LOGGER.error("[CMI particles] program rebuild FAILED: "
                     + "reset={} update={} emit={} keygen={} hist={} scan={} scatter={} capture={} grid={} hit={} "
-                    + "render={} textured={} model={}",
+                    + "stormpos={} render={} textured={} model={}",
                     this.reset, this.update, this.emit, this.keygen,
                     this.radixHist, this.radixScan, this.radixScatter, this.capture, this.grid, this.hit,
-                    this.render, this.texturedRender, this.modelRender);
+                    this.stormPos, this.render, this.texturedRender, this.modelRender);
         } else {
             CreateManaIndustry.LOGGER
                     .info("[CMI particles] programs compiled: reset={} update={} emit={} keygen={} "
-                            + "hist={} scan={} scatter={} capture={} grid={} hit={} render={} textured={} model={}",
+                            + "hist={} scan={} scatter={} capture={} grid={} hit={} stormpos={} "
+                            + "render={} textured={} model={}",
                             this.reset, this.update, this.emit, this.keygen,
                             this.radixHist, this.radixScan, this.radixScatter, this.capture, this.grid, this.hit,
-                            this.render, this.texturedRender, this.modelRender);
+                            this.stormPos, this.render, this.texturedRender, this.modelRender);
         }
     }
 
@@ -166,7 +175,7 @@ public final class ParticlePrograms {
                 && this.texturedRender != 0 && this.modelRender != 0
                 && this.keygen != 0 && this.radixHist != 0 && this.radixScan != 0
                 && this.radixScatter != 0 && this.capture != 0 && this.grid != 0
-                && this.hit != 0;
+                && this.hit != 0 && this.stormPos != 0;
     }
 
     public int reset() {
@@ -207,6 +216,10 @@ public final class ParticlePrograms {
 
     public int hit() {
         return this.hit;
+    }
+
+    public int stormPos() {
+        return this.stormPos;
     }
 
     public int render() {
@@ -363,13 +376,13 @@ public final class ParticlePrograms {
         for (int p : new int[] {
                 this.reset, this.update, this.emit, this.keygen,
                 this.radixHist, this.radixScan, this.radixScatter, this.capture,
-                this.grid, this.hit, this.render, this.texturedRender, this.modelRender }) {
+                this.grid, this.hit, this.stormPos, this.render, this.texturedRender, this.modelRender }) {
             if (p != 0)
                 GL20.glDeleteProgram(p);
         }
         this.reset = this.update = this.emit = this.keygen = 0;
         this.radixHist = this.radixScan = this.radixScatter = this.capture = 0;
-        this.grid = this.hit = 0;
+        this.grid = this.hit = this.stormPos = 0;
         this.render = this.texturedRender = this.modelRender = 0;
     }
 }

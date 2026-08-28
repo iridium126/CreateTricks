@@ -92,10 +92,16 @@ vec4 cmiKeyframeColor(vec4 frames[8], int cc, float life) {
 }
 
 // ---- vanilla death roll (DEATH anim) -------------------------------------
-// LivingEntityRenderer.setupRotations tips the corpse about the WORLD Z axis,
-// applied AFTER the body-yaw rotation (outermost before the entity transform),
-// with a sqrt-eased angle over the 20-tick death timer:
-//   f = sqrt(min(((deathTime + partialTick - 1) / 20) * 1.6, 1)); rotZ(f*90deg)
+// LivingEntityRenderer.setupRotations pushes Ry(180 - yaw) THEN Rz(theta), and
+// PoseStack.mulPose POST-multiplies -- the composed chain is T * Ry * Rz * S,
+// so the roll is INNER to the facing yaw and consumes the ALREADY-FLIPPED
+// (S(-1,-1,1)), feet-relative vector. The rotation axis is the yawed model Z
+// (the body's front-back axis): the corpse tips onto its OWN side, direction
+// following the facing. Callers MUST apply cmiDeathRoll to the flipped pre-yaw
+// offset (and the same-frame normal) -- rolling a world-space offset instead
+// (the old implementation) tips every corpse toward world -X regardless of
+// facing, a PoseStack multiply-order misread.
+//   theta = sqrt(min(((deathTime + partialTick - 1) / 20) * 1.6, 1)) * 90 deg
 
 /** Death-roll angle in radians for {@code sinceDeathSec} seconds since death. */
 float cmiDeathRollAngle(float sinceDeathSec) {
@@ -104,10 +110,10 @@ float cmiDeathRollAngle(float sinceDeathSec) {
 }
 
 /**
- * Rolls a world-space vector about the world Z axis by the death angle.
- * For POSITION OFFSETS pass the offset FROM THE PARTICLE ORIGIN -- rolling an
- * absolute position would orbit it around the world origin. Direction vectors
- * (normals) are origin-free and pass unchanged in kind.
+ * Rolls a vector about the Z axis by the death angle (standard CCW rotation,
+ * matching vanilla Axis.ZP.rotationDegrees in the right-handed post-flip
+ * frame). Pass the FLIPPED PRE-YAW offset from the feet origin (and the
+ * normal in the same frame) -- not a world-space offset.
  */
 vec3 cmiDeathRoll(vec3 v, float sinceDeathSec) {
     float a = cmiDeathRollAngle(sinceDeathSec);

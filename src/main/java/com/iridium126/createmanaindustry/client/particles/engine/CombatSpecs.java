@@ -85,8 +85,15 @@ final class CombatSpecs {
     // ---- continuous-conversion constants ----
     /** CritParticle friction 0.7/tick → −ln(0.7)·20 1/s. */
     private static final double CRIT_DRAG = -Math.log(0.7) * 20.0;
-    /** CritParticle gravity field 0.5 → 0.04 · 0.5 b/tick² · 400. */
-    private static final double CRIT_GRAVITY = 0.04 * 0.5 * 400.0;
+    /**
+     * CritParticle gravity field 0.5. SIGN CONVENTION TRAP: vanilla particle
+     * gravity is DOWNWARD-positive ({@code Particle.tick}: {@code yd -=
+     * 0.04 * gravity}), while the engine's gravity vector is additive with
+     * negative Y = down (cherry falls via −0.3) — so the engine value is
+     * −0.04 · field · 400 = −16 · field. Getting this sign right matters: +8
+     * instead of −8 made the hearts accelerate UP and rocket away.
+     */
+    private static final double CRIT_GRAVITY = -0.04 * 0.5 * 400.0;
     /** CritParticle lifetime 6/(r·0.8+0.6) ticks → 4.3..10 ticks → 0.21..0.5 s (uniform shape approx). */
     private static final double CRIT_LIFE_MIN = 0.21;
     private static final double CRIT_LIFE_MAX = 0.5;
@@ -94,8 +101,8 @@ final class CombatSpecs {
     private static final double CRIT_SIZE = 0.1125;
     /** ExplodeParticle friction 0.9/tick → −ln(0.9)·20 1/s. */
     private static final double POOF_DRAG = -Math.log(0.9) * 20.0;
-    /** ExplodeParticle gravity field −0.1 → gentle upward 1.6 b/s². */
-    private static final double POOF_GRAVITY = 0.04 * -0.1 * 400.0;
+    /** ExplodeParticle gravity field −0.1 → gentle UPWARD drift +1.6 b/s² (see the sign note above). */
+    private static final double POOF_GRAVITY = -0.04 * -0.1 * 400.0;
     /** ExplodeParticle lifetime 16/(r·0.8+0.2)+2 ticks → 18..82 ticks → 0.9..4.1 s. */
     private static final double POOF_LIFE_MIN = 0.9;
     private static final double POOF_LIFE_MAX = 4.1;

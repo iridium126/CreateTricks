@@ -241,12 +241,14 @@ void main() {
             vel.z += sin(ang) * acc * uDt;
         }
     } else {
-        // vanilla death physics (LivingEntity.travel with no movement input):
-        // GRAVITY attribute 0.08/tick^2 = 32 blocks/s^2; vertical velocity
-        // retention 0.98/tick (~0.404/s drag), horizontal air 0.91/tick
-        // (~1.888/s drag). The kill impulse decays together with the corpse.
-        vel.y = (vel.y - 32.0 * uDt) * max(0.0, 1.0 - 0.404 * uDt);
-        vel.xz *= max(0.0, 1.0 - 1.888 * uDt);
+        // vanilla death physics: the Allay OVERRIDES travel (Allay.travel) with
+        // NO gravity term anywhere — just move() + a uniform velocity scale of
+        // 0.91/tick on ALL axes, continuous drag -ln(0.91)*20 = 1.88621/s.
+        // LivingEntity never calls applyGravity (that is projectile/item/TNT
+        // territory) and the standard travel gravity path is bypassed by the
+        // override, so a corpse does NOT fall: it decays to a stop where it was
+        // killed, riding only the kill impulse as it decays.
+        vel *= max(0.0, 1.0 - 1.88621 * uDt);
     }
 
     // ---- storm swarm steering ------------------------------------------------

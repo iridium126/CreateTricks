@@ -3,7 +3,7 @@
 > 模组：CreateManaIndustry（机械动力：魔法工业）
 > 版本基线：`0.2.3-fix`（Minecraft 1.21.1 / NeoForge 21.1.227 / Java 21）
 > 状态：**可用**（用户实测：开/关光影包均正常显示粒子；流时长=真实秒数；编译打包通过）
-> 本轮新增：**MODEL 粒子血量与玩家近战**（maxLife 槽复用为 HP=20、每帧 GPU 视线×AABB 命中查询 + fence 快照零停等回读、CPU level.clip 遮挡、`Player.attack` 逐项对齐的伤害管线、vanilla 2 HP/s 回血、尸体态 1s 死亡动画、`allay_death` 预设删除、MODEL 视觉尺寸对齐原版）；此前：Allay Storm（boids/涡旋）、MODEL 材质实例化渲染、ALPHA 材质 + GPU 深度排序、块碰撞、GPU 视锥剔除。
+> 本轮新增：**vanilla 对齐三则**（①受伤闪红 = vanilla overlay 恒定 30.2% 纯红洗、无淡出、尸体全程红闪——L0 fsh 漫反射后精确 mix + 包路径 entityColor varying 链路（含顶点色回退）；②尸体物理 = `Allay.travel` 重写**无重力**、三轴统一 ×0.91/tick 阻尼、悬停原位衰减到停；③死亡翻滚移到偏航内层模型系，尸体朝自身侧面倒）；此前：MODEL 粒子血量与玩家近战（maxLife 槽复用为 HP=20、每帧 GPU 视线×AABB 命中查询 + fence 快照零停等回读、CPU level.clip 遮挡、`Player.attack` 逐项对齐的伤害管线、vanilla 2 HP/s 回血、尸体态 1s 死亡动画、`allay_death` 预设删除、MODEL 视觉尺寸对齐原版）；更早：Allay Storm（boids/涡旋）、MODEL 材质实例化渲染、ALPHA 材质 + GPU 深度排序、块碰撞、GPU 视锥剔除。
 
 ---
 
@@ -46,7 +46,7 @@
 | 文件 | 用途 |
 |---|---|
 | `reset.comp` | 1 线程：计数器归零（含半透明普查）+ 五条间接绘制实例数全部归零 |
-| `update.comp` | 物理积分（重力/恒加速度/风/阻力/`flutter` 飘摇）、寿命、致密化回收、**块碰撞（占用纹理，积分前轴分离 sweep，bakeMeta 每粒子切片扫描）**、原子追加；存活数由 GPU 从上一帧计数槽（binding 14）直读早退。**MODEL（allay）HP 语义**：maxLife 槽 = HP（emit 写 20.0），伤害队列消费在粒子自身线程内（跨线程无竞争）、alive 回血 2 HP/s 封顶 20、hp≤0 转尸体（倒计时 0→−1 对齐 vanilla 20 tick，尸体走 vanilla 死亡物理：重力 32 b/s²、垂直保留 0.98/tick、水平 0.91/tick，不吃风暴转向）、p2.w = 受击红闪计时器（0.5s） |
+| `update.comp` | 物理积分（重力/恒加速度/风/阻力/`flutter` 飘摇）、寿命、致密化回收、**块碰撞（占用纹理，积分前轴分离 sweep，bakeMeta 每粒子切片扫描）**、原子追加；存活数由 GPU 从上一帧计数槽（binding 14）直读早退。**MODEL（allay）HP 语义**：maxLife 槽 = HP（emit 写 20.0），伤害队列消费在粒子自身线程内（跨线程无竞争）、alive 回血 2 HP/s 封顶 20、hp≤0 转尸体（倒计时 0→−1 对齐 vanilla 20 tick，尸体走 vanilla 死亡物理：**`Allay.travel` 重写无重力**，三轴统一 ×0.91/tick ≈ 阻尼 1.886/s，悬停原位衰减到停，不吃风暴转向）、p2.w = 受击红闪计时器（0.5s，vanilla overlay 语义作恒定标志用） |
 | `emit.comp` | 读 CPU 发射命令（按 b.z 前缀偏移二分定位），按形状/随机初始化新粒子；**MODEL：maxLife 槽写 20.0（HP）、p2.w 写 0（受击计时器）** |
 | `keygen.comp` | **每帧运行**（兼作快路径的剔除 pass）：先做 **GPU 视锥剔除**（粒子球 vs CPU 从 Proj×View 提取的 6 归一化平面），再按材质**三桶**分派：additive→`orderAdd`、OPAQUE 贴图→`orderOpaque`、半透明（ALPHA 精灵 + MODEL 粒子）→各写一项 `sortData`；排序项 payload=`粒子索引<<2|类型`，`key = 255 − 对数深度带`（远带小 key → 升序即远→近）；**9-bit 类型分区键**：`key = (排序类型 << SORT_KEY_TYPE_SHIFT) | (255 − 对数深度带)`，排序类型 **MODEL=0、ALPHA 精灵=1**；初始数组经 `counter.sortItems` 追加游标致密化，随后按类型累加**精确**计数——MODEL 项加 `IDX_CNT_XLU`+`IDX_CNT_MODELOP`（=N_model，两段同用），ALPHA 项加 `IDX_CNT_ALPHA`（=N_alpha）；散射后数组按类型分区（MODEL 在 `[0,N_model)`、ALPHA 在其后），每条命令只启动自己的实例 + 未剔除半透明普查（`counter.translucentCensus`，ALPHA+MODEL） |
 | `radix_hist.comp` / `radix_scan.comp` / `radix_scatter.comp` | **单趟 9-bit 分区计数排序**三阶段（直方图 → RADIX_BINS=512 线程排他前缀和 → 散列），以两类精确计数之和为守；bin 空间 = 类型位×256 深度带，散列天然把 MODEL 写入 `[0,N_model)`、ALPHA 写入其后（各分区内远→近）。同带内乱序只影响同类重叠项的混合次序（带内深度差 <~2%，视觉无碍） |
@@ -55,8 +55,8 @@
 | `additive.fsh` | 软圆衰减 + 距离淡出 + 叠加输出 |
 | `textured.vsh` | 纹理牌面双模式（uMode）：0=ALPHA 混合——走**排序数组的 ALPHA 分区**取粒子（起点 = cmd[IDX_CNT_MODELOP] 即精确 N_model，从 indirect SSBO 直读；命令实例数=N_alpha，vsh 类型检查仅剩防损坏哨兵）、按 seed 选 sprite 帧、vanilla 自旋（roll0+ωt+½αt²）；1=OPAQUE cutout——走 orderOpaque 稠密排列 |
 | `textured.fsh` | 双模式：0=采样 sprite 图集、贴花 alpha 混合、远淡出；1=硬 cutout（0.5 丢弃）+ 不透明输出（配合写深度，免排序） |
-| `model.vsh` | **MODEL（Allay）顶点器**：一次 `glMultiDrawElementsIndirect` 渲染两段——**两段的实例解析完全一致**：都遍历排序数组的 MODEL 分区 `[0, N_model)`（sort-type 0，instanceCount=N_model 精确），差异仅在 element 索引区间（cmd2 只引用不透明部件顶点、cmd3 只引用斗篷+翅膀顶点），因此**段 id 可从 partId 自身推导**（`pid>=4` 即半透明，flat varying 传给 fsh），无 per-draw uniform/attribute；先取 partId → 过滤非 MODEL 实例 → **实例级远距早退** → 程序化推导动画输入（速度→limbSwingAmount/朝向/头部俯仰，seed 相位）→ **GLSL 移植 `AllayModel.setupAnim`**（FLY/DANCE/SPIN/HOLD 四姿势）→ **按 partId 只构建所需的那一个部件矩阵**（6→1）→ 原版变换（`Ry(π−yaw)·S(−1,−1,1)·T(0,−1.501,0)`）→ 经 EBO 索引拉取顶点输出；高度=2×size |
-| `model.fsh` | 双段（flat varying `vSeg` 承接模式属性）：**不透明段**全亮 cutout（贴图 × tint，alpha×远淡出 <0.5 丢弃，不混合、写深度，自遮挡正确）；**半透明段**（斗篷 alpha=160 + 翅膀边缘）alpha 混合、测深度**且写深度**、alpha<0.02 丢弃 |
+| `model.vsh` | **MODEL（Allay）顶点器**：一次 `glMultiDrawElementsIndirect` 渲染两段——**两段的实例解析完全一致**：都遍历排序数组的 MODEL 分区 `[0, N_model)`（sort-type 0，instanceCount=N_model 精确），差异仅在 element 索引区间（cmd2 只引用不透明部件顶点、cmd3 只引用斗篷+翅膀顶点），因此**段 id 可从 partId 自身推导**（`pid>=4` 即半透明，flat varying 传给 fsh），无 per-draw uniform/attribute；先取 partId → 过滤非 MODEL 实例 → **实例级远距早退** → 程序化推导动画输入（速度→limbSwingAmount/朝向/头部俯仰，seed 相位）→ **GLSL 移植 `AllayModel.setupAnim`**（FLY/DANCE/SPIN/HOLD 四姿势）→ **按 partId 只构建所需的那一个部件矩阵**（6→1）→ 原版变换（`Ry(π−yaw)·Rz(θ死亡翻滚)·S(−1,−1,1)·T(0,−1.501,0)`——翻滚在偏航内层、消费翻转后的脚部相对向量，`PoseStack.mulPose` 后乘语义）→ 经 EBO 索引拉取顶点输出；高度=2×size；flat `vOverlay` 输出受伤 overlay 标志（受击计时或尸体） |
+| `model.fsh` | 双段（flat varying `vSeg` 承接模式属性）：**不透明段**全亮 cutout（贴图 × tint，alpha×远淡出 <0.5 丢弃，不混合、写深度，自遮挡正确）；**半透明段**（斗篷 alpha=160 + 翅膀边缘）alpha 混合、测深度**且写深度**、alpha<0.02 丢弃；**受伤 overlay 精确混合**：漫反射后 `mix(shaded, 纯红, 77/255)`（= vanilla fsh 的 `mix(overlayColor.rgb, color.rgb, overlayColor.a)`，红纹素 255,0,0/178 恒强度、无淡出、两段同用；vOverlay=受击计时或尸体） |
 
 （着色器已迁出 Veil 的 `pinwheel/`，与 Veil 完全解耦；Veil 仅继续服务雾墙/后处理。）
 
@@ -154,7 +154,7 @@
 | GPU 剔除 | **keygen 内置视锥剔除**（球 vs 6 归一化平面，Gribb–Hartmann 提取自 Proj×View；快路径无独立 cull pass——keygen 本身就是） | 借鉴 voxy `frustum.glsl`；屏幕外粒子不进排列/顶点着色，典型省 50–75% 绘制实例 |
 | 可见距离 | `fadeDistance` 配置（16..256，默认 96；+24 渐变后全隐） | 排序远平面 = ceil(fade+24) 取 2 的幂自适应，配置再高也不会出现“可见但排序范围不足”；不做原版雾匹配（低视距+高 fade 时粒子与雾化地形会有边界，已知取舍） |
 | MODEL 材质 | **Allay 实例化**：几何静态烘焙 SSBO + **静态 EBO 索引绘制**（`glDrawElementsIndirect`，136 顶/只）+ `setupAnim` GLSL 直译（FLY/DANCE/SPIN/HOLD，动画 id 在头 vec4 17，`/cmip anim` 热切换走 pending 队列 → 头增量重上传，存活粒子下帧生效）+ **按 partId 只建所需部件矩阵** + **实例级远距早退**；全亮（vanilla `getBlockLightLevel=15`）；**双子绘制**：不透明段（头/皮肤/双臂）cutout+写深度（自遮挡/互挡正确）+ 背面剔除（翅膀双绕序索引保双面），半透明段（斗篷 alpha=160 + 翅膀边缘）alpha 混合、测深不写深、**在所有粒子之后绘制**；keygen 镜像累加 cmd2.y/cmd3.y 共享同一排列；朝向=水平速度方向（低速回退 seed 朝向+慢漂移），身高=2×size（默认 0.60 格，见 MODEL 尺寸对齐行）；无硬上限靠 autoThrottle | 3D 模型必须写深度否则部件穿插错序（billboard 的"不写深度"约定不适用）——半透明段不写深度靠不透明段的深度兜底；全亮是 vanilla 事实而非风格选择（原版对斗篷用 cutout 渲染成不透明，半透明是有意忠于纹理数据的选择）；持物渲染留作后续（SSBO arena 纯增量） |
-| MODEL 血量/近战 | **maxLife 槽复用为 HP**（emit 写 20.0 = `Allay.createAttributes` MAX_HEALTH；age 不动、永生、无老死闸门——对齐原版实体）；**死亡 = hp 翻负倒计时**（击杀帧钳 0 → 每帧 −dt，≤−1.0 压实回收 = vanilla 20 tick；死亡翻滚计时 = −hp，age 继续驱动空闲动画——动画零跳变，对齐"尸体继续播 idle"）；尸体物理按 `LivingEntity.travel` 递推逐轴实现（重力 32 b/s²、垂直 0.98/tick、水平 0.91/tick），击杀冲量随尸体衰减；**命中 = GPU 每帧查询**（hit.comp，结果 8B 随 fence 快照回读，点击零停等，≤1 帧相机陈旧——对比原版命中链路自身 50ms+ 的位置滞后不可感）+ **CPU `level.clip` 遮挡**；**伤害 = `Player.attack` 逐项镜像**（冷却缩放 0.2+f²·0.8 吃基础与附魔加成、武器加成不吃缩放、暴击 ×1.5 走 CriticalHitEvent、冲刺击退+攻击者减速×0.6、冷却重置在伤害计算后——对齐 NeoForge 时机）；附魔走客户端等价实现（`EnchantmentValueEffect.process` 无条件效果迭代——锐锋/击退精确，条件类亡灵/节肢对 allay 本就无效；`EnchantmentHelper.modifyDamage` 需要 ServerLevel 故不可直接调用）；**判定框 = 0.35×0.6×渲染缩放**（+0.1 原版膨胀，不随朝向旋转、feet 对齐）；击退经伤害队列进 update.comp 原位应用（`vel/2 − dir·strength`，boids 转向 ~0.5s 自然吸收）；伤害队列 = 64 槽×16B 单缓冲（无环，流序保证安全，帧首消费后下帧补零清空）；受击反馈 = p2.w 红闪 0.5s + `ALLAY_HURT`/`ALLAY_DEATH`（按快照 hp−伤害判生死）+ 攻击方 `PLAYER_ATTACK_*` 本地音效；点击拦截 = `InputEvent.InteractionKeyMappingTriggered`（v1 只处理按下，按住连打不连击粒子；未命中放行原版 miss swing）；**无任何网络包** | 粒子 p3 四字段全占用且动画 id 在 per-emitter 头——"逐粒子死亡信号"只能编码进现有槽位；age 是动画时钟（受伤倒带不可接受）故 HP 只能落在 maxLife；风暴停止/清池会使池索引移位，命中快照在这些路径上由 CPU 主动作废（stopStorm/kill 排队后立即置 miss，防伤害落到移位后的错误粒子）；横扫不做（扫描框点击时才确定，会重新引入 4b 淘汰的同步停等——钉为已知偏差）；riptide 旋转伤害走 `LivingEntityAccessor`（字段 `autoSpinAttackDmg` 是 LivingEntity 的 protected 成员、无公共访问器——首版误标 `@Mixin(Player)`，字段不在 Player 上导致 InvalidAccessorException 启动崩溃，已修） |
+| MODEL 血量/近战 | **maxLife 槽复用为 HP**（emit 写 20.0 = `Allay.createAttributes` MAX_HEALTH；age 不动、永生、无老死闸门——对齐原版实体）；**死亡 = hp 翻负倒计时**（击杀帧钳 0 → 每帧 −dt，≤−1.0 压实回收 = vanilla 20 tick；死亡翻滚计时 = −hp，age 继续驱动空闲动画——动画零跳变，对齐"尸体继续播 idle"）；尸体物理按 **`Allay.travel` 重写**实现（无重力、三轴统一 ×0.91/tick ≈ 连续阻尼 1.886/s，尸体悬停原位衰减到停；`LivingEntity` 从不调 `applyGravity`，`FlyingMoveControl(hoversInPlace=true)` 永久锁 `noGravity`），击杀冲量随尸体衰减；**命中 = GPU 每帧查询**（hit.comp，结果 8B 随 fence 快照回读，点击零停等，≤1 帧相机陈旧——对比原版命中链路自身 50ms+ 的位置滞后不可感）+ **CPU `level.clip` 遮挡**；**伤害 = `Player.attack` 逐项镜像**（冷却缩放 0.2+f²·0.8 吃基础与附魔加成、武器加成不吃缩放、暴击 ×1.5 走 CriticalHitEvent、冲刺击退+攻击者减速×0.6、冷却重置在伤害计算后——对齐 NeoForge 时机）；附魔走客户端等价实现（`EnchantmentValueEffect.process` 无条件效果迭代——锐锋/击退精确，条件类亡灵/节肢对 allay 本就无效；`EnchantmentHelper.modifyDamage` 需要 ServerLevel 故不可直接调用）；**判定框 = 0.35×0.6×渲染缩放**（+0.1 原版膨胀，不随朝向旋转、feet 对齐）；击退经伤害队列进 update.comp 原位应用（`vel/2 − dir·strength`，boids 转向 ~0.5s 自然吸收）；伤害队列 = 64 槽×16B 单缓冲（无环，流序保证安全，帧首消费后下帧补零清空）；受击反馈 = p2.w 红闪 0.5s（**vanilla overlay 语义：恒定 30.2% 纯红洗、无淡出、窗口结束直接消失；尸体整个死亡动画持续红闪**——L0 经 model.fsh 漫反射后精确 mix，包路径经 entityColor varying 链路/顶点色回退） + `ALLAY_HURT`/`ALLAY_DEATH`（按快照 hp−伤害判生死）+ 攻击方 `PLAYER_ATTACK_*` 本地音效；点击拦截 = `InputEvent.InteractionKeyMappingTriggered`（v1 只处理按下，按住连打不连击粒子；未命中放行原版 miss swing）；**无任何网络包** | 粒子 p3 四字段全占用且动画 id 在 per-emitter 头——"逐粒子死亡信号"只能编码进现有槽位；age 是动画时钟（受伤倒带不可接受）故 HP 只能落在 maxLife；风暴停止/清池会使池索引移位，命中快照在这些路径上由 CPU 主动作废（stopStorm/kill 排队后立即置 miss，防伤害落到移位后的错误粒子）；横扫不做（扫描框点击时才确定，会重新引入 4b 淘汰的同步停等——钉为已知偏差）；riptide 旋转伤害走 `LivingEntityAccessor`（字段 `autoSpinAttackDmg` 是 LivingEntity 的 protected 成员、无公共访问器——首版误标 `@Mixin(Player)`，字段不在 Player 上导致 InvalidAccessorException 启动崩溃，已修） |
 | MODEL 尺寸对齐 | model.vsh 的 scale divisor 0.625 → **`MODEL_ABOVE_FEET`（由 AllayModelGeometry 烘焙的静止姿势 Y 范围派生 ≈0.594）**，使"脚线以上高度 = 2×size"精确成立；预设 size 0.33 → 0.30（Storm 同步）→ 默认渲染 0.60 格 = 原版悦灵逐格等大；判定框 = 0.6×scale ≈ 视觉高度，与原版"判定框=模型顶"关系一致 | 0.625 来自文档口径"vanilla body ~10 units"的错误估算；实测 `AllayModel.createBodyLayer`：头顶尖 y=14.51、feet 对应 y=24.016（1.501×16）、翅膀/斗篷下摆垂到脚线下 0.094 格（几何与变换同原版一致，无需处理）；`AllayRenderer` 无 scale 覆写 |
 | allay_death 预设删除 | spec、`byName`、`names()`、`/cmip anim` 的 death 分支全部移除；死亡动画代码路径保留，改由尸体态（hp<0）驱动；击杀红闪由 p2.w 承担（替代原三关键帧近似），尸体下坠参数由 vanilla 递推替代（原 gravity −8/drag 0.8 为目测值，重力只有原版 1/4） | 预设本只为测试死亡动画而存在；删除后"头 anim==3 走旧语义"的区分器不复存在，MODEL 粒子统一 HP 语义，消除未来 MODEL 预设静默踩 maxLife 槽的陷阱（契约：MODEL 预设的 size/color 关键帧不得依赖 maxLife 槽——现全为常数曲线） |
 | 双模回退 | lagged `prevAlpha`（capture 写入 counter.spare，下帧非阻塞滞回读）判定 `sortedDraw` | alpha 死光自动回恒等快路径，消除“永久排序路径”开销；无新增同步点 |
@@ -399,3 +399,82 @@
   packed 差异（colorMode 在 vsh 覆盖颜色，keyframe alpha 不参与 OPAQUE 输出，零视觉影响）。
   教训：新增任何"绕过旧发射路径"的生成方式，逐项核对该路径的运行时前置（图集加载、emitter 注册、
   碰撞烘焙 ensure）是否被跳过。
+- **修复（游戏内 L2 #36：红心纹理上下翻转）**：vanilla `SingleQuadParticle.renderRotatedQuad` 把
+  四边形**顶边**（yOffset=+1）配 `v0=minV`，而 NativeImage 行 0 上传到 v=0——即"四边形顶 ↔ 贴图首行"。
+  textured.vsh 原写法 `localUv = cornerUn + 0.5` 把**底边**配了 v=0 → 全体 textured 粒子上下翻转
+  （cherry 花瓣形状对称不可辨，心形一暴露）。修复：`localUv = vec2(cornerUn.x + 0.5, 0.5 - cornerUn.y)`
+  （u 轴与原版一致无需动；additive 的 vUv 只喂径向衰减、MODEL 的 UV 来自烘焙几何，均不受影响）。
+- **修复（游戏内 L2 #37：红心上升过快）**：连续换算时把原版粒子重力字段的**符号约定**搞反了——
+  vanilla `Particle.tick` 的 gravity 是**向下为正**的乘数（`yd -= 0.04 × gravity`），而引擎 gravity
+  向量是加性、**负 Y = 向下**（cherry −0.3 下落、soul_flame +0.35 上升）。CRIT/HEART 因此拿到
+  +8 b/s²（向上加速）而非 −8（下坠）：红心 8 b/s 起跳还越升越快，1s 爬升 ~2.1 格且不回落
+  （原版峰值 0.89 格 @0.32s、末值 +0.15）；POOF 同理反了（应 +1.6 向上漂，写成 −1.6 下沉）。
+  修复：引擎值 = −16 × vanilla 字段（CRIT/HEART −8、POOF +1.6）。修正后红心轨迹峰值 0.79 格 @0.29s、
+  末值 +0.156（原版 0.89/0.154，峰值差 11%，连续换算容差内）；暴击星恢复下坠弧线。
+  教训：跨引擎换算"重力"时先核对两边的正方向约定——原版粒子字段向下为正、引擎向量向上为正。
+
+### 尸体物理/受伤闪红/翻滚轴 vanilla 对齐（本轮，grilling 逐题共识后实施）
+
+- **事实核查（`.refs/neoforge-21.1.227`）**：
+  - `Allay.java:173` **重写 `travel`**：空气分支 = `move()` + `速度×0.91/tick`（三轴统一），**无重力项**；
+    `FlyingMoveControl(hoversInPlace=true)` 在 MOVE_TO 时 `setNoGravity(true)` 且永不复位；
+    `applyGravity()` 只被非生物实体调用（TNT/掉落物/投射物/矿车…），`LivingEntity` 从不调用；
+    `LivingEntity.tick` 对尸体照常跑 `aiStep→travel`。⇒ vanilla allay 尸体**不下坠**，
+    悬停原位衰减到停。旧实现按标准 `LivingEntity.travel`（重力 32 b/s² + 垂直 0.98 保留 +
+    水平 0.91）——allay 根本不走该路径，粒子尸体此前坠落过快（终端速度 ~79 vs vanilla 无）。
+  - `OverlayTexture`（1.21.1）为**静态**纹理：红纹素 (255,0,0) alpha 178/255，无动画无脉冲；
+    `LivingEntityRenderer.getOverlayCoords`：`hurtTime>0 || deathTime>0` 期间恒亮——红闪 =
+    恒定 30.2% 纯红洗（fsh `mix(overlayColor.rgb, color.rgb, overlayColor.a)` = 0.302·红 +
+    0.698·原色），无淡出、窗口结束直接消失，且**尸体整个 deathTime 窗口持续红闪**。
+    旧实现"命中瞬间 100% 暗红 (0.75,0.15,0.15) 线性淡出、尸体 0.5s 后恢复原色"三处不符。
+  - `LivingEntityRenderer.setupRotations` 依次 `mulPose(Ry)`、`mulPose(Rz)`，而
+    `PoseStack.mulPose` **后乘** ⇒ 链为 `T·Ry·Rz·S(-1,-1,1)·T(0,-1.501,0)`：翻滚在偏航
+    **内层**、消费已翻转的脚部相对向量（轴 = 偏航后模型 Z = 身体前后轴，尸体朝**自己的
+    侧面**倒，方向随朝向变化）。旧实现在最外层绕世界 Z 翻滚 = 无论朝向永远朝世界 −X 倒
+    （仅南北朝向时巧合一致）——`allay_pose.glsl` 旧注释"outermost after the facing yaw"
+    是对 mulPose 乘序的误读。
+- **决策记录（grilling）**：死亡重力 = 精确对齐（删重力、均匀阻尼，不加 vanilla
+  `|v分量|<0.003 b/tick` 停止阈值）；闪红视觉 = 恒定 30.2% 纯红 + 无淡出 + 尸体全程红闪；
+  实现层级 = 双路径原生机制（L0 fsh 精确 + 包路径 entityColor 链，失败回退顶点色近似）；
+  翻滚轴 = 一并修复（超出点题范围，事实核查中发现的同属"死亡动画对齐"的偏差）。
+- **实施**：
+  - `update.comp` 尸体分支：`vel *= 1 − 1.88621·dt`（= −ln(0.91)·20，三轴统一），删重力/双阻尼。
+  - L0：`model.vsh` 删暗红乘色，改 `flat vOverlay` 标志（`p2.w>0 || hp≤0`）+
+    `corpse` 判定 `<0` → `≤0`（kill 帧即算，消除 anim 切换 1 帧延迟，对齐 update.comp 与
+    vanilla `deathTime>0`）；`model.fsh` 漫反射后 `mix(shaded.rgb, 纯红, 77/255)`——与
+    vanilla fsh 逐像素同式（alpha/cutout 语义不动，两段同用）。
+  - 包路径（`ShaderPackProgramCompiler`）：merged vsh（exact 变体）声明 `out vec4 entityColor;`
+    并按 hurt/corpse 写 `(1,0,0,77/255)` / `(0,0,0,0)`（Iris `EntityPatcher` 值语义：
+    `entityColor = (overlayColor.rgb, 1−overlayColor.a)`）；编译器把包的
+    `uniform vec4 entityColor;` 在 **vsh 注入前剥离**（否则 injector 将我们的 out 声明当
+    名字冲突跳过，赋值悬空）、在 **fsh 直接替换为 `in vec4 entityColor;`**——包 fsh 自己的
+    `mix(color.rgb, entityColor.rgb, entityColor.a)` 行消费，与真实实体在同一管线同一位置
+    混合。前提：包无 entity geometry/tess stage、包 vsh 不读 entityColor；任一不满足 →
+    回退 `cmi_Tint` 顶点色近似（vanilla 参数恒定值，已记录偏差：预漫反射、乘色缺附加红
+    分量）。包忽略 entityColor 时无闪红——与真实实体在该包下的表现一致。shadow track 用
+    plain 变体（无 entityColor，深度-only）。两变体经 `buildMergedSource(boolean)` 缓存。
+    **关键纪律：加载源（ProgramSource）是 Iris 在包加载期已完成 include 解析与宏展开的
+    文本，所有检查/转换只做纯正则；严禁对其再跑 `JcppProcessor`**（见下方修复 #38）。
+  - 翻滚轴：`model.vsh` 与 merged source 同步改为对**翻转后、缩放前**的向量先 `cmiDeathRoll`
+    再 `·scale → Ry`（法线同链：翻转 → 翻滚 → 偏航）；`allay_pose.glsl` 契约注释重写
+    （mulPose 后乘语义 + 调用契约钉死为"翻转后偏航前的偏移/法线"）。
+- **验证**：compileJava 通过（L1）；**L2 待验**：击打红闪恒定 0.5s 后突灭（与真 allay 并排）；
+  尸体全程红闪、悬停不坠、朝自身侧面倒；多朝向倒向随朝向变化；开 Complementary 粒子与
+  真实 allay 红闪同强度（entityColor 链路生效，`/cmip shaderpack status` 无错误）；关包 L0
+  同验；风暴成员击杀、cherry/战斗粒子回归。
+
+- **修复（L2 #38：Photon 下包合并整体失效 "Some shader author is trying to exploit internal
+  Iris implementation details, stop!"）**：首个 exact 路径实现把 `JcppProcessor.glslPreprocessSource`
+  又跑在 `ProgramSource` 的源上。事实链（运行时 jar 1.8.14-beta.1 逐类核实 + jcpp-1.4.14 字节码
+  + 最小复现程序三方印证）：① Iris 仅在**包加载期**（`ShaderPack.sourceProvider`）跑一次 jcpp，
+  `ProgramSource` 持有的源 = include 已解析、宏已展开、`#version`/`#extension` 已按哨兵
+  （`#warning IRIS_JCPP_GLSL_*`）提升重排后的**成品文本**；② 哨兵替换发生在 jcpp 之前且**不
+  区分注释**——KEEPCOMMENTS 下注释作为整体 token 原样穿过，**注释内的 `#extension`/`#version`
+  会把哨兵文本原样留在成品里**（Photon `global.glsl` 的三条 `#extension` 全在 `/* */` 内）；
+  ③ 再对其跑 jcpp 即触发哨兵防滥用守卫。旧 vsh 路径安然无恙纯属侥幸：injector 的 glsl-transformer
+  AST 往返会丢弃注释，哨兵恰好消失。修复：**加载源上的一切操作只做纯正则**——vsh 预检查、
+  vsh uniform 预剥离（见上：injector 会把我们的 out 当名字冲突跳过，必须注入前剥）、fsh
+  `uniform→in` 转换，全部直接作用于加载文本，删除全部二次 jcpp；失败回退路径随之简化（regex
+  不会抛）。教训：对上游"预处理器输出"做再预处理前，先确认哨兵/标记语义与注释的交互；
+  库的内部机制（jcpp #warning → `error(token,false)` → listener 拦截）用字节码 + 最小复现
+  三方钉死，不靠记忆推断。

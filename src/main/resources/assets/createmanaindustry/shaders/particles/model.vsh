@@ -42,6 +42,7 @@ out vec3 vColor;
 out float vDist;
 flat out float vSeg; // 0 = opaque cutout segment, 1 = translucent blended (from partId)
 flat out vec3 vNormalView; // view-space surface normal for vanilla-style diffuse
+flat out float vOverlay; // 1.0 = vanilla hurt overlay active (hurt timer or corpse)
 
 void main() {
     // Type check kept purely as a corruption guard: the partition guarantees
@@ -104,7 +105,9 @@ void main() {
     // slot negative and counts it down over the vanilla 20-tick death window.
     // The roll timer is time-since-death while age keeps driving the idle
     // sway: the animation stays continuous, exactly like vanilla corpses.
-    bool corpse = p3.y < 0.0;
+    // hp <= 0 (not < 0): the kill frame itself already counts as dead, matching
+    // update.comp's corpse predicate and vanilla's deathTime > 0 overlay.
+    bool corpse = p3.y <= 0.0;
     if (corpse)
         anim = 3;
     float sinceDeath = corpse ? -p3.y : 0.0;
@@ -115,28 +118,29 @@ void main() {
     vec3 local = vec3(geo.v[vb], geo.v[vb + 1u], geo.v[vb + 2u]);
     vUv = vec2(geo.v[vb + 3u], geo.v[vb + 4u]);
     vec3 pm = (M * vec4(local, 1.0)).xyz / 16.0;   // vanilla per-part /16
-    // vanilla chain after the parts: T(0,-1.501,0) then S(-1,-1,1) then
+    // vanilla chain after the parts: T(0,-1.501,0) then S(-1,-1,1), then the
+    // death roll (setupRotations' Rz, INNER to the facing yaw -- PoseStack
+    // mulPose post-multiplies, so the roll consumes the already-flipped,
+    // feet-relative vector and the corpse tips onto its OWN side), then
     // Ry(180deg - yaw); combined here with the particle's world scale
-    vec3 flipped = vec3(-pm.x, 1.501 - pm.y, pm.z) * scale;
+    vec3 flipped = vec3(-pm.x, 1.501 - pm.y, pm.z);
+    if (anim == 3)
+        flipped = cmiDeathRoll(flipped, sinceDeath);
+    flipped *= scale;
     float ry = CMI_PI - yaw;
     vec3 world = p0.xyz + vec3(cos(ry) * flipped.x + sin(ry) * flipped.z,
                                flipped.y,
                                -sin(ry) * flipped.x + cos(ry) * flipped.z);
 
     // same transform chain applied to the DIRECTION (no translation, no
-    // scaling): part rotation -> S(-1,-1,1) -> Ry(pi - yaw) -> camera view
+    // scaling): part rotation -> S(-1,-1,1) -> [death roll] -> Ry(pi - yaw)
     vec3 nPart = mat3(M) * CMI_FACE_NORMALS[normalCode];
     vec3 nFlipped = vec3(-nPart.x, -nPart.y, nPart.z);
+    if (anim == 3)
+        nFlipped = cmiDeathRoll(nFlipped, sinceDeath);
     vec3 nWorld = vec3(cos(ry) * nFlipped.x + sin(ry) * nFlipped.z,
                        nFlipped.y,
                        -sin(ry) * nFlipped.x + cos(ry) * nFlipped.z);
-    // DEATH: tip the corpse about the WORLD Z axis, outermost (after the
-    // facing yaw) exactly like vanilla's Rz-after-Ry setupRotations order.
-    // Rotate the OFFSET from the particle origin, not the absolute position.
-    if (anim == 3) {
-        world = cmiDeathRoll(world - p0.xyz, sinceDeath) + p0.xyz;
-        nWorld = cmiDeathRoll(nWorld, sinceDeath);
-    }
     vNormalView = normalize(mat3(ModelViewMat) * nWorld);
 
     gl_Position = ProjMat * ModelViewMat * vec4(world - uCamPos, 1.0);
@@ -147,7 +151,10 @@ void main() {
     for (int i = 0; i < 8; i++) kfr[i] = emitters.u[hb + 8u + uint(i)];
     int cc = int(emitters.u[hb + 6u].z);
     vColor = cmiKeyframeColor(kfr, cc, life).rgb * p2.rgb;
-    // vanilla hurt overlay approximation (OverlayTexture red): tint toward red
-    // across the 0.5 s hurtTime window -- p2.w is the per-particle hurt timer
-    vColor = mix(vColor, vec3(0.75, 0.15, 0.15), clamp(p2.w, 0.0, 1.0));
+    // vanilla hurt overlay flag (model.fsh applies the exact post-diffuse mix):
+    // active while the hurt timer runs (p2.w, set to 1 per hit, decays over
+    // 0.5 s = vanilla hurtTime 10 ticks) or the corpse countdown runs (hp <= 0
+    // = deathTime > 0). The overlay is CONSTANT strength for the whole window
+    // and cuts off -- no fade; the keyframe tint above carries no red any more.
+    vOverlay = (p2.w > 0.0 || corpse) ? 1.0 : 0.0;
 }

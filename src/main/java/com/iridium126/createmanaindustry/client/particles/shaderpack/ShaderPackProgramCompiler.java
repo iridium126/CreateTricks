@@ -24,6 +24,7 @@ import net.irisshaders.iris.shaderpack.programs.ProgramSource;
 import net.irisshaders.iris.gl.shader.StandardMacros;
 
 import java.io.IOException;
+import java.util.regex.Pattern;
 import net.irisshaders.iris.vertices.IrisVertexFormats;
 import net.minecraft.client.renderer.ShaderInstance;
 import top.leonx.irisveil.accessors.IrisRenderingPipelineAccessor;
@@ -36,7 +37,22 @@ import org.lwjgl.opengl.GL20;
  * Compiles the CMI MODEL-particle draw into the active shader pack's ENTITY
  * pipeline: resolves the pack's {@code gbuffers_entities} program via Iris's
  * own fallback chain, injects the SSBO-driven allay vertex program with
- * {@link ParticleVertexInjector}, and keeps the PACK FRAGMENT VERBATIM.
+ * {@link ParticleVertexInjector}, and keeps the PACK FRAGMENT otherwise
+ * verbatim (the one exception: the hurt-overlay conversion below).
+ *
+ * <p>Hurt overlay: the merged vertex block declares {@code out vec4
+ * entityColor;} carrying the per-instance vanilla overlay state (red texel
+ * semantics — {@code (1,0,0, 77/255)} while the hurt timer or the corpse
+ * countdown runs), mirroring Iris's {@code EntityPatcher} value contract. When
+ * the pack can consume it (no entity geometry/tessellation stage, vertex stage
+ * does not read entityColor itself), the compiler converts the pack's shared
+ * {@code uniform vec4 entityColor;} declaration into the matching {@code in}
+ * on the fragment side post-include, so the pack's own
+ * {@code mix(color.rgb, entityColor.rgb, entityColor.a)} line applies the
+ * constant 30.2% pure-red wash exactly like it does for a real allay. Packs
+ * whose entity program ignores entityColor never flash — same as their real
+ * entities. Every other case falls back to a vanilla-parameterised vertex-tint
+ * approximation riding {@code cmi_Tint} (documented deviation).</p>
  *
  * <p>The merged pair is drawn by {@link CMIPackEntityMergeHook} during the gbuffer
  * phase (before any deferred composite), so encoder-style packs such as Photon
@@ -109,10 +125,17 @@ public final class ShaderPackProgramCompiler {
     private static final AlphaTest FALLBACK_ALPHA_TEST =
             new AlphaTest(AlphaTestFunction.GREATER, 0.1f);
 
+    /** The pack-side {@code entityColor} uniform declaration as it appears
+     * after include resolution (shared uniforms include, both stages). */
+    private static final Pattern ENTITY_COLOR_UNIFORM =
+            Pattern.compile("uniform\\s+vec4\\s+entityColor\\s*;");
+
     private final ParticleVertexInjector injector = new ParticleVertexInjector();
 
     /** Lazily built merged vertex source (SSBO decls + pose chunk + main). */
     private String mergedVertexSource;
+    /** Which hurt-overlay variant the cached merged source was built for. */
+    private boolean mergedSourceOverlay;
 
     private ShaderInstance entitiesShader;
     private ShaderInstance ghostShader;
@@ -185,11 +208,58 @@ public final class ShaderPackProgramCompiler {
             if (vertRef == null || fragRef == null)
                 return fail("Entities program source missing vertex or fragment");
 
-            String patched = this.injector.patch(vertRef, this.buildMergedSource(), SHADER_NAME);
-            if (patched == vertRef)
+            // Hurt-overlay path decision (MUST precede buildMergedSource — its
+            // cmi_Tint line differs between the variants). EXACT: the merged
+            // vertex block declares `out vec4 entityColor;` with the per-
+            // instance vanilla overlay state and the pack's own fragment code
+            // mixes it (Iris EntityPatcher value semantics). Only possible when
+            // the pack ships no entity geometry/tessellation stage (no
+            // passthrough implemented) and its VERTEX stage does not consume
+            // entityColor itself (our out declaration would collide with its
+            // uniform). FALLBACK: no entityColor at all; cmi_Tint carries a
+            // vanilla-parameterised approximation (constant post-hit, no fade).
+            //
+            // The sources below are the ones Iris already include-resolved and
+            // preprocessed AT PACK LOAD (ShaderPack's sourceProvider), so every
+            // check/conversion here is pure regex. NEVER re-run JcppProcessor
+            // on them: its guard throws on the hoisting sentinels its own load
+            // pass leaves inside comments whenever a pack ships #version or
+            // #extension inside /* */ (Photon's global.glsl does) —
+            // "Some shader author is trying to exploit internal Iris
+            // implementation details, stop!".
+            boolean overlayExact = refProgram.getGeometrySource().isEmpty()
+                    && refProgram.getTessControlSource().isEmpty();
+            if (overlayExact) {
+                String withoutDecl = ENTITY_COLOR_UNIFORM.matcher(vertRef).replaceAll("");
+                if (withoutDecl.contains("entityColor"))
+                    overlayExact = false; // pack vertex code reads it — cannot replace
+            }
+
+            // Pre-strip the pack's entityColor uniform from the vertex source:
+            // the injector would otherwise skip OUR `out vec4 entityColor;`
+            // declaration as a name clash against the parsed pack tree (the
+            // uniform arrives through the shared uniforms include), leaving the
+            // merged assignment referencing an undeclared name.
+            String packVertex = overlayExact
+                    ? ENTITY_COLOR_UNIFORM.matcher(vertRef).replaceAll("")
+                    : vertRef;
+
+            String patched = this.injector.patch(packVertex, this.buildMergedSource(overlayExact), SHADER_NAME);
+            if (patched == packVertex)
                 return fail("vertex injection failed");
             patched = JcppProcessor.glslPreprocessSource(patched,
                     StandardMacros.createStandardEnvironmentDefines());
+
+            // Fragment side: convert the pack's own entityColor declaration
+            // into the matching input so its mix(color.rgb, entityColor.rgb,
+            // entityColor.a) line consumes our varying. Packs whose entity
+            // program never mentions entityColor are unchanged — they simply
+            // never flash, exactly like the real entities they draw.
+            String fragResolved = overlayExact
+                    ? ENTITY_COLOR_UNIFORM.matcher(fragRef).replaceAll("in vec4 entityColor;")
+                    : fragRef;
+            CreateManaIndustry.LOGGER.info("[CMI particles] pack entity merge: hurt overlay via {}",
+                    overlayExact ? "pack entityColor chain (exact)" : "vertex tint approximation");
 
             var properties = ((ProgramSourceAccessor) refProgram).getShaderProperties();
 
@@ -205,7 +275,7 @@ public final class ShaderPackProgramCompiler {
             // absent fields fall through unchanged (alpha -> FALLBACK_ALPHA_TEST,
             // blend -> ProgramId.Entities' built-in default).
             this.entitiesShader = this.compileMerged(accessor, programSet, properties,
-                    patched, fragRef, refProgram, SHADER_NAME, refProgram.getDirectives(), null);
+                    patched, fragResolved, refProgram, SHADER_NAME, refProgram.getDirectives(), null);
             if (this.entitiesShader == null)
                 return fail("Iris returned no shader instance");
             this.gtextureUnit = findSamplerUnit(this.entitiesShader);
@@ -218,7 +288,7 @@ public final class ShaderPackProgramCompiler {
             var ghostDirectives = refProgram.getDirectives()
                     .withOverriddenDrawBuffers(refProgram.getDirectives().getDrawBuffers());
             this.ghostShader = this.compileMerged(accessor, programSet, properties,
-                    patched, fragRef, refProgram, GHOST_SHADER_NAME, ghostDirectives, GHOST_BLEND_OVERRIDE);
+                    patched, fragResolved, refProgram, GHOST_SHADER_NAME, ghostDirectives, GHOST_BLEND_OVERRIDE);
             if (this.ghostShader == null)
                 return fail("Iris returned no ghost shader instance");
             this.ghostGtextureUnit = findSamplerUnit(this.ghostShader);
@@ -376,7 +446,10 @@ public final class ShaderPackProgramCompiler {
             if (vertRef == null || fragRef == null)
                 { shadowDown("shadow program source missing vertex or fragment"); return; }
 
-            String patched = this.injector.patch(vertRef, this.buildMergedSource(), SHADOW_SHADER_NAME);
+            // Plain overlay variant: shadows are depth-only and the shadow
+            // program's own entityColor handling (if any) is left untouched —
+            // our out declaration must not collide with its uniform include.
+            String patched = this.injector.patch(vertRef, this.buildMergedSource(false), SHADOW_SHADER_NAME);
             if (patched == vertRef)
                 { shadowDown("vertex injection failed"); return; }
             patched = JcppProcessor.glslPreprocessSource(patched,
@@ -505,9 +578,16 @@ public final class ShaderPackProgramCompiler {
      * the sort array and writes the fixed-function replacement globals. The
      * injector prepends this main ahead of the pack's, whose entire vertex
      * pipeline then consumes our results.
+     *
+     * <p>{@code withEntityColor} selects the hurt-overlay variant: true
+     * declares {@code out vec4 entityColor;} and writes the per-instance
+     * vanilla overlay state (the compiler converts the pack's uniform
+     * declarations into the matching varying inputs); false omits entityColor
+     * entirely and lets {@code cmi_Tint} carry the vanilla-parameterised
+     * approximation.</p>
      */
-    private String buildMergedSource() {
-        if (this.mergedVertexSource != null)
+    private String buildMergedSource(boolean withEntityColor) {
+        if (this.mergedVertexSource != null && this.mergedSourceOverlay == withEntityColor)
             return this.mergedVertexSource;
 
         String chunk = ParticlePrograms.loadPlain("shaders/particles/chunks/allay_pose.glsl");
@@ -566,6 +646,13 @@ public final class ShaderPackProgramCompiler {
                 vec4 cmi_Tint;         // emitter colour keyframes x per-particle tint
 
                 """);
+        if (withEntityColor) {
+            // Consumed by the pack fragment stage's own entityColor mix line;
+            // ShaderPackProgramCompiler converts the pack's uniform declaration
+            // into the matching `in` post-include. Value semantics mirror Iris
+            // EntityPatcher: (overlayColor.rgb, 1 - overlayColor.a).
+            sb.append("out vec4 entityColor;\n\n");
+        }
         sb.append(chunk).append('\n');
         sb.append("""
                 void main() {
@@ -626,7 +713,9 @@ public final class ShaderPackProgramCompiler {
                     // HP-death corpse: per-particle death pose + roll timer
                     // (time since death; update.comp counts hp 0 -> -1 over the
                     // vanilla 20-tick window while age keeps the idle sway).
-                    bool corpse = p3.y < 0.0;
+                    // hp <= 0 (not < 0): the kill frame itself already counts
+                    // as dead, matching update.comp's corpse predicate.
+                    bool corpse = p3.y <= 0.0;
                     if (corpse)
                         anim = 3;
                     float sinceDeath = corpse ? -p3.y : 0.0;
@@ -636,22 +725,28 @@ public final class ShaderPackProgramCompiler {
                     vec3 local = gone ? vec3(0.0) : vec3(texelFetch(cmi_Geo, int(vb)).x, texelFetch(cmi_Geo, int(vb + 1u)).x, texelFetch(cmi_Geo, int(vb + 2u)).x);
                     vec2 uv = gone ? vec2(0.5) : vec2(texelFetch(cmi_Geo, int(vb + 3u)).x, texelFetch(cmi_Geo, int(vb + 4u)).x);
                     vec3 pm = (M * vec4(local, 1.0)).xyz / 16.0;
-                    vec3 flipped = vec3(-pm.x, 1.501 - pm.y, pm.z) * scale;
+                    // vanilla chain after the parts: T(0,-1.501,0) then
+                    // S(-1,-1,1), then the death roll (setupRotations' Rz,
+                    // INNER to the facing yaw -- PoseStack mulPose
+                    // post-multiplies, so the roll consumes the already-flipped
+                    // feet-relative vector and the corpse tips onto its OWN
+                    // side), then Ry(180deg - yaw) * scale. Keep this in sync
+                    // with model.vsh.
+                    vec3 flipped = vec3(-pm.x, 1.501 - pm.y, pm.z);
+                    if (anim == 3)
+                        flipped = cmiDeathRoll(flipped, sinceDeath);
+                    flipped *= scale;
                     float ry = CMI_PI - yaw;
                     vec3 worldOff = vec3(cos(ry) * flipped.x + sin(ry) * flipped.z,
                                          flipped.y,
                                          -sin(ry) * flipped.x + cos(ry) * flipped.z);
                     vec3 nPart = mat3(M) * CMI_FACE_NORMALS[normalCode];
                     vec3 nFlipped = vec3(-nPart.x, -nPart.y, nPart.z);
+                    if (anim == 3)
+                        nFlipped = cmiDeathRoll(nFlipped, sinceDeath);
                     vec3 nWorld = vec3(cos(ry) * nFlipped.x + sin(ry) * nFlipped.z,
                                        nFlipped.y,
                                        -sin(ry) * nFlipped.x + cos(ry) * nFlipped.z);
-                    // DEATH: tip the corpse about the WORLD Z axis, outermost
-                    // (after the facing yaw) like vanilla's setupRotations.
-                    if (anim == 3) {
-                        worldOff = cmiDeathRoll(worldOff, sinceDeath);
-                        nWorld = cmiDeathRoll(nWorld, sinceDeath);
-                    }
                     vec3 world = p0.xyz + worldOff;
                     cmi_NormalLevel = nWorld;
 
@@ -664,12 +759,40 @@ public final class ShaderPackProgramCompiler {
                     vec4 kfr[8];
                     for (int i = 0; i < 8; i++) kfr[i] = gone ? vec4(1.0) : texelFetch(cmi_Emitters, int(hb + 8u + uint(i)));
                     vec4 tint = cmiKeyframeColor(kfr, int(gone ? 1 : texelFetch(cmi_Emitters, int(hb + 6u)).z), life);
-                    // vanilla hurt overlay approximation: tint toward red across
-                    // the 0.5 s hurtTime window (p2.w is the per-particle timer)
-                    cmi_Tint = vec4(mix(tint.rgb * p2.rgb, vec3(0.75, 0.15, 0.15), clamp(p2.w, 0.0, 1.0)), 1.0);
+                    vec3 baseTint = tint.rgb * p2.rgb;
+                """);
+        if (withEntityColor) {
+            sb.append("""
+                    // vanilla hurt overlay via the pack's own entityColor chain:
+                    // mirror Iris EntityPatcher value semantics (entityColor =
+                    // (overlayColor.rgb, 1 - overlayColor.a) with the STATIC red
+                    // overlay texel 255,0,0/178), so the pack fsh applies its
+                    // mix(color.rgb, entityColor.rgb, entityColor.a) -- the
+                    // constant 30.2% pure-red wash, no fade, exactly what a real
+                    // entity gets under this pack. Active while the hurt timer
+                    // (p2.w) runs or the corpse countdown (hp <= 0) runs.
+                    entityColor = (!gone && (p2.w > 0.0 || p3.y <= 0.0))
+                        ? vec4(1.0, 0.0, 0.0, 77.0 / 255.0)
+                        : vec4(0.0);
+                    cmi_Tint = vec4(baseTint, 1.0);
+                    """);
+        } else {
+            sb.append("""
+                    // fallback (no entityColor chain available): constant
+                    // vanilla-flavoured approximation riding the vertex tint --
+                    // pre-diffuse and multiplicative, a documented deviation
+                    // (the exact path applies the overlay post-diffuse in the
+                    // pack's own fragment code instead)
+                    cmi_Tint = vec4((!gone && (p2.w > 0.0 || p3.y <= 0.0))
+                        ? mix(baseTint, vec3(1.0, 0.0, 0.0), 77.0 / 255.0)
+                        : baseTint, 1.0);
+                    """);
+        }
+        sb.append("""
                 }
                 """);
 
+        this.mergedSourceOverlay = withEntityColor;
         this.mergedVertexSource = sb.toString();
         return this.mergedVertexSource;
     }

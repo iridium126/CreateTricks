@@ -181,7 +181,11 @@ void main() {
     vec4 clip = ProjMat * ModelViewMat * vec4(worldPos - uCamPos, 1.0);
     gl_Position = clip;
 
-    vec2 localUv = cornerUn + 0.5;
+    // Vanilla pairs the quad TOP with minV (SingleQuadParticle.renderRotatedQuad:
+    // yOffset +1 ↔ v0), and NativeImage row 0 uploads to v=0 — so v is mirrored
+    // against the corner y or every sprite stands upside down (cherry blobs
+    // hide it; the damage heart exposes it)
+    vec2 localUv = vec2(cornerUn.x + 0.5, 0.5 - cornerUn.y);
     vUv = frameOrigin + localUv * frameSize;
     vDist = length(worldPos - uCamPos);
     // constant alpha over life (vanilla petals do not fade); sprite alpha in fsh

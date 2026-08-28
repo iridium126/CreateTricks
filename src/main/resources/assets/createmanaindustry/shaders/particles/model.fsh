@@ -19,6 +19,7 @@ in vec3 vColor;
 in float vDist;
 flat in float vSeg;
 flat in vec3 vNormalView;
+flat in float vOverlay; // vanilla hurt overlay flag (hurt timer or corpse)
 
 out vec4 fragColor;
 
@@ -53,6 +54,17 @@ void main() {
                             + max(dot(LIGHT1_DIR, n), 0.0)) * MINECRAFT_LIGHT_POWER
                             + MINECRAFT_AMBIENT_LIGHT);
     vec3 shaded = tex.rgb * vColor * (BASE_BRIGHTNESS * diffuse);
+    // vanilla hurt overlay, exact: rendertype_entity fsh mixes the OVERLAY
+    // TEXTURE in after the diffuse/color multiply — red texel (255,0,0) at
+    // constant alpha 178/255 (OverlayTexture is a STATIC texture in 1.21.1):
+    //   color.rgb = mix(overlayColor.rgb, color.rgb, overlayColor.a)
+    //             = 0.302 * red + 0.698 * color
+    // CONSTANT strength for the whole window (hurtTime 10 ticks / deathTime
+    // through the corpse countdown), then it cuts off — no fade. RGB only, so
+    // alpha blending and the cutout thresholds are untouched; applied to BOTH
+    // segments (vanilla renders the cloak through the same entity program).
+    if (vOverlay > 0.5)
+        shaded.rgb = mix(shaded.rgb, vec3(1.0, 0.0, 0.0), 77.0 / 255.0);
     if (vSeg < 0.5) {
         if (tex.a * farFade < 0.5)
             discard;

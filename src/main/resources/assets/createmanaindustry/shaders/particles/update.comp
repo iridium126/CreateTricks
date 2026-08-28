@@ -39,10 +39,13 @@ layout(std430, binding = BIND_PREV_COUNTER) readonly buffer PrevCounterBuf { uin
 // reset.comp never touches it; the CPU uploads the header every frame it has
 // entries plus one zero-count upload the frame after). Each thread scans for
 // ITS OWN index, so entries apply inside the owning particle's integration --
-// no cross-thread races, and only MODEL threads scan.
+// no cross-thread races, and only MODEL threads scan. Entry word 4 carries the
+// packed light (blockLight + 16*skyLight) sampled at the hit position; it is
+// stashed into the target's p1.w (unused by the model path) so the GPU death
+// chain can spawn its poof burst with the same lighting.
 layout(std430, binding = BIND_DAMAGE) readonly buffer DamageBuf {
     uvec4 header;      // x = entry count (y..z unused)
-    vec4 entries[];    // (particleIndex, damage, kbVecX, kbVecZ)
+    float entries[];   // stride 6: (particleIndex, damage, kbVecX, kbVecZ, lightPacked, 0)
 } damageQ;
 
 layout(binding = 0) uniform sampler3D uCollision;
@@ -93,6 +96,57 @@ bool solidAt(vec3 wp, vec3 mOrigin, int slice) {
     return texelFetch(uCollision, tc, 0).r > 0.5;
 }
 
+vec2 cmiGauss2(float s) {
+    float u1 = max(cmiHash1(s), 1e-6);
+    float u2 = cmiHash1(s + 17.17);
+    float r = sqrt(-2.0 * log(u1));
+    return vec2(r * cos(6.2831853 * u2), r * sin(6.2831853 * u2));
+}
+
+// Death chain: a MODEL particle whose corpse countdown just crossed the end of
+// the vanilla 20-tick death window (LivingEntity.tickDeath broadcasting event
+// 60) spawns its poof burst HERE -- the corpse position is GPU-only state, so
+// the CPU can neither time nor place this. 20 particles with the vanilla
+// makePoofParticles distribution: position uniform inside the allay bounding
+// box (getRandomX/Z(1.0) = ±bbWidth, getRandomY = 0..bbHeight), velocity =
+// gaussian*0.02 + uniform*±0.05 blocks/tick = gaussian*0.4 + uniform*±1.0 b/s.
+// The poof emitter's spec (life/drag/gravity/sprites) is read from its own
+// header; lighting comes from the light stash the damage queue left in p1.w.
+void spawnDeathPoof(uint hb, vec4 p0, vec4 p1, vec4 p3) {
+    float chain = emitters.u[hb + 16u].x; // deathEmitId (0 = none)
+    if (chain < 0.5)
+        return;
+    uint cb = uint(chain) * VEC4_PER_EMITTER;
+    float ssize = emitters.u[hb + 5u].w * p0.w; // corpse life clamps to 1 → sizeEnd
+    float sscale = (2.0 * ssize) / MODEL_ABOVE_FEET;
+    float sw = 0.35 * sscale; // vanilla Allay bbWidth × render scale
+    float sh = 0.6 * sscale;  // vanilla Allay bbHeight × render scale
+    float light = p1.w;       // packed light stashed by the damage queue
+    for (int i = 0; i < 20; i++) {
+        float s = p3.z * 91.7 + float(i) * 7.31;
+        vec2 ga = cmiGauss2(s + 21.0);
+        vec2 gb = cmiGauss2(s + 41.0);
+        vec3 pos = vec3(p0.x + (cmiHash1(s) * 2.0 - 1.0) * sw,
+                        p0.y + cmiHash1(s + 1.0) * sh,
+                        p0.z + (cmiHash1(s + 2.0) * 2.0 - 1.0) * sw);
+        vec3 vel = vec3(ga.x * 0.4 + (cmiHash1(s + 3.0) * 2.0 - 1.0),
+                        ga.y * 0.4 + (cmiHash1(s + 4.0) * 2.0 - 1.0),
+                        gb.x * 0.4 + (cmiHash1(s + 5.0) * 2.0 - 1.0));
+        float maxLife = max(mix(emitters.u[cb + 5u].x, emitters.u[cb + 5u].y,
+                                cmiHash1(s + 12.1)), 0.1);
+        uint slot = atomicAdd(counter.writeSlot, 1u);
+        if (slot >= uCapacity)
+            return;
+        uint wb = slot * 4u;
+        // p0.w: ExplodeParticle quadSize 0.1*(r²*6+1) → 0.1..0.7 half-extent via
+        // the 0.30 spec size × this 0.333..2.333 multiplier
+        writeBuf.data[wb + 0u] = vec4(pos, 0.333 + 2.0 * cmiHash1(s + 13.1));
+        writeBuf.data[wb + 1u] = vec4(vel, 0.0);
+        writeBuf.data[wb + 2u] = vec4(1.0, 1.0, 1.0, light);
+        writeBuf.data[wb + 3u] = vec4(0.0, maxLife, s, uintBitsToFloat(uint(chain)));
+    }
+}
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= prevCounter.live)
@@ -115,9 +169,13 @@ void main() {
     float hp = p3.y;   // MODEL: hit points; every other material: max life
     if (isModel) {
         // corpse countdown: hp counts 0 -> -1 across the vanilla 20-tick death
-        // window, then the particle drops out of the compacted output
-        if (hp <= -1.0)
+        // window, then the particle drops out of the compacted output. The
+        // frame it crosses spawns the vanilla death poof burst first (exactly
+        // once: the particle compacts away right after).
+        if (hp <= -1.0) {
+            spawnDeathPoof(hb, p0, p1, p3);
             return;
+        }
     } else if (age >= hp) {
         return; // lifetime expired -> drops out of the compacted output
     }
@@ -133,19 +191,23 @@ void main() {
 
     // ---- damage queue (MODEL): CPU melee attacks land here ----------------
     float hurt = p2.w; // MODEL: hurt-flash timer; other materials: intensity
+    // p1.w (billboard roll, unused by the model path) doubles as the packed
+    // light stash once a damage entry lands; the death chain reads it.
+    float roll = p1.w;
     if (isModel) {
         uint n = min(damageQ.header.x, uint(DAMAGE_QUEUE_CAP));
         for (uint i = 0u; i < n; i++) {
-            vec4 e = damageQ.entries[i]; // (particleIndex, damage, kbVecX, kbVecZ)
-            if (uint(e.x + 0.5) == idx) {
+            uint ob = i * 6u;
+            if (uint(damageQ.entries[ob + 0u] + 0.5) == idx) {
                 bool wasAlive = hp > 0.0;
-                hp -= e.y;
+                hp -= damageQ.entries[ob + 1u];
                 // vanilla LivingEntity.knockback (airborne target):
                 // vel = vel/2 - dir*strength -- the CPU pre-multiplies
                 // dir*strength into the entry's zw
-                vel.x = vel.x * 0.5 - e.z;
-                vel.z = vel.z * 0.5 - e.w;
+                vel.x = vel.x * 0.5 - damageQ.entries[ob + 2u];
+                vel.z = vel.z * 0.5 - damageQ.entries[ob + 3u];
                 hurt = 1.0;
+                roll = damageQ.entries[ob + 4u]; // packed light at the hit
                 if (wasAlive && hp <= 0.0)
                     hp = 0.0; // kill frame: start the death countdown at zero
             }
@@ -461,7 +523,7 @@ void main() {
 
     uint wb = slot * 4u;
     writeBuf.data[wb + 0u] = vec4(pos, p0.w);
-    writeBuf.data[wb + 1u] = vec4(vel, p1.w);
+    writeBuf.data[wb + 1u] = vec4(vel, roll);
     writeBuf.data[wb + 2u] = vec4(p2.rgb, hurt);
     writeBuf.data[wb + 3u] = vec4(age, hp, p3.z, p3.w);
 }

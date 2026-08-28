@@ -15,24 +15,39 @@ import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL30;
 
 /**
- * Self-hosted sprite atlas for textured (ALPHA) particles, assembled on the
- * render thread from the mod's own asset PNGs. The vanilla {@code cherry_0..11}
- * frames are copied into {@code assets/createmanaindustry/textures/particle/}
- * and packed into one {@code GL_TEXTURE_2D} RGBA8 atlas (4 columns x 3 rows).
- * The atlas id is owned here; the render shaders sample it by frame index.
+ * Self-hosted sprite atlas for textured (ALPHA/OPAQUE) particles, assembled on
+ * the render thread from the mod's own asset PNGs. The SPRITE atlas packs the
+ * vanilla {@code cherry_0..11} frames (copied into mod assets) for the ALPHA
+ * path plus the combat frames — vanilla {@code critical_hit}, {@code
+ * enchanted_hit}, {@code damage} and {@code generic_0..7} (poof order 7→0) as
+ * {@code combat_*} — for the OPAQUE combat emitters ({@code CombatSpecs});
+ * 23 frames in an 8×3 grid. The atlas id is owned here; the render shaders
+ * sample it by frame index.
  */
 public final class ParticleAtlas {
 
-    public static final ParticleAtlas CHERRY = new ParticleAtlas("cherry", 4, 3, 12, false);
+    private static final String[] SPRITE_FILES = {
+            "cherry_0", "cherry_1", "cherry_2", "cherry_3", "cherry_4", "cherry_5",
+            "cherry_6", "cherry_7", "cherry_8", "cherry_9", "cherry_10", "cherry_11",
+            // combat frames: frameBase 12..22 (see CombatSpecs); poof keeps the
+            // vanilla poof.json order generic_7 → generic_0
+            "combat_crit", "combat_magic", "combat_heart",
+            "combat_poof_0", "combat_poof_1", "combat_poof_2", "combat_poof_3",
+            "combat_poof_4", "combat_poof_5", "combat_poof_6", "combat_poof_7"
+    };
+
+    /** Shared ALPHA-sprite + OPAQUE-combat atlas (see class doc). */
+    public static final ParticleAtlas SPRITE = new ParticleAtlas(SPRITE_FILES, 8, 3, false);
     /**
      * Single 32x32 frame: the vanilla allay entity texture (for MODEL
      * particles). Mipmapped like the vanilla entity atlas — safe here because
      * a single-frame atlas cannot blend neighbouring sprites at high mip
      * levels — removing distant shimmer.
      */
-    public static final ParticleAtlas ALLAY = new ParticleAtlas("allay", 1, 1, 1, true);
+    public static final ParticleAtlas ALLAY = new ParticleAtlas(new String[] {"allay_0"}, 1, 1, true);
 
-    private final String baseName;
+    private final String name;
+    private final String[] files;
     private final int cols;
     private final int rows;
     private final int frames;
@@ -40,11 +55,12 @@ public final class ParticleAtlas {
     private final boolean mipmap;
     private int textureId = -1;
 
-    private ParticleAtlas(String baseName, int cols, int rows, int frames, boolean mipmap) {
-        this.baseName = baseName;
+    private ParticleAtlas(String[] files, int cols, int rows, boolean mipmap) {
+        this.files = files.clone();
+        this.name = files[0].split("_")[0];
         this.cols = cols;
         this.rows = rows;
-        this.frames = frames;
+        this.frames = files.length;
         this.mipmap = mipmap;
     }
 
@@ -89,7 +105,7 @@ public final class ParticleAtlas {
             int maxW = 0;
             int maxH = 0;
             for (int i = 0; i < frames; i++) {
-                ResourceLocation id = CreateManaIndustry.modLoc("textures/particle/" + baseName + "_" + i + ".png");
+                ResourceLocation id = CreateManaIndustry.modLoc("textures/particle/" + files[i] + ".png");
                 try (InputStream in = rm.open(id)) {
                     imgs[i] = NativeImage.read(in);
                 } catch (Exception e) {
@@ -111,9 +127,25 @@ public final class ParticleAtlas {
             for (int i = 0; i < frames; i++) {
                 int col = i % cols;
                 int row = i / cols;
-                // this=img (read), arg=canvas (write) — see NativeImage.copyRect overload
-                imgs[i].copyRect(canvas, 0, 0, col * maxW, row * maxH,
-                        fw[i], fh[i], false, false);
+                // cell-sized frames copy 1:1; smaller frames (the 8x8 combat
+                // sprites in the 16x16 cherry cells) are nearest-upscaled to
+                // FILL the cell first — the render shaders map a full cell per
+                // frame, so a partially-filled cell would draw the sprite at
+                // the wrong world size
+                if (fw[i] == maxW && fh[i] == maxH) {
+                    // this=img (read), arg=canvas (write) — see NativeImage.copyRect overload
+                    imgs[i].copyRect(canvas, 0, 0, col * maxW, row * maxH,
+                            fw[i], fh[i], false, false);
+                } else {
+                    for (int y = 0; y < maxH; y++) {
+                        int sy = Math.min(fh[i] - 1, y * fh[i] / maxH);
+                        for (int x = 0; x < maxW; x++) {
+                            int sx = Math.min(fw[i] - 1, x * fw[i] / maxW);
+                            canvas.setPixelRGBA(col * maxW + x, row * maxH + y,
+                                    imgs[i].getPixelRGBA(sx, sy));
+                        }
+                    }
+                }
             }
 
             int[] rgba = canvas.getPixelsRGBA();
@@ -146,9 +178,9 @@ public final class ParticleAtlas {
             for (NativeImage img : imgs)
                 img.close();
             CreateManaIndustry.LOGGER.info("[CMI particles] sprite atlas {} ready: {}x{}",
-                    baseName, texW, texH);
+                    name, texW, texH);
         } catch (RuntimeException | LinkageError e) {
-            CreateManaIndustry.LOGGER.error("[CMI particles] failed to build sprite atlas " + baseName, e);
+            CreateManaIndustry.LOGGER.error("[CMI particles] failed to build sprite atlas " + name, e);
         }
     }
 

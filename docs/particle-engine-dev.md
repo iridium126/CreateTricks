@@ -343,3 +343,59 @@
 - **L0 四处 sizeEase 防御钳制**：`pow(life, 0)` 在 life=0 为 GLSL 未定义行为；pack 合并路径已有
   `max(sizeEase, 0.001)`，additive.vsh / textured.vsh / model.vsh / hit.comp 四处对齐。
   compileJava 通过（L1）；着色器改动待 F3+T / runClient L2 验证。
+
+### 原版战斗粒子（crit / enchanted_hit / damage_indicator / poof，本轮，grilling 逐题共识后实施）
+
+- **范围**：四类效果只从本项目对 Allay MODEL 粒子的近战管线（`syntheticAttack`）生成——
+  **不拦截任何原版粒子**（allay 非真实体，原版本就不为它画这些）。横扫（sweep_attack）维持已知偏差
+  （横扫粒子与溅射判定强耦合，只画不判与原版语义矛盾）。暴击星/附魔星在原版里只有攻击者客户端可见
+  （`LocalPlayer.crit` 仅客户端），红心/横扫走服务端粒子包——我们的镜像与"攻击者自己看到"的语义一致。
+- **对齐口径（连续化换算，cherry 先例）**：纹理、尺寸曲线、出生分布、数量、时机、颜色精确对齐；
+  逐 tick 物理→等效连续系数（摩擦 0.7/tick → drag 7.134/s；重力乘数 0.5 → 0.04×0.5×400 = 8 b/s²，
+  `Particle.tick` 的 gravity 是 0.04 b/tick² 的乘数）；寿命 tick→秒（crit 4.3..10 tick → 0.21..0.5s），
+  随机寿命形状收敛为均匀（已知偏差）；20Hz 节奏差异为已知偏差。系数与来源全部钉在 `CombatSpecs` javadoc。
+- **新文件**：`engine/CombatSpecs.java`（四类引擎私有 spec + 保留头槽位常量 + 连续换算系数）；
+  `allaystorm/AllayStormSpec.java`（风暴 spec 自 `CMIParticleEngine` 分离——spec、上限常量与 18/19 槽
+  头打包随迁，运行时状态仍留引擎；`packedHeader(omega, radius, anchor)` 单一来源）。
+- **保留头槽位启用**（全部 hand-pack，风暴先例）：16.x deathEmitId（MODEL 专属，死亡链）、16.z growIn、
+  16.w spriteAnim、17.x colorMode（非 MODEL 天然 0=FLY 索引，无冲突）、17.y spawnStyle、17.z lightMode、
+  17.w frameBase。旧预设全零、行为不变。
+- **生成链路**：① crit/附魔星 = `TrackingBurst`（0.15s 窗口 ≈ 原版 3 tick 跟踪，~25 粒），CPU 每帧重发
+  originRef 微命令，emit.comp 以 **spawnStyle 1** 从池中解析 allay 实时位置（拒绝采样 ±AABB/4 胸部盒 +
+  速度 (d, d1+0.2, d2)×8 b/s）——暴击星跟随击退中的 allay；② 红心 = `CombatBurst` 一次性命令，
+  spawnStyle 2 镜像粒子包高斯分布（±0.1 偏移 + 速度 g×0.2+1.0 上浮，全经 CritParticle ×0.4 ×20）；
+  ③ poof = **GPU 死亡链**：update.comp 在 MODEL 粒子 hp 跨过 −1 的那一帧原位追加 20 粒
+  （vanilla `tickDeath` 事件 60 的时机与尸体最终位置只有 GPU 知道；CPU 在击杀帧预测会有 1 秒滑坠误差）。
+  `ensureEmitter` 对 MODEL spec 自动确保 poof emitter id 并写入 deathEmitId（`applyAnimation` 重写头时保留）。
+- **光照**：绑定 MC 真实 LightTexture（`drawPass` unit 2；`LightTexture.lightTextureLocation` 为私有
+  计数后缀路径 → accesstransformer.cfg 新增 `public` 条目），CPU 在命中点采样
+  `LevelRenderer.getLightColor` → block+16·sky 打包，随发射命令 c.x 传入 → p2.w → textured.vsh 按原版
+  `texelFetch(Sampler2, UV2/16)` 公式采样。昼夜/天气/gamma 曲线逐像素一致；出生后光坐标静态化
+  （短命粒子不可辨）。死亡链的 poof 光照：伤害队列条目 16→24B 携带光照，update.comp stash 进目标
+  p1.w（MODEL 渲染不读 roll），poof 继承。
+- **发射命令 8→12 float**（EMIT_ENTRY_FLOATS）：a(origin.xyz, count) / b(eid, seed, prefix, **originRef**) /
+  c(**light**, 0,0,0)。originRef = 粒子索引+1 时 emit.comp 从读池解析出生点（emit 派发新增
+  `bindParticleRead(0)`）；0 = 绝对 origin（旧路径）。
+- **片元语义**：OPAQUE cutout 阈值 0.5 → **0.1**（原版 `particle.fsh` 语义，crit/红心软边可见）；
+  cherry 纯 0/255 纹素不受影响。crit 尺寸 grow-in（vanilla `clamp(life×32)`）与 poof 的 8 帧
+  spriteAnim 由头标志驱动；poof 帧序 = poof.json 的 generic_7→generic_0。
+- **图集**：cherry 与 combat 合一 `ParticleAtlas.SPRITE`（8×3、23 帧：cherry 0..11 + combat
+  crit/magic/heart/poof_0..7 = 12..22）；装载器新增**小图最近邻上采样到格子尺寸**（8×8 combat vs
+  16×16 cherry 混排，全格 UV 采样要求精灵铺满格子——否则粒子世界尺寸错误）。poof 大小分布
+  0.1..0.7 半宽经 spec 0.30 × p0.w(0.333+2u) 还原。
+- **战斗粒子特性**：绕过节流 scale（原版无节流、计数极小）；OPAQUE → 快路径、不进排序；池满静默丢弃；
+  风暴停止/清池立即作废跟踪窗口与未发命令（池索引移位同 hit 快照语义）。已修复：风暴 spec 残留引用、
+  图集 baseName 残留。compileJava 通过（L1）；**L2 待验**：真实近战逐项核对（暴击星跟随击退、附魔紫色、
+  红心数量随伤害、致死 1s 后 poof 在尸体位置且光照正确）、cherry/风暴回归、开/关光影包双路径。
+- **修复（游戏内 L2 #35：四类战斗粒子全部渲染为纯色方块，仅颜色不同）**：根因 = 战斗粒子的三条生成
+  路径（tracking/combatBurst/GPU 死亡链）全部绕过 `ensureEmitterRuntime`，而那是 `spriteAtlas.ensureLoaded()`
+  的唯一调用点 → 图集从未构建 → `bind(1)` 在 `textureId < 0` 时静默 no-op → 单元 1 留着 vanilla 渲染残留的
+  近白色不透明纹理 → `fragColor = vColor × tex.rgb ≈ vColor` 且 alpha 恒 1 不被 discard → 纯色方块
+  （颜色 = textured.vsh 的 colorMode 输出，故"仅颜色不同"恰是 vsh 颜色路径在正常工作的证据）。
+  修复：① `ensureCombatEmitter` 创建时加载图集（覆盖近战三路径 + MODEL 注册时的死亡链 poof）；
+  ② `drawPass` 每次绘制前自愈式 `ensureLoaded()`（已加载为纯 int 检查，瞬时失败可重试）。
+  连带修复：CRIT 与 MAGIC 的 `packed` 数组完全相同而 `EmitterSpec.equals` 按 packed 去重 → 两者坍缩到
+  同一 emitter id、MAGIC 的 frameBase/colorMode 头永远写不上——给 MAGIC 的关键帧 alpha 0.999 制造
+  packed 差异（colorMode 在 vsh 覆盖颜色，keyframe alpha 不参与 OPAQUE 输出，零视觉影响）。
+  教训：新增任何"绕过旧发射路径"的生成方式，逐项核对该路径的运行时前置（图集加载、emitter 注册、
+  碰撞烘焙 ensure）是否被跳过。

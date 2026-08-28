@@ -37,6 +37,15 @@ public final class ParticleBuffers {
     public static final int BYTES_PER_PARTICLE = VEC4_PER_PARTICLE * 4 * 4; // 64 B
     public static final int MAX_EMIT_COMMANDS = 256;
     /**
+     * Floats per emit command: a(origin.xyz, count) + b(emitterId, seed,
+     * prefixOffset, originRef) + c(lightPacked, 0, 0, 0). {@code originRef} is
+     * 0 for an absolute {@code origin.xyz}, else (particle index + 1) whose
+     * pool position emit.comp resolves as the spawn origin (tracking bursts).
+     * {@code lightPacked} = blockLight + 16·skyLight sampled at spawn; combat
+     * particles carry it in p2.w for the lightmap sample in textured.vsh.
+     */
+    public static final int EMIT_ENTRY_FLOATS = 12;
+    /**
      * Emit-command ring depth. Deliberately aligned with {@link #COUNTER_RING}
      * (4): unlike the counter ring this ring has NO fence guarding the reuse of
      * its oldest slot, so its margin against a CPU run-ahead overwriting a slot
@@ -131,10 +140,14 @@ public final class ParticleBuffers {
     public static final int DAMAGE_QUEUE_CAP = 64;
     /**
      * CPU-side layout of the damage queue upload: an std430 uvec4 header
-     * (x = entry count) followed by 16-byte vec4 entries.
+     * (x = entry count) followed by 24-byte entries of 6 floats each:
+     * (particleIndex, damage, kbVecX, kbVecZ, lightPacked, 0). The light is
+     * the vanilla packed-light levels sampled at the hit position; update.comp
+     * stashes it into the target's p1.w so the GPU death chain can spawn poof
+     * particles with the same lighting.
      */
     public static final int DAMAGE_HEADER_BYTES = 16;
-    public static final int DAMAGE_ENTRY_BYTES = 16;
+    public static final int DAMAGE_ENTRY_BYTES = 24;
     /**
      * Vanilla pick forgiveness: GameRenderer inflates a picked entity's AABB
      * by this much (Entity.getPickRadius default). Unscaled, like vanilla.
@@ -275,7 +288,7 @@ public final class ParticleBuffers {
             this.particleSSBOs[i] = createBuffer(cap * (long) BYTES_PER_PARTICLE, null);
         }
         for (int i = 0; i < EMIT_RING_SIZE; i++) {
-            this.emitSSBOs[i] = createBuffer((long) MAX_EMIT_COMMANDS * 8 * 4, null);
+            this.emitSSBOs[i] = createBuffer((long) MAX_EMIT_COMMANDS * EMIT_ENTRY_FLOATS * 4, null);
         }
         this.emitterSSBO = createBuffer((long) maxEmitters * VEC4_PER_EMITTER * 4 * 4, null);
         this.indirectSSBO = createBuffer((long) INDIRECT_COMMANDS * INDIRECT_STRIDE, null);

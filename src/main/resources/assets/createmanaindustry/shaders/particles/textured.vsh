@@ -16,6 +16,10 @@ uniform vec3 uCamUp;
 uniform float uAtlasCols;
 uniform float uAtlasRows;
 uniform int uMode; // 0 = blended (sorted walk), 1 = opaque cutout permutation
+// Vanilla lightmap (Minecraft's LightTexture): combat OPAQUE particles sample
+// it with the spawn-time packed light (p2.w = blockLight + 16·skyLight, header
+// lightMode 17.z). Bound at texture unit 2 by the engine's draw pass.
+uniform sampler2D uLightmap;
 
 layout(std430, binding = BIND_POOL_WRITE) readonly buffer ParticleRead { vec4 data[]; } particles; // freshly written pool
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
@@ -81,6 +85,20 @@ void main() {
     float sizeEase = max(emitters.u[hb + 6u].x, 0.001);
     float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * p0.w;
 
+    // Combat feature flags (reserved header slots; 0 for every legacy preset):
+    // 16.z growIn -- vanilla CritParticle.getQuadSize ramps 0→full over the
+    // first 1/32 of life; 16.w spriteAnim -- poof's setSpriteFromAge frame
+    // walk; 17.x colorMode -- seed-derived CritParticle/MagicProvider gray
+    // with per-life reddening; 17.z lightMode -- p2.w carries the spawn-time
+    // packed light; 17.w frameBase -- fixed atlas frame (single-frame sprites).
+    float growIn = emitters.u[hb + 16u].z;
+    float spriteAnim = emitters.u[hb + 16u].w;
+    float colorMode = emitters.u[hb + 17u].x;
+    float lightMode = emitters.u[hb + 17u].z;
+    float frameBase = emitters.u[hb + 17u].w;
+    if (growIn > 0.5)
+        size *= min(1.0, life * 32.0);
+
     // color tint over lifetime (headers hb+8..hb+15)
     int cc = max(1, min(8, int(emitters.u[hb + 6u].z)));
     vec3 col;
@@ -100,9 +118,44 @@ void main() {
     }
     col *= p2.rgb;
 
-    // atlas frame: fixed per particle (random pick, like vanilla's 12 sprites)
+    // combat colorMode: CritParticle/MagicProvider seed-gray with per-life
+    // reddening (gCol·0.96, bCol·0.9 per tick → e^-0.816/s, e^-2.107/s), or
+    // the poof's constant gray — replaces the keyframe colour entirely
+    if (colorMode > 0.5) {
+        float f0 = mix(0.6, 0.9, hash1(p3.z * 3.71));
+        float gCh = f0 * exp(-0.816 * p3.x);
+        float bCh = f0 * exp(-2.107 * p3.x);
+        if (colorMode > 1.5 && colorMode < 2.5)
+            col = vec3(f0 * 0.3, f0 * 0.8 * gCh, bCh); // MagicProvider tint
+        else if (colorMode > 2.5)
+            col = vec3(mix(0.7, 1.0, hash1(p3.z * 5.13))); // poof constant gray
+        else
+            col = vec3(f0, gCh, bCh);
+        col *= p2.rgb;
+    }
+    // lightMode: p2.w is blockLight + 16·skyLight — sample the real vanilla
+    // lightmap exactly where the particle vertex shader's texelFetch(Sampler2)
+    // would; integer-centred UVs make the lightmap's LINEAR filter exact
+    if (lightMode > 0.5) {
+        float lv = floor(p2.w + 0.5);
+        float bl = mod(lv, 16.0);
+        float sl = floor(lv / 16.0);
+        col *= texture(uLightmap, vec2((bl + 0.5) / 16.0, (sl + 0.5) / 16.0)).rgb;
+    }
+
+    // atlas frame: spriteAnim walks the frames over life (vanilla
+    // setSpriteFromAge, poof); a fixed frameBase pins single-frame combat
+    // sprites; otherwise the legacy seed-random pick (like vanilla's 12 cherry
+    // sprites)
     float sc = emitters.u[hb + 16u].y;
-    uint frame = (sc > 1.0) ? min(uint(sc) - 1u, uint(floor(hash1(p3.z * 7.13) * sc))) : 0u;
+    uint frame;
+    if (spriteAnim > 0.5) {
+        frame = uint(frameBase) + min(uint(sc) - 1u, uint(floor(life * sc)));
+    } else if (frameBase > 0.5) {
+        frame = uint(frameBase);
+    } else {
+        frame = (sc > 1.0) ? min(uint(sc) - 1u, uint(floor(hash1(p3.z * 7.13) * sc))) : 0u;
+    }
     uint fcol = frame % uint(uAtlasCols);
     uint frow = frame / uint(uAtlasCols);
     vec2 frameSize = vec2(1.0) / vec2(uAtlasCols, uAtlasRows);

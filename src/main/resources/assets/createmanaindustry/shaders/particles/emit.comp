@@ -1,15 +1,29 @@
 // Particle emission: consumes CPU-written spawn commands and initialises new
 // particles into the compacted write buffer. Deterministic per-particle hash.
+// Spawn styles (emitter header 17.y) — 0 is the classic shape-based path, the
+// combat styles reproduce the vanilla spawn math (CritParticle / TrackingEmitter
+// / the ClientboundLevelParticlesPacket gaussian distribution):
+//   0  default: position/velocity from the emitter shape + speed range
+//   1  tracking crit star: origin = the referenced allay particle's chest box
+//      (rejection-sampled like TrackingEmitter), vel = (d, d1+0.2, d2)·8 b/s
+//      = the vanilla (d, d1+0.2, d2)·0.4 blocks/tick
+//   2  damage-indicator heart: gaussian ±0.1 offset at the allay's mid-height,
+//      vel = (g·1.6, g·1.6+8, g·1.6) b/s = packet speed 0.2·g + 1.0 up, all
+//      ×0.4 (CritParticle) ×20 (tick→second)
+// Both combat styles carry the spawn-time packed light (command word c.x =
+// blockLight + 16·skyLight) in p2.w; textured.vsh turns it into a real
+// lightmap sample when the emitter's lightMode is set.
 layout(local_size_x = 64) in;
 
-struct EmitEntry {
-    vec4 a; // origin.xyz, count
-    vec4 b; // emitterId, seed, prefixOffset (exclusive), 0
-};
-
+// Flat command view, 12 floats per entry (EMIT_ENTRY_FLOATS):
+//   a: origin.xyz, count          (offsets 0..3)
+//   b: emitterId, seed, prefixOffset (exclusive), originRef (offsets 4..7)
+//   c: lightPacked, 0, 0, 0       (offsets 8..11)
 layout(std430, binding = BIND_POOL_WRITE) buffer ParticleWrite { vec4 data[]; } writeBuf;
+// Read pool: combat styles resolve originRef against the committed pool.
+layout(std430, binding = BIND_POOL_READ) readonly buffer ParticleRead { vec4 data[]; } readBuf;
 layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
-layout(std430, binding = BIND_EMITCMD) readonly buffer EmitCmdBuf { EmitEntry entries[]; } emitCmd;
+layout(std430, binding = BIND_EMITCMD) readonly buffer EmitCmdBuf { float entries[]; } emitCmd;
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 
 uniform uint uTotalSpawn;
@@ -30,6 +44,31 @@ vec3 randomDir(float s) {
     return vec3(cos(a) * r, c, sin(a) * r);
 }
 
+// Standard Box-Muller pair from two unit hashes (the combat styles reproduce
+// the vanilla ClientboundLevelParticlesPacket gaussian distribution).
+vec2 gaussian2(float s) {
+    float u1 = max(hash1(s), 1e-6);
+    float u2 = hash1(s + 17.17);
+    float r = sqrt(-2.0 * log(u1));
+    return vec2(r * cos(6.2831853 * u2), r * sin(6.2831853 * u2));
+}
+
+// Source allay metrics for the combat styles: bbWidth/bbHeight from the
+// referenced particle's emitter header (corpse/alive life clamps to 1, so
+// sizeEnd is the operative size — same formula as hit.comp).
+void sourceMetrics(uint srcIdx, out vec3 feet, out float width, out float height) {
+    uint sb = srcIdx * VEC4_PER_PARTICLE;
+    vec4 sp0 = readBuf.data[sb + 0u];
+    vec4 sp3 = readBuf.data[sb + 3u];
+    uint seid = floatBitsToUint(sp3.w);
+    uint shb = seid * VEC4_PER_EMITTER;
+    float ssize = emitters.u[shb + 5u].w * sp0.w;
+    float sscale = (2.0 * ssize) / MODEL_ABOVE_FEET;
+    feet = sp0.xyz;
+    width = 0.35 * sscale;  // vanilla Allay bbWidth × render scale
+    height = 0.6 * sscale;  // vanilla Allay bbHeight × render scale
+}
+
 void main() {
     uint g = gl_GlobalInvocationID.x;
     if (g >= uTotalSpawn)
@@ -42,20 +81,97 @@ void main() {
     uint hi = uEmitCount;
     while (lo + 1u < hi) {
         uint mid = (lo + hi) >> 1u;
-        if (uint(emitCmd.entries[mid].b.z) <= g)
+        if (uint(emitCmd.entries[mid * 12u + 6u]) <= g)
             lo = mid;
         else
             hi = mid;
     }
-    uint inner = g - uint(emitCmd.entries[lo].b.z);
-    if (inner >= uint(emitCmd.entries[lo].a.w))
+    uint eb = lo * 12u;
+    float count = emitCmd.entries[eb + 3u];
+    uint inner = g - uint(emitCmd.entries[eb + 6u]);
+    if (inner >= uint(count))
         return; // defensive: g past the last entry's count
-    EmitEntry et = emitCmd.entries[lo];
 
-    vec3 origin = et.a.xyz;
-    uint eid = uint(et.b.x);
-    float seed = et.b.y + float(inner) * 0.0001;
+    uint eid = uint(emitCmd.entries[eb + 4u]);
+    float seed = emitCmd.entries[eb + 5u] + float(inner) * 0.0001;
+    float originRef = emitCmd.entries[eb + 7u]; // 0 = absolute origin.xyz, else particle index + 1
+    float lightPacked = emitCmd.entries[eb + 8u]; // blockLight + 16*skyLight (combat styles)
+    float spawnStyle = emitters.u[eid * VEC4_PER_EMITTER + 17u].y;
 
+    vec3 pos;
+    vec3 velDir;
+    float rot = (hash1(seed + 14.1) - 0.5) * 6.2831853;
+    float lightOut = 0.0;
+    if (spawnStyle > 0.5) {
+        if (originRef < 1.0)
+            return; // malformed combat command: drop, never fall to classic
+        // ---- combat styles: origin resolves against the committed pool ----
+        uint srcIdx = uint(originRef) - 1u;
+        vec3 feet;
+        float sw, sh;
+        sourceMetrics(srcIdx, feet, sw, sh);
+        lightOut = lightPacked;
+        if (spawnStyle < 1.5) {
+            // tracking crit star: TrackingEmitter's rejection-sampled unit cube
+            // point (d² <= 1), positioned at entity.getX(d0/4) / getY(0.5+d1/4)
+            vec3 d = vec3(0.0, 0.2, 0.0);
+            for (int k = 0; k < 8; k++) {
+                vec3 c = vec3(hash1(seed + float(k) * 3.31 + 1.0),
+                              hash1(seed + float(k) * 3.31 + 2.0),
+                              hash1(seed + float(k) * 3.31 + 3.0)) * 2.0 - 1.0;
+                if (dot(c, c) <= 1.0) {
+                    d = c;
+                    break;
+                }
+            }
+            pos = vec3(feet.x + sw * (d.x / 4.0),
+                       feet.y + sh * (0.5 + d.y / 4.0),
+                       feet.z + sw * (d.z / 4.0));
+            velDir = vec3(d.x, d.y + 0.2, d.z); // vel = dir * 0.4 b/tick = dir * 8 b/s
+            float speed = 8.0;
+            vec3 vel = velDir * speed;
+            float baseSize = mix(0.7, 1.3, hash1(seed + 13.1));
+            float maxLife = max(mix(emitters.u[eid * VEC4_PER_EMITTER + 5u].x,
+                                    emitters.u[eid * VEC4_PER_EMITTER + 5u].y,
+                                    hash1(seed + 12.1)), 0.1);
+            uint slot = atomicAdd(counter.writeSlot, 1u);
+            if (slot >= uCapacity)
+                return;
+            uint wb = slot * 4u;
+            writeBuf.data[wb + 0u] = vec4(pos, baseSize);
+            writeBuf.data[wb + 1u] = vec4(vel, 0.0);
+            writeBuf.data[wb + 2u] = vec4(1.0, 1.0, 1.0, lightOut);
+            writeBuf.data[wb + 3u] = vec4(0.0, maxLife, seed, uintBitsToFloat(eid));
+            return;
+        } else {
+            // damage-indicator heart: packet offsets gaussian·0.1 (x/z) at the
+            // allay's mid-height; speed gaussian·0.2 + the provider's +1.0 up,
+            // all through CritParticle's ×0.4 → b/s (×0.4·20 = ×8)
+            float h6 = seed + 31.7;
+            vec2 g1 = gaussian2(h6);
+            vec2 g2 = gaussian2(h6 + 41.3);
+            vec2 g3 = gaussian2(h6 + 83.1);
+            pos = vec3(feet.x + g1.x * 0.1,
+                       feet.y + sh * 0.5,
+                       feet.z + g1.y * 0.1);
+            vec3 vel = vec3(g2.x * 0.2, g2.y * 0.2 + 1.0, g3.x * 0.2) * 8.0;
+            float baseSize = mix(0.7, 1.3, hash1(seed + 13.1));
+            float maxLife = max(mix(emitters.u[eid * VEC4_PER_EMITTER + 5u].x,
+                                    emitters.u[eid * VEC4_PER_EMITTER + 5u].y,
+                                    hash1(seed + 12.1)), 0.1);
+            uint slot = atomicAdd(counter.writeSlot, 1u);
+            if (slot >= uCapacity)
+                return;
+            uint wb = slot * 4u;
+            writeBuf.data[wb + 0u] = vec4(pos, baseSize);
+            writeBuf.data[wb + 1u] = vec4(vel, 0.0);
+            writeBuf.data[wb + 2u] = vec4(1.0, 1.0, 1.0, lightOut);
+            writeBuf.data[wb + 3u] = vec4(0.0, maxLife, seed, uintBitsToFloat(eid));
+            return;
+        }
+    }
+
+    // ---- classic style-0 path (shape-based) ----
     uint hb = eid * VEC4_PER_EMITTER;
     float shape = emitters.u[hb + 1u].x;
     float speedMin = emitters.u[hb + 1u].y;
@@ -64,10 +180,9 @@ void main() {
     float lifeMin = emitters.u[hb + 5u].x;
     float lifeMax = emitters.u[hb + 5u].y;
     float tanHalf = emitters.u[hb + 6u].y;
+    vec3 origin = vec3(emitCmd.entries[eb + 0u], emitCmd.entries[eb + 1u], emitCmd.entries[eb + 2u]);
 
     float speed = mix(speedMin, speedMax, hash1(seed + 11.31));
-    vec3 pos;
-    vec3 velDir;
     if (shape < 0.5) {                     // POINT
         pos = origin;
         velDir = randomDir(seed);
@@ -112,7 +227,6 @@ void main() {
     // particles stand in for a vanilla ENTITY -- vanilla allays are uniform,
     // so they render at the exact spec scale (material check mirrors keygen).
     float baseSize = isModel ? 1.0 : mix(0.7, 1.3, hash1(seed + 13.1));
-    float rot = (hash1(seed + 14.1) - 0.5) * 6.2831853;
     // MODEL: p2.w is the per-particle HURT-FLASH timer (0 = not hurt), decayed
     // by update.comp; the model path never reads intensity, and the additive
     // path never sees MODEL particles.

@@ -19,7 +19,10 @@ void main() {
     vec4 tex = texture(uSprite, vUv);
     float farFade = 1.0 - smoothstep(uFadeDist, uFadeDist + 24.0, vDist);
     if (uMode == 1) {
-        if (tex.a * farFade < 0.5)
+        // vanilla PARTICLE_SHEET_OPAQUE alpha test (particle.fsh: a < 0.1
+        // discard, no blend, depth write); 0.1 (not 0.5) keeps the soft
+        // edge texels of the crit/heart stars visible exactly like vanilla
+        if (tex.a * farFade < 0.1)
             discard;
         fragColor = vec4(vColor * tex.rgb, 1.0);
     } else {

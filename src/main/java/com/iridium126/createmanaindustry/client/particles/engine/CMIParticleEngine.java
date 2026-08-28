@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
+import com.iridium126.createmanaindustry.client.particles.allaystorm.AllayStormSpec;
 import com.iridium126.createmanaindustry.client.particles.emitter.EmitterSpec;
 import com.iridium126.createmanaindustry.config.ClientConfig;
 
@@ -19,6 +20,10 @@ import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.LightTexture;
+import net.minecraft.client.renderer.texture.AbstractTexture;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.component.DataComponentType;
 import net.minecraft.core.component.DataComponents;
@@ -173,14 +178,54 @@ public final class CMIParticleEngine {
     private final ParticlePrograms programs = new ParticlePrograms();
     private final ParticleFrameProfiler profiler = new ParticleFrameProfiler();
     private final CollisionBake collisionBake = new CollisionBake();
-    private final ParticleAtlas cherryAtlas = ParticleAtlas.CHERRY;
+    private final ParticleAtlas spriteAtlas = ParticleAtlas.SPRITE;
     private final ParticleAtlas allayAtlas = ParticleAtlas.ALLAY;
 
-    private final FloatBuffer emitFront = BufferUtils.createFloatBuffer(ParticleBuffers.MAX_EMIT_COMMANDS * 8);
+    private final FloatBuffer emitFront = BufferUtils.createFloatBuffer(ParticleBuffers.MAX_EMIT_COMMANDS * ParticleBuffers.EMIT_ENTRY_FLOATS);
     private final Vec3[] emitOrigins = new Vec3[ParticleBuffers.MAX_EMIT_COMMANDS];
     private final int[] emitIds = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
     private final int[] emitCounts = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
     private final boolean[] emitTranslucent = new boolean[ParticleBuffers.MAX_EMIT_COMMANDS];
+    /** 0 = use origin.xyz, else (particle index + 1): origin resolves GPU-side. */
+    private final float[] emitOriginRef = new float[ParticleBuffers.MAX_EMIT_COMMANDS];
+    /** Spawn-time packed light (blockLight + 16·skyLight); combat commands only. */
+    private final float[] emitLight = new float[ParticleBuffers.MAX_EMIT_COMMANDS];
+
+    // ---- vanilla combat particles (crit / enchanted-hit / heart / poof) ----
+    /**
+     * Crit/enchanted-hit tracking window: vanilla {@code TrackingEmitter}
+     * follows the target for 3 ticks (0.15 s), rejection-sampling ~16 points
+     * per tick around its AABB (~25 accepted particles in total). The engine
+     * re-sends one small {@code originRef} command per frame over the window;
+     * emit.comp resolves the source allay's CURRENT pool position, so the
+     * stars track the knockback like vanilla. The window inherits the same
+     * index-shift exposure as the hit snapshot: storm stop / clear invalidate
+     * it immediately.
+     */
+    private static final class TrackingBurst {
+        static final double DURATION = 0.15;
+        static final double RATE = 25.0 / DURATION; // accepted particles per second
+
+        final int emitId;
+        final int sourceIdx;
+        final float light;
+        double remaining = RATE * DURATION;
+        double elapsed = 0;
+        double acc = 0;
+
+        TrackingBurst(int emitId, int sourceIdx, float light) {
+            this.emitId = emitId;
+            this.sourceIdx = sourceIdx;
+            this.light = light;
+        }
+    }
+
+    /** One-shot combat burst (damage-indicator hearts), drained next compute. */
+    private record CombatBurst(int emitId, int sourceIdx, float light, int count) {
+    }
+
+    private final List<TrackingBurst> trackings = new ArrayList<>();
+    private final List<CombatBurst> combatBursts = new ArrayList<>();
 
     // ---- player melee (HP / hit-query) state --------------------------------
     /**
@@ -391,34 +436,6 @@ public final class CMIParticleEngine {
     private boolean stormHeaderWritten = false;
     /** Emitter id force-expired on the NEXT update dispatch (-1 = none). */
     private int stormKillEmitId = -1;
-    /** Stress-test ceiling (user-set): 2^17 members. */
-    private static final int STORM_MAX_COUNT = 131072;
-    /** Vortex-mode cap on |omega| (rad/s). */
-    private static final float STORM_MAX_OMEGA = 3.0f;
-    private static final double STORM_WANDER_RADIUS = 12.0;
-    private static final float STORM_MAX_SPEED = 6.0f;
-    /**
-     * The storm spec is deliberately unique (lifetime/speed/drag differ from
-     * every preset) so spec dedupe hands it its own emitter id -- the per-id
-     * header then carries the ANCHOR in slots 18/19, which specs themselves
-     * never do (they stay position-free so one spec can serve many sites).
-     */
-    private static final EmitterSpec ALLAY_STORM_SPEC = EmitterSpec.builder()
-            .shape(com.iridium126.createmanaindustry.client.particles.emitter.EmitterShape.POINT)
-            .speed(2.5, 4.5)
-            .life(3600, 3600) // immortal while active; stop expires them via uKillEmit
-            .sizeOverLife(0.30, 0.30, 1.0)
-            .gravity(0, 0, 0)
-            .drag(0.6)
-            .material(EmitterSpec.Material.MODEL)
-            .animation(EmitterSpec.Animation.FLY)
-            // boids steering alone lets members shear straight through walls;
-            // REST keeps them sweeping against the occupancy volume (update.comp
-            // only collides particles with collideMode > NONE)
-            .collide(EmitterSpec.CollideMode.REST)
-            .glow(1.0)
-            .color(1f, 1f, 1f, 1f)
-            .build();
     private long lastErrorTime = 0;
     private final GpuTimerRing computeTimer = new GpuTimerRing();
     private final GpuTimerRing drawTimer = new GpuTimerRing();
@@ -462,10 +479,10 @@ public final class CMIParticleEngine {
      */
     public void startStorm(Vec3 origin, int count, double radius, int mode, float omega) {
         this.pending.add(new StormReq(origin,
-                Math.max(1, Math.min(STORM_MAX_COUNT, count)),
+                Math.max(1, Math.min(AllayStormSpec.MAX_COUNT, count)),
                 Math.max(2.0, Math.min(64.0, radius)), // diameter cap 128
                 mode == 2 ? 2 : 1,
-                Math.max(-STORM_MAX_OMEGA, Math.min(STORM_MAX_OMEGA, omega))));
+                Math.max(-AllayStormSpec.MAX_OMEGA, Math.min(AllayStormSpec.MAX_OMEGA, omega))));
     }
 
     /** Stops the active storm: members expire this frame, no new spawns queue. */
@@ -526,7 +543,7 @@ public final class CMIParticleEngine {
         this.computeTimer.free();
         this.drawTimer.free();
         try {
-            this.cherryAtlas.free();
+            this.spriteAtlas.free();
             this.allayAtlas.free();
             this.collisionBake.free();
         } catch (RuntimeException | LinkageError e) {
@@ -731,6 +748,9 @@ public final class CMIParticleEngine {
         this.dmgCount = 0;
         this.dmgPending = false;
         this.dmgClearNext = false;
+        // combat bursts reference pool indices; a pool reset shifts them all
+        this.trackings.clear();
+        this.combatBursts.clear();
         if (this.pendingFence != 0) {
             GL32.glDeleteSync(this.pendingFence);
             this.pendingFence = 0;
@@ -821,21 +841,15 @@ public final class CMIParticleEngine {
             this.collisionBake.ensureQuadrants(this.stormAnchor);
         }
         if (this.stormActive && this.pendingStormSpawns > 0) {
-            int id = ensureEmitter(ALLAY_STORM_SPEC);
+            int id = ensureEmitter(AllayStormSpec.SPEC);
             if (id >= 0 && entryCount < ParticleBuffers.MAX_EMIT_COMMANDS) {
                 if (!this.stormHeaderWritten) {
                     // Anchor + storm parameters ride the per-id header slots 18/19
                     // (specs stay position-free; this spec dedupes to its own id).
-                    float[] h = ALLAY_STORM_SPEC
-                            .packedWithAnimation(EmitterSpec.Animation.FLY.index());
-                    h[18 * 4 + 0] = this.stormOmega != 0f ? 2f : 1f; // motion mode
-                    h[18 * 4 + 1] = (float) this.stormRadius;
-                    h[18 * 4 + 2] = (float) STORM_WANDER_RADIUS;
-                    h[18 * 4 + 3] = STORM_MAX_SPEED;
-                    h[19 * 4 + 0] = (float) this.stormAnchor.x;
-                    h[19 * 4 + 1] = (float) this.stormAnchor.y;
-                    h[19 * 4 + 2] = (float) this.stormAnchor.z;
-                    h[19 * 4 + 3] = 0f;
+                    // AllayStormSpec owns the slot layout; only the death-chain
+                    // emitter id is patched here (MODEL particles poof on expiry).
+                    float[] h = AllayStormSpec.packedHeader(this.stormOmega, this.stormRadius, this.stormAnchor);
+                    h[16 * 4 + 0] = ensurePoofEmitter();
                     this.gpu.setEmitterHeader(id, h); // uploaded below this frame
                     this.stormEmitId = id;
                     this.stormHeaderWritten = true;
@@ -848,7 +862,7 @@ public final class CMIParticleEngine {
                 this.emitIds[entryCount] = id;
                 this.emitCounts[entryCount] = n;
                 this.emitOrigins[entryCount] = this.stormAnchor;
-                this.emitTranslucent[entryCount] = isTranslucent(ALLAY_STORM_SPEC);
+                this.emitTranslucent[entryCount] = isTranslucent(AllayStormSpec.SPEC);
                 totalSpawn += n;
                 entryCount++;
                 this.pendingStormSpawns -= n;
@@ -867,8 +881,53 @@ public final class CMIParticleEngine {
             this.emitCounts[entryCount] = n;
             this.emitOrigins[entryCount] = b.origin;
             this.emitTranslucent[entryCount] = isTranslucent(b.spec);
+            this.emitOriginRef[entryCount] = 0f;
+            this.emitLight[entryCount] = 0f;
             totalSpawn += n;
             entryCount++;
+        }
+
+        // Vanilla combat particles: drain one-shot bursts (damage hearts) and
+        // advance the tracking windows (crit / enchanted-hit stars). These
+        // bypass the throttle scale — vanilla applies none and the counts are
+        // tiny — and always target a pool particle (originRef) at the spawn
+        // light sampled when the hit landed.
+        for (CombatBurst cb : this.combatBursts) {
+            if (entryCount >= ParticleBuffers.MAX_EMIT_COMMANDS)
+                break;
+            this.emitIds[entryCount] = cb.emitId();
+            this.emitCounts[entryCount] = cb.count();
+            this.emitOrigins[entryCount] = Vec3.ZERO;
+            this.emitTranslucent[entryCount] = false; // combat specs are OPAQUE
+            this.emitOriginRef[entryCount] = (float) (cb.sourceIdx() + 1);
+            this.emitLight[entryCount] = cb.light();
+            totalSpawn += cb.count();
+            entryCount++;
+        }
+        this.combatBursts.clear();
+        if (!this.trackings.isEmpty()) {
+            Iterator<TrackingBurst> ti = this.trackings.iterator();
+            while (ti.hasNext()) {
+                TrackingBurst t = ti.next();
+                t.elapsed += dt;
+                double want = TrackingBurst.RATE * dt + t.acc;
+                int n = (int) want;
+                t.acc = want - n;
+                n = Math.min(n, (int) Math.ceil(t.remaining));
+                if (n > 0 && entryCount < ParticleBuffers.MAX_EMIT_COMMANDS) {
+                    this.emitIds[entryCount] = t.emitId;
+                    this.emitCounts[entryCount] = n;
+                    this.emitOrigins[entryCount] = Vec3.ZERO;
+                    this.emitTranslucent[entryCount] = false;
+                    this.emitOriginRef[entryCount] = (float) (t.sourceIdx + 1);
+                    this.emitLight[entryCount] = t.light;
+                    totalSpawn += n;
+                    entryCount++;
+                    t.remaining -= n;
+                }
+                if (t.remaining <= 0 || t.elapsed >= TrackingBurst.DURATION)
+                    ti.remove();
+            }
         }
         Iterator<Stream> it = this.streams.iterator();
         while (it.hasNext()) {
@@ -891,6 +950,8 @@ public final class CMIParticleEngine {
             this.emitCounts[entryCount] = n;
             this.emitOrigins[entryCount] = s.origin;
             this.emitTranslucent[entryCount] = isTranslucent(s.spec);
+            this.emitOriginRef[entryCount] = 0f;
+            this.emitLight[entryCount] = 0f;
             totalSpawn += n;
             entryCount++;
         }
@@ -950,10 +1011,15 @@ public final class CMIParticleEngine {
             for (int i = 0; i < entryCount; i++) {
                 Vec3 o = this.emitOrigins[i];
                 float seed = (((long) this.frameSeed * 2654435761L + i * 73856093L) >>> 8) % 1_000_000 * 0.000001f;
+                // a: origin.xyz + count (origin.xyz unused when originRef
+                // points at a pool particle — combat styles)
                 this.emitFront.put((float) o.x).put((float) o.y).put((float) o.z).put(this.emitCounts[i]);
+                // b: emitterId, seed, prefix (exclusive), originRef (0 = absolute)
+                this.emitFront.put(this.emitIds[i]).put(seed).put((float) prefix).put(this.emitOriginRef[i]);
+                // c: spawn-time packed light (combat), padding
+                this.emitFront.put(this.emitLight[i]).put(0f).put(0f).put(0f);
                 // b.z carries the exclusive prefix offset so the shader can
                 // binary-search its command instead of scanning linearly
-                this.emitFront.put(this.emitIds[i]).put(seed).put((float) prefix).put(0f);
                 prefix += this.emitCounts[i];
             }
             this.emitFront.flip();
@@ -1083,6 +1149,9 @@ public final class CMIParticleEngine {
             if (entryCount > 0) {
                 GL20.glUseProgram(this.programs.emit());
                 this.gpu.bindParticleWrite(1);
+                // combat spawn styles resolve their originRef against the
+                // committed read pool (the target allay's live position)
+                this.gpu.bindParticleRead(0);
                 this.gpu.bindCounter(3, slot);
                 this.gpu.bindEmitBuffer(4, ringId);
                 this.gpu.bindEmitters(5);
@@ -1396,6 +1465,8 @@ public final class CMIParticleEngine {
                 GL11.glBindTexture(GL12.GL_TEXTURE_3D, 0);
                 GL13.glActiveTexture(GL13.GL_TEXTURE1);
                 GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+                GL13.glActiveTexture(GL13.GL_TEXTURE2);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
                 GL13.glActiveTexture(GL13.GL_TEXTURE0);
             } catch (RuntimeException | LinkageError ignoredCleanup) {
                 // see above
@@ -1511,11 +1582,24 @@ public final class CMIParticleEngine {
         setFloatUniform(prog, "uCamUp", up.x, up.y, up.z);
 
         if (textured) {
-            this.cherryAtlas.bind(1);
+            this.spriteAtlas.bind(1);
             setIntUniform(prog, "uSprite", 1);
-            setFloatUniform(prog, "uAtlasCols", this.cherryAtlas.cols());
-            setFloatUniform(prog, "uAtlasRows", this.cherryAtlas.rows());
+            setFloatUniform(prog, "uAtlasCols", this.spriteAtlas.cols());
+            setFloatUniform(prog, "uAtlasRows", this.spriteAtlas.rows());
             setIntUniform(prog, "uMode", mode == 1 ? 1 : 0);
+            // unit 2: the real vanilla lightmap — combat OPAQUE particles turn
+            // their spawn-time packed light into a lightmap sample (header
+            // lightMode); LightTexture keeps its registered path private, hence
+            // the accesstransformer entry
+            LightTexture light = Minecraft.getInstance().gameRenderer.lightTexture();
+            if (light != null) {
+                AbstractTexture lightTex = Minecraft.getInstance().getTextureManager()
+                        .getTexture(light.lightTextureLocation);
+                GL13.glActiveTexture(GL13.GL_TEXTURE2);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, lightTex.getId());
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+            }
+            setIntUniform(prog, "uLightmap", 2);
         } else {
             setFloatUniform(prog, "uGlow", 1.0f);
         }
@@ -1698,6 +1782,29 @@ public final class CMIParticleEngine {
 
         float total = damage + enchBonus;
 
+        // Vanilla combat particles, client-mirrored. LocalPlayer.crit/magicCrit
+        // fire ONLY on the attacking client (a TrackingEmitter riding the
+        // target for 3 ticks); the damage hearts mirror the server's
+        // sendParticles (f8 > 2.0 hearts, count = f8·0.5). Spawns resolve
+        // against the GPU pool at the next compute pass, at the light sampled
+        // here — allays are not real entities, so vanilla draws none of these.
+        float light = lightSample(mc.level, hitPos);
+        if (crit) {
+            int cid = ensureCombatEmitter(CombatSpecs.CRIT);
+            if (cid >= 0)
+                this.trackings.add(new TrackingBurst(cid, idx, light));
+        }
+        if (enchBonus > 0.0F) {
+            int mid = ensureCombatEmitter(CombatSpecs.MAGIC);
+            if (mid >= 0)
+                this.trackings.add(new TrackingBurst(mid, idx, light));
+        }
+        if (total > 2.0F) {
+            int hid = ensureCombatEmitter(CombatSpecs.HEART);
+            if (hid >= 0)
+                this.combatBursts.add(new CombatBurst(hid, idx, light, (int) (total * 0.5F)));
+        }
+
         // vanilla knockback (LivingEntity.knockback, airborne target: y is
         // untouched); the strength is pre-multiplied into the direction so a
         // queue entry stays 16 bytes
@@ -1719,10 +1826,21 @@ public final class CMIParticleEngine {
         // attacker feedback, exactly like vanilla after a landed hit
         player.setDeltaMovement(player.getDeltaMovement().multiply(0.6, 1.0, 0.6));
         player.setSprinting(false);
-        enqueueDamage(idx, total, kbVecX, kbVecZ);
+        enqueueDamage(idx, total, kbVecX, kbVecZ, light);
         player.swing(InteractionHand.MAIN_HAND);
         player.resetAttackStrengthTicker();
         return true;
+    }
+
+    /**
+     * Vanilla packed-light levels at {@code pos}, packed as blockLight +
+     * 16·skyLight for the GPU lightmap sample (textured.vsh header lightMode).
+     * Combat particles keep this spawn-time sample for their whole short life
+     * — vanilla re-samples per tick, imperceptible over 4-20 ticks.
+     */
+    private static float lightSample(ClientLevel level, Vec3 pos) {
+        int packed = LevelRenderer.getLightColor(level, BlockPos.containing(pos));
+        return LightTexture.block(packed) + 16f * LightTexture.sky(packed);
     }
 
     /**
@@ -1765,9 +1883,11 @@ public final class CMIParticleEngine {
      * Queues one melee-damage entry for the next update dispatch (render thread).
      * Absolute writes: the buffer's limit may have been shrunk by the last
      * upload, so restore it to capacity first (absolute puts bounds-check
-     * against the limit, not the capacity).
+     * against the limit, not the capacity). The entry carries the spawn-time
+     * packed light; update.comp stashes it in the target's p1.w so the death
+     * chain's poof burst lights like the hit did.
      */
-    private void enqueueDamage(int idx, float damage, float kbVecX, float kbVecZ) {
+    private void enqueueDamage(int idx, float damage, float kbVecX, float kbVecZ, float light) {
         if (this.dmgCount >= ParticleBuffers.DAMAGE_QUEUE_CAP)
             return;
         if (this.dmgTmp.limit() != this.dmgTmp.capacity())
@@ -1777,6 +1897,8 @@ public final class CMIParticleEngine {
         this.dmgTmp.putFloat(off + 4, damage);
         this.dmgTmp.putFloat(off + 8, kbVecX);
         this.dmgTmp.putFloat(off + 12, kbVecZ);
+        this.dmgTmp.putFloat(off + 16, light);
+        this.dmgTmp.putFloat(off + 20, 0f);
         this.dmgCount++;
         this.dmgPending = true;
     }
@@ -1880,8 +2002,46 @@ public final class CMIParticleEngine {
         }
         int id = this.emitterIds.size();
         this.emitterIds.put(spec, id);
-        this.gpu.setEmitterHeader(id, spec.packed());
+        // MODEL particles die by HP: their header carries the poof emitter id
+        // (deathEmitId, header 16.x) so update.comp can spawn the vanilla death
+        // poof at the corpse's GPU-only expiry position. The poof spec itself is
+        // OPAQUE, so this recursion terminates after one level.
+        if (spec.material == EmitterSpec.Material.MODEL) {
+            float[] h = spec.packed().clone();
+            h[CombatSpecs.HDR_DEATH_EMIT] = ensurePoofEmitter();
+            this.gpu.setEmitterHeader(id, h);
+        } else {
+            this.gpu.setEmitterHeader(id, spec.packed());
+        }
         return id;
+    }
+
+    /**
+     * Engine-private combat spec ({@link CombatSpecs}): ensure + apply the
+     * combat header fields (spawnStyle/colorMode/lightMode/frameBase/growIn)
+     * once on creation — {@code EmitterSpec.packed()} knows nothing about them.
+     * Also loads the sprite atlas HERE: combat particles are emitted through
+     * the tracking/burst/death-chain paths, which bypass the burst/stream
+     * emission that normally loads it — without this, the atlas texture never
+     * comes into existence, bind(1) silently no-ops, and the quad samples the
+     * stale unit-1 texture (renders as flat colour squares).
+     */
+    private int ensureCombatEmitter(EmitterSpec spec) {
+        Integer existing = this.emitterIds.get(spec);
+        if (existing != null)
+            return existing;
+        int id = ensureEmitter(spec);
+        if (id >= 0) {
+            this.spriteAtlas.ensureLoaded();
+            this.gpu.setEmitterHeader(id, CombatSpecs.packedHeader(spec));
+        }
+        return id;
+    }
+
+    /** The death-poof emitter id (0 = none: emitter table full). */
+    private float ensurePoofEmitter() {
+        int id = ensureCombatEmitter(CombatSpecs.POOF);
+        return id >= 0 ? (float) id : 0f;
     }
 
     /**
@@ -1912,6 +2072,9 @@ public final class CMIParticleEngine {
         // the storm members compact away on the next update: any hit-query
         // snapshot pointing into the pool would target a shifted particle
         this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
+        // same shift exposure for the combat tracking windows
+        this.trackings.clear();
+        this.combatBursts.clear();
     }
 
     /** Full storm teardown (level clear/shutdown): forget the emitter id too. */
@@ -1928,8 +2091,11 @@ public final class CMIParticleEngine {
         if (spec.material != EmitterSpec.Material.MODEL)
             return;
         for (var e : this.emitterIds.entrySet()) {
-            if (e.getKey().equals(spec))
-                this.gpu.setEmitterHeader(e.getValue(), spec.packedWithAnimation(animation.index()));
+            if (e.getKey().equals(spec)) {
+                float[] h = spec.packedWithAnimation(animation.index());
+                h[CombatSpecs.HDR_DEATH_EMIT] = ensurePoofEmitter(); // survive the rewrite
+                this.gpu.setEmitterHeader(e.getValue(), h);
+            }
         }
     }
 
@@ -1941,7 +2107,7 @@ public final class CMIParticleEngine {
      */
     private void ensureEmitterRuntime(int id, EmitterSpec spec, Vec3 origin) {
         if (spec.material == EmitterSpec.Material.ALPHA || spec.material == EmitterSpec.Material.OPAQUE) {
-            this.cherryAtlas.ensureLoaded();
+            this.spriteAtlas.ensureLoaded();
         } else if (spec.material == EmitterSpec.Material.MODEL) {
             this.allayAtlas.ensureLoaded();
         }

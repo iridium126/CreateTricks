@@ -83,8 +83,10 @@ void main() {
     float sizeEnd = emitters.u[hb + 5u].w;
     float sizeEase = emitters.u[hb + 6u].x;
     float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * p0.w;
-    // total body height = 2*size blocks; vanilla body is ~10 units (0.625 b)
-    float scale = (2.0 * size) / 0.625;
+    // above-feet body height = 2*size blocks exactly: MODEL_ABOVE_FEET is the
+    // rest-pose model's above-feet height in blocks, derived from the bake
+    // (AllayModelGeometry) -- the old hardcoded 0.625 was ~5.5% too tall.
+    float scale = (2.0 * size) / MODEL_ABOVE_FEET;
 
     int anim = int(emitters.u[hb + 17u].x);
     // Storm members: slow individuals near the wandering centre periodically
@@ -96,6 +98,15 @@ void main() {
         anim = cmiStormAnimOverride(int(stormA.x), anim, length(p1.xyz),
                 distance(p0.xyz, G), stormA.y, p3.z, uTimeSec);
     }
+    // HP-death corpse: the animation id rides the per-EMITTER header, so a
+    // single death needs this per-particle signal -- update.comp flips the HP
+    // slot negative and counts it down over the vanilla 20-tick death window.
+    // The roll timer is time-since-death while age keeps driving the idle
+    // sway: the animation stays continuous, exactly like vanilla corpses.
+    bool corpse = p3.y < 0.0;
+    if (corpse)
+        anim = 3;
+    float sinceDeath = corpse ? -p3.y : 0.0;
     float yaw;
     mat4 M = cmiAllayPartTransform(p3.x, p3.z, p1.xyz, anim, pid, yaw);
 
@@ -122,8 +133,8 @@ void main() {
     // facing yaw) exactly like vanilla's Rz-after-Ry setupRotations order.
     // Rotate the OFFSET from the particle origin, not the absolute position.
     if (anim == 3) {
-        world = cmiDeathRoll(world - p0.xyz, p3.x) + p0.xyz;
-        nWorld = cmiDeathRoll(nWorld, p3.x);
+        world = cmiDeathRoll(world - p0.xyz, sinceDeath) + p0.xyz;
+        nWorld = cmiDeathRoll(nWorld, sinceDeath);
     }
     vNormalView = normalize(mat3(ModelViewMat) * nWorld);
 
@@ -135,4 +146,7 @@ void main() {
     for (int i = 0; i < 8; i++) kfr[i] = emitters.u[hb + 8u + uint(i)];
     int cc = int(emitters.u[hb + 6u].z);
     vColor = cmiKeyframeColor(kfr, cc, life).rgb * p2.rgb;
+    // vanilla hurt overlay approximation (OverlayTexture red): tint toward red
+    // across the 0.5 s hurtTime window -- p2.w is the per-particle hurt timer
+    vColor = mix(vColor, vec3(0.75, 0.15, 0.15), clamp(p2.w, 0.0, 1.0));
 }

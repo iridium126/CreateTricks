@@ -98,19 +98,25 @@ void main() {
     }
 
     vec3 vel = velDir * speed;
-    float maxLife = mix(lifeMin, lifeMax, hash1(seed + 12.1));
-    // Protective floor: a zero/garbage lifetime header must never kill a particle
-    // the same frame it is spawned (would keep the pool permanently empty).
-    maxLife = max(maxLife, 0.1);
-    // Per-particle scale jitter (+/-30%) suits organic sprites, but MODEL
-    // particles stand in for a vanilla ENTITY — vanilla allays are uniform,
-    // so they render at the exact spec scale (material check mirrors keygen).
     float spawnMatId = emitters.u[hb + 7u].x;
-    float baseSize = (spawnMatId >= 1.5 && spawnMatId < 2.5)
-            ? 1.0
-            : mix(0.7, 1.3, hash1(seed + 13.1));
+    bool isModel = spawnMatId >= 1.5 && spawnMatId < 2.5;
+    // MODEL particles are vanilla allays: the maxLife slot carries HIT POINTS
+    // (Allay.createAttributes MAX_HEALTH = 20.0) instead of a lifetime -- they
+    // are immortal and die only when the HP reaches zero. Every other material
+    // keeps the header lifetime; the protective floor stays (a zero/garbage
+    // lifetime header must never kill a particle the frame it spawns).
+    float maxLife = isModel
+            ? 20.0
+            : max(mix(lifeMin, lifeMax, hash1(seed + 12.1)), 0.1);
+    // Per-particle scale jitter (+/-30%) suits organic sprites, but MODEL
+    // particles stand in for a vanilla ENTITY -- vanilla allays are uniform,
+    // so they render at the exact spec scale (material check mirrors keygen).
+    float baseSize = isModel ? 1.0 : mix(0.7, 1.3, hash1(seed + 13.1));
     float rot = (hash1(seed + 14.1) - 0.5) * 6.2831853;
-    float intensity = mix(0.7, 1.0, hash1(seed + 15.1));
+    // MODEL: p2.w is the per-particle HURT-FLASH timer (0 = not hurt), decayed
+    // by update.comp; the model path never reads intensity, and the additive
+    // path never sees MODEL particles.
+    float intensity = isModel ? 0.0 : mix(0.7, 1.0, hash1(seed + 15.1));
 
     uint slot = atomicAdd(counter.writeSlot, 1u);
     if (slot >= uCapacity)

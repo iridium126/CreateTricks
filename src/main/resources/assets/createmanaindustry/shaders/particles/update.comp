@@ -1,5 +1,13 @@
 // Particle update: integrates live particles (compaction), preserving the dense
 // prefix invariant of the output buffer. Dead particles drop out. Adds:
+//   - MODEL (allay) hit points: the maxLife slot carries HP (init 20.0 = the
+//     vanilla Allay MAX_HEALTH); CPU melee damage arrives through the damage
+//     queue (binding BIND_DAMAGE) and lands inside the owning particle's own
+//     thread. HP<=0 converts the particle to a corpse whose countdown
+//     (0 -> -1 over the vanilla 20-tick death window) drives the death pose
+//     in model.vsh; corpses use vanilla death physics and are not hittable.
+//     Alive MODEL particles regen at the vanilla 2 HP/s; p2.w is their
+//     hurt-flash timer (0.5 s, vanilla hurtTime).
 //   - vanilla cherry-style flutter (life-gated horizontal spiral, header 7.z)
 //   - block collision (occupancy 3D texture, axis-separated pre-move sweep,
 //     header 7.y) — when the sweep runs it owns the position update entirely.
@@ -26,6 +34,16 @@ layout(std430, binding = BIND_BAKEMETA) readonly buffer BakeMetaBuf { vec4 m[]; 
 // previous frame's counter slot: its writeSlot is the read buffer's EXACT live
 // count (final value after that frame's update+emit appends)
 layout(std430, binding = BIND_PREV_COUNTER) readonly buffer PrevCounterBuf { uint live; uint spare; uint translucentCensus; } prevCounter;
+// CPU melee-attack queue (single buffer, NO ring -- the GL command stream
+// orders this frame's update before the next frame's CPU header rewrite, and
+// reset.comp never touches it; the CPU uploads the header every frame it has
+// entries plus one zero-count upload the frame after). Each thread scans for
+// ITS OWN index, so entries apply inside the owning particle's integration --
+// no cross-thread races, and only MODEL threads scan.
+layout(std430, binding = BIND_DAMAGE) readonly buffer DamageBuf {
+    uvec4 header;      // x = entry count (y..z unused)
+    vec4 entries[];    // (particleIndex, damage, kbVecX, kbVecZ)
+} damageQ;
 
 layout(binding = 0) uniform sampler3D uCollision;
 
@@ -86,15 +104,24 @@ void main() {
     vec4 p2 = readBuf.data[base + 2u];
     vec4 p3 = readBuf.data[base + 3u];
 
-    float age = p3.x;
-    float maxLife = p3.y;
-    if (age >= maxLife)
-        return; // dead -> drops out of the compacted output
-
     uint eid = floatBitsToUint(p3.w);
     if (eid == uKillEmit)
         return; // storm stopped: drop out of the compacted output immediately
     uint hb = eid * VEC4_PER_EMITTER;
+    float matId = emitters.u[hb + 7u].x;
+    bool isModel = matId >= 1.5 && matId < 2.5;
+
+    float age = p3.x;  // animation clock -- NEVER reset, even on death
+    float hp = p3.y;   // MODEL: hit points; every other material: max life
+    if (isModel) {
+        // corpse countdown: hp counts 0 -> -1 across the vanilla 20-tick death
+        // window, then the particle drops out of the compacted output
+        if (hp <= -1.0)
+            return;
+    } else if (age >= hp) {
+        return; // lifetime expired -> drops out of the compacted output
+    }
+
     vec3 gravity = emitters.u[hb + 2u].xyz;
     float drag = emitters.u[hb + 2u].w;
     vec3 accel = emitters.u[hb + 3u].xyz;
@@ -104,23 +131,60 @@ void main() {
     vec3 pos = p0.xyz;
     vec3 vel = p1.xyz;
 
-    vel += gravity * uDt;
-    vel += accel * uDt;
-    vel += windDir * (windStrength * uDt);
-    vel *= max(0.0, 1.0 - drag * uDt);
+    // ---- damage queue (MODEL): CPU melee attacks land here ----------------
+    float hurt = p2.w; // MODEL: hurt-flash timer; other materials: intensity
+    if (isModel) {
+        uint n = min(damageQ.header.x, uint(DAMAGE_QUEUE_CAP));
+        for (uint i = 0u; i < n; i++) {
+            vec4 e = damageQ.entries[i]; // (particleIndex, damage, kbVecX, kbVecZ)
+            if (uint(e.x + 0.5) == idx) {
+                bool wasAlive = hp > 0.0;
+                hp -= e.y;
+                // vanilla LivingEntity.knockback (airborne target):
+                // vel = vel/2 - dir*strength -- the CPU pre-multiplies
+                // dir*strength into the entry's zw
+                vel.x = vel.x * 0.5 - e.z;
+                vel.z = vel.z * 0.5 - e.w;
+                hurt = 1.0;
+                if (wasAlive && hp <= 0.0)
+                    hp = 0.0; // kill frame: start the death countdown at zero
+            }
+        }
+    }
+    bool corpse = isModel && hp <= 0.0;
 
-    // Vanilla cherry-style spiral flutter: horizontal accel growing as age^1.25.
-    // Vanilla does xd += cos(seed*60deg) * A * f^1.25 * 0.0025 per tick (A = 2.0,
-    // xd in blocks/tick). Converting to blocks/s: 1 blocks/tick = 20 blocks/s and
-    // 1 tick = 0.05 s, so the equivalent continuous acceleration is
-    // A * f^1.25 * (0.0025 * 20 * 20) = A * f^1.25 * 1.0 blocks/s^2.
-    float flutter = emitters.u[hb + 7u].z;
-    if (flutter > 0.0) {
-        float fr = clamp(age / max(maxLife, 1e-5), 0.0, 1.0);
-        float ang = radians(p3.z * 60.0);
-        float acc = flutter * pow(fr, 1.25);
-        vel.x += cos(ang) * acc * uDt;
-        vel.z += sin(ang) * acc * uDt;
+    if (!corpse) {
+        if (isModel) {
+            // vanilla allay regen: heal(1.0) every 10 ticks = 2 HP/s, capped
+            // at MAX_HEALTH (Allay.createAttributes); corpses never regen
+            hp = min(20.0, hp + 2.0 * uDt);
+        }
+        vel += gravity * uDt;
+        vel += accel * uDt;
+        vel += windDir * (windStrength * uDt);
+        vel *= max(0.0, 1.0 - drag * uDt);
+
+        // Vanilla cherry-style spiral flutter: horizontal accel growing as age^1.25.
+        // Vanilla does xd += cos(seed*60deg) * A * f^1.25 * 0.0025 per tick (A = 2.0,
+        // xd in blocks/tick). Converting to blocks/s: 1 blocks/tick = 20 blocks/s and
+        // 1 tick = 0.05 s, so the equivalent continuous acceleration is
+        // A * f^1.25 * (0.0025 * 20 * 20) = A * f^1.25 * 1.0 blocks/s^2.
+        float flutter = emitters.u[hb + 7u].z;
+        if (flutter > 0.0) {
+            // hp holds maxLife for non-MODEL materials (flutter is sprite-only)
+            float fr = clamp(age / max(hp, 1e-5), 0.0, 1.0);
+            float ang = radians(p3.z * 60.0);
+            float acc = flutter * pow(fr, 1.25);
+            vel.x += cos(ang) * acc * uDt;
+            vel.z += sin(ang) * acc * uDt;
+        }
+    } else {
+        // vanilla death physics (LivingEntity.travel with no movement input):
+        // GRAVITY attribute 0.08/tick^2 = 32 blocks/s^2; vertical velocity
+        // retention 0.98/tick (~0.404/s drag), horizontal air 0.91/tick
+        // (~1.888/s drag). The kill impulse decays together with the corpse.
+        vel.y = (vel.y - 32.0 * uDt) * max(0.0, 1.0 - 0.404 * uDt);
+        vel.xz *= max(0.0, 1.0 - 1.888 * uDt);
     }
 
     // ---- storm swarm steering ------------------------------------------------
@@ -134,7 +198,7 @@ void main() {
     // acceleration leaves this block: the collision sweep below still owns
     // the final position move.
     vec4 stormA = emitters.u[hb + 18u]; // x mode(0 none|1 ball|2 vortex), y radius, z wanderRadius, w maxSpeed
-    if (stormA.x > 0.5 && stormA.x < 1.5) {
+    if (!corpse && stormA.x > 0.5 && stormA.x < 1.5) {
         vec3 anchor = emitters.u[hb + 19u].xyz;
         vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
         vec3 acc = vec3(0.0);
@@ -208,7 +272,7 @@ void main() {
         if (spd > spMax)
             vel *= spMax / spd;
     }
-    else if (stormA.x > 1.5) {
+    else if (!corpse && stormA.x > 1.5) {
         // ----- vortex: integrate in the co-rotating frame ---------------------
         vec3 anchor = emitters.u[hb + 19u].xyz;
         vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
@@ -379,8 +443,17 @@ void main() {
     age += uDt;
 
     // DIE_ON_GROUND (cherry): draw the landing frame once, gone next tick.
-    if (collideMode > 1.5 && landed)
-        age = maxLife;
+    // hp holds maxLife for non-MODEL materials; MODEL never uses DIE_ON_GROUND
+    // (corpses expire through the countdown instead).
+    if (!isModel && collideMode > 1.5 && landed)
+        age = hp;
+    // corpse countdown advances AFTER the age bookkeeping; the hurt overlay
+    // decays over vanilla's hurtTime (10 ticks = 0.5 s)
+    if (isModel) {
+        if (corpse)
+            hp -= uDt;
+        hurt = max(0.0, hurt - 2.0 * uDt);
+    }
 
     uint slot = atomicAdd(counter.writeSlot, 1u);
     if (slot >= uCapacity)
@@ -389,6 +462,6 @@ void main() {
     uint wb = slot * 4u;
     writeBuf.data[wb + 0u] = vec4(pos, p0.w);
     writeBuf.data[wb + 1u] = vec4(vel, p1.w);
-    writeBuf.data[wb + 2u] = p2;
-    writeBuf.data[wb + 3u] = vec4(age, p3.y, p3.z, p3.w);
+    writeBuf.data[wb + 2u] = vec4(p2.rgb, hurt);
+    writeBuf.data[wb + 3u] = vec4(age, hp, p3.z, p3.w);
 }

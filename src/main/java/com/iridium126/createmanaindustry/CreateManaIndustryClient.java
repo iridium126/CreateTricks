@@ -19,6 +19,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.event.RegisterColorHandlersEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
+import net.neoforged.neoforge.client.event.InputEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 import net.neoforged.neoforge.event.GameShuttingDownEvent;
@@ -77,6 +78,21 @@ public class CreateManaIndustryClient {
     @SubscribeEvent
     private static void onGameShuttingDown(GameShuttingDownEvent event) {
         CMIParticleEngine.INSTANCE.close();
+    }
+
+    /**
+     * Melee attack against MODEL (allay) particles: when the engine's
+     * per-frame GPU hit query says an allay is under the crosshair (and the
+     * CPU block-occlusion check agrees), the vanilla handling is cancelled and
+     * replaced with a fully local synthetic attack ({@code
+     * CMIParticleEngine.handlePlayerAttack}) -- cooldown scaling, crits,
+     * enchantments and knockback all mirror {@code Player.attack}, but no
+     * interact packet is sent. A miss falls through to the vanilla miss swing.
+     */
+    @SubscribeEvent
+    private static void onAttackKey(InputEvent.InteractionKeyMappingTriggered event) {
+        if (event.isAttack() && CMIParticleEngine.INSTANCE.handlePlayerAttack())
+            event.setCanceled(true);
     }
 
     @SubscribeEvent

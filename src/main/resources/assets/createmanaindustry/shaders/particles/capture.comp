@@ -19,10 +19,22 @@ layout(local_size_x = 1) in;
 layout(std430, binding = BIND_INDIRECT) readonly buffer IndirectBuf { uint cmd[INDIRECT_UINTS]; } indirect;
 layout(std430, binding = BIND_SORT_WRITE) buffer SortMeta { uvec2 kv[]; } sortOut;
 layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
+layout(std430, binding = BIND_POOL_WRITE) readonly buffer Pool { vec4 data[]; } pool;
+layout(std430, binding = BIND_HIT) buffer HitBuf { uvec2 pair; } hitOut;
 
 uniform int uMetaSlot; // == particle capacity: the reserved tail slot index
 
 void main() {
     counter.spare = counter.translucentCensus;
     sortOut.kv[uMetaSlot] = uvec2(indirect.cmd[IDX_CNT_MODELOP], 0u);
+
+    // Publish the crosshair hit-query winner's current HP beside its key (see
+    // hit.comp) so the CPU can pick hurt vs death sounds when it consumes the
+    // snapshot. Same buffer, same generation, readable under this frame's
+    // fence -- no extra dispatch or sync.
+    uvec2 h = hitOut.pair;
+    if (h.x != 0xFFFFFFFFu) {
+        uint idx = h.x & 0x3FFFFFu;
+        hitOut.pair.y = floatBitsToUint(pool.data[idx * 4u + 3u].y);
+    }
 }

@@ -123,6 +123,27 @@ public final class ParticleBuffers {
     public static final int GRID_BB = 13;
     /** Spatial-hash table size in cells (power of two; masked hashing). */
     public static final int GRID_TABLE = 16384;
+    /** CPU melee-damage queue (see CMIParticleEngine.enqueueDamage). */
+    public static final int DAMAGE_BB = 16;
+    /** Per-frame crosshair hit-query result (see hit.comp / capture.comp). */
+    public static final int HIT_BB = 17;
+    /** Damage-queue capacity in entries (player melee clicks, a few per frame). */
+    public static final int DAMAGE_QUEUE_CAP = 64;
+    /**
+     * CPU-side layout of the damage queue upload: an std430 uvec4 header
+     * (x = entry count) followed by 16-byte vec4 entries.
+     */
+    public static final int DAMAGE_HEADER_BYTES = 16;
+    public static final int DAMAGE_ENTRY_BYTES = 16;
+    /**
+     * Vanilla pick forgiveness: GameRenderer inflates a picked entity's AABB
+     * by this much (Entity.getPickRadius default). Unscaled, like vanilla.
+     */
+    public static final float HIT_INFLATE = 0.1f;
+    /** Hit-query result word: no hit. */
+    public static final int HIT_MISS = 0xFFFFFFFF;
+    /** Hit-result key packing: 10 quantized distance bits above 22 index bits. */
+    public static final int HIT_KEY_INDEX_BITS = 22;
 
     /**
      * Flat-uint index of field {@code f} of indirect command {@code c}: with
@@ -186,6 +207,8 @@ public final class ParticleBuffers {
     private int modelGeoSSBO = -1;
     private int orderOpaqueSSBO = -1;
     private int gridSSBO = -1;
+    private int damageSSBO = -1;
+    private int hitSSBO = -1;
     /** Static element indices for the MODEL sub-draws (bound into the VAO). */
     private int modelIndexBuffer = -1;
     private int vao = -1;
@@ -286,6 +309,19 @@ public final class ParticleBuffers {
         // gridbuild.comp runs (the pass itself is storm-gated in the engine);
         // next needs no clearing (written before read via atomicExchange).
         this.gridSSBO = createBuffer((GRID_TABLE + (long) cap) * 4L, null);
+        // CPU melee-damage queue: uvec4 count header + vec4 entries. NOT ringed:
+        // the GL command stream orders this frame's update before the next
+        // frame's CPU header rewrite, and the engine uploads the header every
+        // frame it has entries plus one zero-count upload the frame after.
+        this.damageSSBO = createBuffer(
+                DAMAGE_HEADER_BYTES + (long) DAMAGE_QUEUE_CAP * DAMAGE_ENTRY_BYTES, null);
+        // Crosshair hit-query result: {packed key, winner HP bits}.
+        this.hitSSBO = createBuffer(8, null);
+        this.tmp4.clear();
+        this.tmp4.putInt(HIT_MISS).putInt(0);
+        this.tmp4.flip();
+        GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.hitSSBO);
+        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.tmp4);
 
         // initial indirect payload: one command per slot (6 verts / 0 inst
         // each; the 5th uint pads arrays commands to the uniform 20 B stride)
@@ -556,6 +592,16 @@ public final class ParticleBuffers {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, GRID_BB, this.gridSSBO);
     }
 
+    /** Binds the CPU melee-damage queue at its fixed binding. */
+    public void bindDamage() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, DAMAGE_BB, this.damageSSBO);
+    }
+
+    /** Binds the crosshair hit-query result at its fixed binding. */
+    public void bindHit() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, HIT_BB, this.hitSSBO);
+    }
+
     /**
      * Zeroes the heads table ({@link #GRID_TABLE} ints) ahead of each
      * gridbuild dispatch; the {@code next} chain half needs no clearing because
@@ -592,6 +638,32 @@ public final class ParticleBuffers {
         GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.counterSSBOs[slot % COUNTER_RING]);
         GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.readTmp8);
         return new int[] { this.readTmp8.getInt(0), this.readTmp8.getInt(4) };
+    }
+
+    /**
+     * Reads the crosshair hit-query snapshot: {@code {key, hpBits}} where key
+     * packs (quantized ray distance &lt;&lt; 22 | particle index) or
+     * {@link #HIT_MISS}, and hpBits holds the winner's HP as float bits
+     * (capture.comp publishes it beside the key in the same generation).
+     * <b>Call only under the frame fence that covers the compute phase</b> --
+     * the same stall discipline as {@link #readbackCounts(int)}.
+     */
+    public int[] readbackHit() {
+        this.readTmp8.clear();
+        GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.hitSSBO);
+        GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.readTmp8);
+        return new int[] { this.readTmp8.getInt(0), this.readTmp8.getInt(4) };
+    }
+
+    /**
+     * Uploads the damage-queue header (+ entries when {@code buf} carries any)
+     * to the GPU. Must be enqueued BEFORE this frame's update dispatch; the
+     * buffer layout matches the shader's std430 block (uvec4 count header at
+     * offset 0, vec4 entries from offset 16).
+     */
+    public void uploadDamageQueue(ByteBuffer buf) {
+        GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.damageSSBO);
+        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, buf);
     }
 
     /** Replaces the given emit-command ring slot contents (data already flipped). */
@@ -646,6 +718,19 @@ public final class ParticleBuffers {
         for (int i = 0; i < INDIRECT_COMMANDS; i++) {
             GL15.glBufferSubData(GL40.GL_DRAW_INDIRECT_BUFFER, i * INDIRECT_STRIDE + 4, this.tmp4);
         }
+
+        // clear the damage queue and mark the hit query as a miss
+        this.tmp4.clear();
+        for (int i = 0; i < 4; i++)
+            this.tmp4.putInt(0);
+        this.tmp4.flip();
+        GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.damageSSBO);
+        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.tmp4);
+        this.tmp4.clear();
+        this.tmp4.putInt(HIT_MISS).putInt(0);
+        this.tmp4.flip();
+        GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.hitSSBO);
+        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.tmp4);
     }
 
     /**
@@ -653,7 +738,7 @@ public final class ParticleBuffers {
      * the world's rendering after our frame.
      */
     public void unbindShaders() {
-        for (int i = 0; i <= ORDEROPAQUE_BINDING; i++) {
+        for (int i = 0; i <= HIT_BB; i++) {
             GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, i, 0);
         }
     }
@@ -737,6 +822,10 @@ public final class ParticleBuffers {
             GL15.glDeleteBuffers(this.bakeMetaSSBO);
         if (this.gridSSBO > 0)
             GL15.glDeleteBuffers(this.gridSSBO);
+        if (this.damageSSBO > 0)
+            GL15.glDeleteBuffers(this.damageSSBO);
+        if (this.hitSSBO > 0)
+            GL15.glDeleteBuffers(this.hitSSBO);
         for (int[] t : this.mergedTbos)
             if (t[0] > 0)
                 GL11.glDeleteTextures(t[0]);

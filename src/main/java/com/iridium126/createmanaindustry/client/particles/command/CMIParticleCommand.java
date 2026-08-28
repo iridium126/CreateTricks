@@ -32,7 +32,7 @@ import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
  * <pre>
  *   /cmip spawn &lt;preset&gt; [count]        burst at the player's feet
  *   /cmip stream &lt;preset&gt; &lt;rate&gt; [sec]  streaming (sec &lt;= 0 = until /cmip clear)
- *   /cmip anim &lt;preset&gt; &lt;animation&gt;     live-switch MODEL animation (fly/dance/spin/hold)
+ *   /cmip anim &lt;preset&gt; &lt;animation&gt;     live-switch MODEL animation (fly/dance/hold)
  *   /cmip allaystorm [count ≤4096] [radius]  persistent boids bait ball (stop subcommand)
  *   /cmip bench &lt;count&gt;                 unthrottled stress test
  *   /cmip clear                          drop all particles and streams
@@ -173,7 +173,7 @@ public final class CMIParticleCommand {
         String presetName = StringArgumentType.getString(ctx, "preset");
         EmitterSpec spec = EmitterPresets.byName(presetName);
         if (spec == null || spec.material != EmitterSpec.Material.MODEL) {
-            tell(ctx, "Unknown MODEL preset. Try: allay_fly, allay_dance, allay_hold, allay_death");
+            tell(ctx, "Unknown MODEL preset. Try: allay_fly, allay_dance, allay_hold");
             return 0;
         }
         String animName = StringArgumentType.getString(ctx, "animation");
@@ -181,11 +181,12 @@ public final class CMIParticleCommand {
             case "fly" -> EmitterSpec.Animation.FLY;
             case "dance" -> EmitterSpec.Animation.DANCE;
             case "hold" -> EmitterSpec.Animation.HOLD;
-            case "death" -> EmitterSpec.Animation.DEATH;
             default -> null;
         };
         if (anim == null) {
-            tell(ctx, "Unknown animation. Try: fly, dance, hold, death");
+            // the DEATH pose is pool-driven now (HP-death corpse countdown) --
+            // a per-emitter header switch to it has no valid meaning
+            tell(ctx, "Unknown animation. Try: fly, dance, hold");
             return 0;
         }
         if (!engine(ctx)) {

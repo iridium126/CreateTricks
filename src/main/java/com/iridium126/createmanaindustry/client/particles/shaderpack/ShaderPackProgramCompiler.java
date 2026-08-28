@@ -524,6 +524,10 @@ public final class ShaderPackProgramCompiler {
         // vanish when declarations transplant across glsl-transformer trees
         sb.append("const uint MODEL_VERTEX_FLOATS = ").append(ParticlePrograms.modelVertexFloats()).append("u;\n");
         sb.append("const uint VEC4_PER_EMITTER = 20u;\n");
+        // rest-pose model above-feet height in blocks -- the vanilla-size scale
+        // divisor shared with model.vsh / hit.comp (emitted as a plain const
+        // here because #defines do not survive the AST transplant)
+        sb.append("const float MODEL_ABOVE_FEET = ").append(ParticlePrograms.modelAboveFeet()).append(";\n");
         // particle data arrives through TBO views: plain samplerBuffer uniforms
         // survive every in-game pass, interface blocks demonstrably do not
         sb.append("uniform samplerBuffer cmi_Geo;\n");
@@ -607,7 +611,7 @@ public final class ShaderPackProgramCompiler {
                     float sizeEnd = gone ? 0.0 : texelFetch(cmi_Emitters, int(hb + 5u)).w;
                     float sizeEase = max(texelFetch(cmi_Emitters, int(hb + 6u)).x, 0.001);
                     float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * p0.w;
-                    float scale = (2.0 * size) / 0.625;
+                    float scale = (2.0 * size) / MODEL_ABOVE_FEET;
 
                     int anim = int(texelFetch(cmi_Emitters, int(hb + 17u)).x);
                     // Storm members: slow individuals near the wandering centre
@@ -619,6 +623,13 @@ public final class ShaderPackProgramCompiler {
                         anim = cmiStormAnimOverride(int(stormA.x), anim, length(p1.xyz),
                                 distance(p0.xyz, G), stormA.y, p3.z, uTimeSec);
                     }
+                    // HP-death corpse: per-particle death pose + roll timer
+                    // (time since death; update.comp counts hp 0 -> -1 over the
+                    // vanilla 20-tick window while age keeps the idle sway).
+                    bool corpse = p3.y < 0.0;
+                    if (corpse)
+                        anim = 3;
+                    float sinceDeath = corpse ? -p3.y : 0.0;
                     float yaw;
                     mat4 M = gone ? mat4(1.0) : cmiAllayPartTransform(p3.x, p3.z, p1.xyz, anim, pid, yaw);
 
@@ -638,8 +649,8 @@ public final class ShaderPackProgramCompiler {
                     // DEATH: tip the corpse about the WORLD Z axis, outermost
                     // (after the facing yaw) like vanilla's setupRotations.
                     if (anim == 3) {
-                        worldOff = cmiDeathRoll(worldOff, p3.x);
-                        nWorld = cmiDeathRoll(nWorld, p3.x);
+                        worldOff = cmiDeathRoll(worldOff, sinceDeath);
+                        nWorld = cmiDeathRoll(nWorld, sinceDeath);
                     }
                     vec3 world = p0.xyz + worldOff;
                     cmi_NormalLevel = nWorld;
@@ -653,7 +664,9 @@ public final class ShaderPackProgramCompiler {
                     vec4 kfr[8];
                     for (int i = 0; i < 8; i++) kfr[i] = gone ? vec4(1.0) : texelFetch(cmi_Emitters, int(hb + 8u + uint(i)));
                     vec4 tint = cmiKeyframeColor(kfr, int(gone ? 1 : texelFetch(cmi_Emitters, int(hb + 6u)).z), life);
-                    cmi_Tint = vec4(tint.rgb * p2.rgb, 1.0);
+                    // vanilla hurt overlay approximation: tint toward red across
+                    // the 0.5 s hurtTime window (p2.w is the per-particle timer)
+                    cmi_Tint = vec4(mix(tint.rgb * p2.rgb, vec3(0.75, 0.15, 0.15), clamp(p2.w, 0.0, 1.0)), 1.0);
                 }
                 """);
 

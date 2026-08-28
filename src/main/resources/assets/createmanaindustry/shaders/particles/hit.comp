@@ -1,0 +1,78 @@
+// Per-frame crosshair hit query for MODEL (allay) particles. Dispatched once
+// per frame at the end of the compute phase against the freshly written pool:
+// one thread per particle tests a vanilla-proportioned AABB (0.35 x 0.6 x the
+// render scale used by model.vsh, plus the vanilla pick forgiveness inflate of
+// 0.1, unscaled like GameRenderer) against the player eye ray and reduces the
+// NEAREST hit through a single atomicMin on the packed key. Only the handful
+// of allays the ray actually touches reach the atomic, so the steady-state
+// cost is the AABB tests alone. Zero CPU-GPU stalls: the CPU polls the frame
+// fence later and reads the 8-byte snapshot (key + the winner's HP, published
+// by capture.comp). Block occlusion is checked on the CPU with level.clip
+// against the real world (exact vanilla semantics, works outside the collision
+// bake volumes too).
+//
+// Result packing: key = (quantized ray distance << 22) | particle index.
+// The distance is quantized to 1/256 block (10 bits, clamped < 4.0 blocks --
+// the entity interaction range is at most 3.5), leaving 22 bits for the pool
+// index (capacity caps at 4M = 2^22). 0xFFFFFFFF = miss (reset.comp).
+// Hittable = MODEL material with hp > 0: corpses (hp <= 0) are excluded here
+// and can never be damaged. The engine only dispatches this pass when a
+// translucent particle may exist -- every MODEL particle is translucent, so a
+// live hittable allay always implies this frame's sorted path has run.
+layout(local_size_x = 64) in;
+
+layout(std430, binding = BIND_POOL_WRITE) readonly buffer Pool { vec4 data[]; } pool;
+layout(std430, binding = BIND_COUNTER) readonly buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
+layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+layout(std430, binding = BIND_HIT) buffer HitBuf { uvec2 pair; } hitOut;
+
+uniform vec3 uEye;    // player eye position (world space)
+uniform vec3 uLook;   // normalized view direction
+uniform float uReach; // entity interaction range (blocks)
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= counter.writeSlot)
+        return;
+
+    uint base = idx * 4u;
+    vec4 p0 = pool.data[base + 0u];
+    vec4 p3 = pool.data[base + 3u];
+    if (p3.y <= 0.0)
+        return; // dying or corpse (hp <= 0): not hittable
+    uint eid = floatBitsToUint(p3.w);
+    uint hb = eid * VEC4_PER_EMITTER;
+    float matId = emitters.u[hb + 7u].x;
+    if (matId < 1.5 || matId >= 2.5)
+        return; // MODEL material only
+
+    // AABB matching the rendered model EXACTLY (identical size formula to
+    // model.vsh, so what you see is what you hit); the vanilla AABB does not
+    // rotate with the body yaw -- XZ centered on the feet position, bottom at
+    // the feet, height = 0.6 x scale.
+    float life = clamp(p3.x / max(p3.y, 1e-5), 0.0, 1.0);
+    float sizeStart = emitters.u[hb + 5u].z;
+    float sizeEnd = emitters.u[hb + 5u].w;
+    float sizeEase = emitters.u[hb + 6u].x;
+    float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * p0.w;
+    float scale = (2.0 * size) / MODEL_ABOVE_FEET;
+    float halfW = 0.175 * scale + HIT_INFLATE;
+    vec3 mn = vec3(p0.x - halfW, p0.y - HIT_INFLATE, p0.z - halfW);
+    vec3 mx = vec3(p0.x + halfW, p0.y + 0.6 * scale + HIT_INFLATE, p0.z + halfW);
+
+    // slab test against [mn, mx]; zero uLook components yield +/-inf, which
+    // the min/max folding absorbs (standard raytracing practice)
+    vec3 inv = 1.0 / uLook;
+    vec3 t0 = (mn - uEye) * inv;
+    vec3 t1 = (mx - uEye) * inv;
+    vec3 tsm = min(t0, t1);
+    vec3 tbg = max(t0, t1);
+    float tEnter = max(max(tsm.x, tsm.y), tsm.z);
+    float tExit = min(min(tbg.x, tbg.y), tbg.z);
+    if (tEnter > tExit || tExit < 0.0 || tEnter > uReach)
+        return;
+
+    float t = max(tEnter, 0.0); // eye inside the box hits at t = 0, like vanilla
+    uint k = (uint(min(t, 3.999) * 256.0) << 22u) | (idx & 0x3FFFFFu);
+    atomicMin(hitOut.pair.x, k);
+}

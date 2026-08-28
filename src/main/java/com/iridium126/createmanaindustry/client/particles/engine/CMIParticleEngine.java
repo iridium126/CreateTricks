@@ -1,5 +1,6 @@
 package com.iridium126.createmanaindustry.client.particles.engine;
 
+import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -16,7 +17,31 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.Holder;
+import net.minecraft.core.component.DataComponentType;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.animal.allay.Allay;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.enchantment.ConditionalEffect;
+import net.minecraft.world.item.enchantment.Enchantment;
+import net.minecraft.world.item.enchantment.EnchantmentEffectComponents;
+import net.minecraft.world.item.enchantment.ItemEnchantments;
+import net.minecraft.world.item.enchantment.effects.EnchantmentValueEffect;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.CommonHooks;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.joml.Vector3f;
@@ -156,6 +181,36 @@ public final class CMIParticleEngine {
     private final int[] emitIds = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
     private final int[] emitCounts = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
     private final boolean[] emitTranslucent = new boolean[ParticleBuffers.MAX_EMIT_COMMANDS];
+
+    // ---- player melee (HP / hit-query) state --------------------------------
+    /**
+     * Damage-queue staging buffer: uvec4 count header (x = entry count) plus
+     * vec4 entries ({index, damage, kbVecX, kbVecZ}) -- matches the std430
+     * block in update.comp. Written on click, uploaded before the next update
+     * dispatch, followed by one zero-count upload to clear (single buffer,
+     * stream-order safe: the GL command stream orders this frame's update
+     * before the next frame's header rewrite).
+     */
+    private final ByteBuffer dmgTmp = BufferUtils.createByteBuffer(
+            ParticleBuffers.DAMAGE_HEADER_BYTES + ParticleBuffers.DAMAGE_QUEUE_CAP * ParticleBuffers.DAMAGE_ENTRY_BYTES);
+    private int dmgCount = 0;
+    private boolean dmgPending = false;
+    private boolean dmgClearNext = false;
+    /**
+     * Newest fence-signalled hit-query snapshot: the packed sort key of the
+     * allay under the crosshair ({@link ParticleBuffers#HIT_MISS} = none) and
+     * its HP as float bits. At most one frame old -- a click consumes it with
+     * zero stalls; a stale camera for one frame is accepted (documented).
+     */
+    private int hitKeySnapshot = ParticleBuffers.HIT_MISS;
+    private int hitHpBits = 0;
+    /**
+     * Formal attack target for the vanilla damage pipeline (enchantment type
+     * queries, CriticalHitEvent, item damage bonus). Never ticked or added to
+     * the world; recreated when the level changes.
+     */
+    private Allay proxyTarget = null;
+    private ClientLevel proxyLevel = null;
 
     /**
      * Uniform-location cache (program id -> name -> location). Locations are
@@ -352,7 +407,7 @@ public final class CMIParticleEngine {
             .shape(com.iridium126.createmanaindustry.client.particles.emitter.EmitterShape.POINT)
             .speed(2.5, 4.5)
             .life(3600, 3600) // immortal while active; stop expires them via uKillEmit
-            .sizeOverLife(0.33, 0.33, 1.0)
+            .sizeOverLife(0.30, 0.30, 1.0)
             .gravity(0, 0, 0)
             .drag(0.6)
             .material(EmitterSpec.Material.MODEL)
@@ -671,6 +726,11 @@ public final class CMIParticleEngine {
         this.translucentSpawnDelta = 0;
         this.translucentLatched = false;
         this.liveDisplay = 0;
+        this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
+        this.hitHpBits = 0;
+        this.dmgCount = 0;
+        this.dmgPending = false;
+        this.dmgClearNext = false;
         if (this.pendingFence != 0) {
             GL32.glDeleteSync(this.pendingFence);
             this.pendingFence = 0;
@@ -732,6 +792,12 @@ public final class CMIParticleEngine {
         int cap = this.gpu.capacity();
         if (!doClear)
             pollCounterSnapshot(cap);
+        // A storm kill queued THIS frame compacts the pool on the next update:
+        // any hit snapshot (fresh or the one the poll just reloaded) would
+        // mis-target a shifted particle, so drop it here. doClear already
+        // cleared it via resetPoolState and skips the poll.
+        if (this.stormKillEmitId >= 0)
+            this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
 
         float dt = clampDelta(deltaTracker);
         this.timeSec += dt;
@@ -892,6 +958,29 @@ public final class CMIParticleEngine {
             }
             this.emitFront.flip();
             this.gpu.uploadEmits(ringId, this.emitFront);
+        }
+
+        // 4b. Upload pending melee-damage entries (see enqueueDamage). Frames
+        // without clicks skip the upload entirely; a frame with entries
+        // uploads them and the NEXT frame uploads a zero count to clear.
+        // Buffer discipline: absolute writes everywhere, then position=0 and
+        // limit=used-bytes for the upload (LWJGL reads [position, limit)), and
+        // the limit is restored to capacity afterwards -- absolute puts are
+        // bounds-checked against LIMIT, so a lingering small limit would make
+        // the next enqueueDamage throw IndexOutOfBoundsException (and an
+        // un-restored position would skip the header in the upload).
+        if (this.dmgPending || this.dmgClearNext) {
+            int bytes = this.dmgPending
+                    ? ParticleBuffers.DAMAGE_HEADER_BYTES + this.dmgCount * ParticleBuffers.DAMAGE_ENTRY_BYTES
+                    : ParticleBuffers.DAMAGE_HEADER_BYTES;
+            this.dmgTmp.clear();
+            this.dmgTmp.putInt(0, this.dmgPending ? this.dmgCount : 0);
+            this.dmgTmp.limit(bytes).position(0);
+            this.gpu.uploadDamageQueue(this.dmgTmp);
+            this.dmgTmp.limit(this.dmgTmp.capacity());
+            this.dmgClearNext = this.dmgPending;
+            this.dmgPending = false;
+            this.dmgCount = 0;
         }
 
         // Dual mode: the combined translucent sort + the two sorted draws run
@@ -1087,6 +1176,12 @@ public final class CMIParticleEngine {
             }
             this.frameFinalPerm = finalPerm; // draw-phase handoff (-1 = fast path)
 
+            // 6b. Continuous crosshair hit query (player melee targeting): one
+            // tiny dispatch over the freshly written pool; the 8-byte result
+            // (nearest allay under the crosshair + its HP) rides this frame's
+            // fence back to the CPU, so a click never stalls the pipeline.
+            dispatchHitQuery(camera, slot, cap);
+
             // 7. Census capture + commit markers. NO DRAW SUBMISSION happens in
             //    this phase any more — the old "Draw" section moved to runDraws
             //    (AFTER_LEVEL), so on pack-active frames the merge hook fires
@@ -1108,6 +1203,10 @@ public final class CMIParticleEngine {
             //    pipeline stall, however lagged the slot).
             GL20.glUseProgram(this.programs.capture());
             this.gpu.bindCounter(3, slot);
+            // capture also publishes the hit-query winner's HP beside its key,
+            // so it reads the same fresh pool plus the hit result buffer
+            this.gpu.bindParticleWrite(ParticleBuffers.PARTICLE_BB_WRITE);
+            this.gpu.bindHit();
             // Publish N_model into the metadata tail slot of a sort buffer. When
             // this phase ran a sort, that is THE committed permutation buffer
             // (the same id lastFinalPermId promotes below), so count and items
@@ -1454,6 +1553,222 @@ public final class CMIParticleEngine {
     // Private helpers
     // ------------------------------------------------------------------
 
+    /**
+     * 6b. Continuous crosshair hit query: one tiny dispatch over the freshly
+     * written pool (see hit.comp) whose 8-byte result rides the frame fence
+     * back to the CPU. Skipped entirely when no translucent particle may
+     * exist -- every hittable allay is translucent, so an empty translucent
+     * census means nothing to hit and the frame costs nothing.
+     */
+    private void dispatchHitQuery(Camera camera, int slot, int cap) {
+        int upper = Math.min(cap, Math.max(0, this.translucentKnown + this.translucentSpawnDelta + 64));
+        if (upper <= 0)
+            return;
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (player == null)
+            return;
+        int hg = this.programs.hit();
+        GL20.glUseProgram(hg);
+        // the freshly written pool lives on the write side until the swap;
+        // hit.comp declares it at PARTICLE_BB_WRITE
+        this.gpu.bindParticleWrite(ParticleBuffers.PARTICLE_BB_WRITE);
+        this.gpu.bindCounter(3, slot);
+        this.gpu.bindEmitters(5);
+        this.gpu.bindHit();
+        Vec3 eye = player.getEyePosition();
+        Vec3 look = Vec3.directionFromRotation(camera.getXRot(), camera.getYRot());
+        setFloatUniform(hg, "uEye", (float) eye.x, (float) eye.y, (float) eye.z);
+        setFloatUniform(hg, "uLook", (float) look.x, (float) look.y, (float) look.z);
+        setFloatUniform(hg, "uReach", (float) player.entityInteractionRange());
+        GL43.glDispatchCompute(Math.max(1, (upper + 63) / 64), 1, 1);
+        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    // ------------------------------------------------------------------
+    // Player melee: HP damage (all client-side; the particles are decorative
+    // and no interact packet is ever sent)
+    // ------------------------------------------------------------------
+
+    /**
+     * Client attack-key hook ({@code InputEvent.InteractionKeyMappingTriggered}):
+     * consumes the newest completed hit-query snapshot and performs a fully
+     * local vanilla-aligned melee attack when an allay is under the crosshair.
+     * Returns true when the click was consumed -- the caller must cancel the
+     * vanilla handling (which would otherwise only play a miss swing).
+     */
+    public boolean handlePlayerAttack() {
+        if (!available() || !ClientConfig.particleEnabled)
+            return false;
+        int key = this.hitKeySnapshot;
+        if (key == ParticleBuffers.HIT_MISS)
+            return false;
+        Minecraft mc = Minecraft.getInstance();
+        LocalPlayer player = mc.player;
+        if (mc.level == null || player == null || player.isSpectator())
+            return false;
+        int idx = key & ((1 << ParticleBuffers.HIT_KEY_INDEX_BITS) - 1);
+        float t = (key >>> ParticleBuffers.HIT_KEY_INDEX_BITS) / 256.0F;
+        if (idx >= this.gpu.capacity())
+            return false;
+        // vanilla pick semantics: the eye ray is clipped by the first solid
+        // block, so an allay behind a wall is untargetable. One cheap CPU
+        // raycast against the real world (exact collision shapes, works
+        // outside the collision bake volumes too).
+        Vec3 eye = player.getEyePosition();
+        Vec3 hitPos = eye.add(player.getViewVector(1.0F).scale(Math.max(t, 0.01F)));
+        BlockHitResult clip = mc.level.clip(new ClipContext(eye, hitPos,
+                ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, player));
+        if (clip.getType() != HitResult.Type.MISS
+                && clip.getLocation().distanceToSqr(eye) < eye.distanceToSqr(hitPos) - 1.0E-4)
+            return false; // a block is closer than the allay: wall between
+        return syntheticAttack(mc, player, idx, hitPos);
+    }
+
+    /**
+     * Client-side mirror of {@code Player.attack} against the particle the
+     * hit query selected, verbatim from the 1.21.1 source: cooldown scaling
+     * on the base damage (0.2 + f²·0.8), the same scaling on the enchantment
+     * bonus, the UNCOOLED weapon bonus, the ×1.5 crit through the NeoForge
+     * CriticalHitEvent, sprint-knockback sound + attacker slowdown, and the
+     * cooldown reset at the END (NeoForge moved it there so the scale is
+     * accurate during the attack). Sweep is intentionally absent (documented
+     * deviation); item durability and other server-only consequences do not
+     * exist for decorative particles.
+     */
+    private boolean syntheticAttack(Minecraft mc, LocalPlayer player, int idx, Vec3 hitPos) {
+        Allay target = proxyFor(mc.level);
+        ItemStack weapon = player.getWeaponItem();
+        DamageSource source = player.damageSources().playerAttack(player);
+        float base = player.isAutoSpinAttack()
+                ? ((com.iridium126.createmanaindustry.mixin.vanilla.LivingEntityAccessor) (Object) player)
+                        .createmanaindustry$getAutoSpinAttackDmg()
+                : (float) player.getAttributeValue(Attributes.ATTACK_DAMAGE);
+        float enchBonus = enchantValueEffect(EnchantmentEffectComponents.DAMAGE, weapon, base, player) - base;
+        float cooldown = player.getAttackStrengthScale(0.5F);
+        float damage = base * (0.2F + cooldown * cooldown * 0.8F);
+        enchBonus *= cooldown;
+
+        if (damage <= 0.0F && enchBonus <= 0.0F) {
+            mc.level.playLocalSound(player.getX(), player.getY(), player.getZ(),
+                    SoundEvents.PLAYER_ATTACK_NODAMAGE, SoundSource.PLAYERS, 1.0F, 1.0F, false);
+            player.swing(InteractionHand.MAIN_HAND);
+            player.resetAttackStrengthTicker();
+            return true;
+        }
+
+        boolean fullCharge = cooldown > 0.9F;
+        boolean sprintKnockback = false;
+        if (player.isSprinting() && fullCharge) {
+            mc.level.playLocalSound(player.getX(), player.getY(), player.getZ(),
+                    SoundEvents.PLAYER_ATTACK_KNOCKBACK, SoundSource.PLAYERS, 1.0F, 1.0F, false);
+            sprintKnockback = true;
+        }
+
+        damage += weapon.getItem().getAttackDamageBonus(target, damage, source);
+        boolean crit = fullCharge
+                && player.fallDistance > 0.0F
+                && !player.onGround()
+                && !player.onClimbable()
+                && !player.isInWater()
+                && !player.hasEffect(MobEffects.BLINDNESS)
+                && !player.isPassenger()
+                && !player.isSprinting();
+        var critEvent = CommonHooks.fireCriticalHit(player, target, crit, crit ? 1.5F : 1.0F);
+        crit = critEvent.isCriticalHit();
+        if (crit) {
+            damage *= critEvent.getDamageMultiplier();
+            mc.level.playLocalSound(player.getX(), player.getY(), player.getZ(),
+                    SoundEvents.PLAYER_ATTACK_CRIT, SoundSource.PLAYERS, 1.0F, 1.0F, false);
+        } else if (fullCharge) {
+            mc.level.playLocalSound(player.getX(), player.getY(), player.getZ(),
+                    SoundEvents.PLAYER_ATTACK_STRONG, SoundSource.PLAYERS, 1.0F, 1.0F, false);
+        }
+
+        float total = damage + enchBonus;
+
+        // vanilla knockback (LivingEntity.knockback, airborne target: y is
+        // untouched); the strength is pre-multiplied into the direction so a
+        // queue entry stays 16 bytes
+        float kb = enchantValueEffect(EnchantmentEffectComponents.KNOCKBACK, weapon,
+                (float) player.getAttributeValue(Attributes.ATTACK_KNOCKBACK), player) + (sprintKnockback ? 1.0F : 0.0F);
+        float strength = kb * 0.5F;
+        float yawRad = player.getYRot() * (float) (Math.PI / 180.0);
+        float kbVecX = Mth.sin(yawRad) * strength;
+        float kbVecZ = -Mth.cos(yawRad) * strength;
+
+        // target sound chosen from the SNAPSHOT hp (at most one frame old;
+        // regen drift is a few tenths of an HP at worst)
+        float hpSnapshot = Float.intBitsToFloat(this.hitHpBits);
+        boolean lethal = hpSnapshot - total <= 0.0F;
+        mc.level.playLocalSound(hitPos.x, hitPos.y, hitPos.z,
+                lethal ? SoundEvents.ALLAY_DEATH : SoundEvents.ALLAY_HURT,
+                SoundSource.NEUTRAL, 1.0F, 1.0F, false);
+
+        // attacker feedback, exactly like vanilla after a landed hit
+        player.setDeltaMovement(player.getDeltaMovement().multiply(0.6, 1.0, 0.6));
+        player.setSprinting(false);
+        enqueueDamage(idx, total, kbVecX, kbVecZ);
+        player.swing(InteractionHand.MAIN_HAND);
+        player.resetAttackStrengthTicker();
+        return true;
+    }
+
+    /**
+     * Client-side equivalent of {@code EnchantmentHelper.modifyDamage} /
+     * {@code modifyKnockback}: those need a ServerLevel, so iterate the
+     * weapon's enchantments directly and apply UNCONDITIONAL value effects in
+     * order. Exact for sharpness and knockback (unconditional in vanilla);
+     * conditional effects (smite/bane/impaling) are skipped -- their
+     * target-type conditions can never pass for an allay anyway, and modded
+     * conditional damage enchantments are a documented gap.
+     */
+    private static float enchantValueEffect(
+            DataComponentType<List<ConditionalEffect<EnchantmentValueEffect>>> component,
+            ItemStack tool, float value, LocalPlayer player) {
+        ItemEnchantments ench = tool.getOrDefault(DataComponents.ENCHANTMENTS, ItemEnchantments.EMPTY);
+        for (Holder<Enchantment> holder : ench.keySet()) {
+            int level = ench.getLevel(holder);
+            for (ConditionalEffect<EnchantmentValueEffect> effect : holder.value().getEffects(component)) {
+                if (effect.requirements().isEmpty())
+                    value = effect.effect().process(level, player.getRandom(), value);
+            }
+        }
+        return value;
+    }
+
+    /**
+     * Formal attack target for the vanilla damage pipeline (enchantment type
+     * queries, the NeoForge CriticalHitEvent, item damage bonus). Never ticked
+     * or added to the world -- client-side state only, recreated on level change.
+     */
+    private Allay proxyFor(ClientLevel level) {
+        if (this.proxyTarget == null || this.proxyLevel != level) {
+            this.proxyTarget = new Allay(EntityType.ALLAY, level);
+            this.proxyLevel = level;
+        }
+        return this.proxyTarget;
+    }
+
+    /**
+     * Queues one melee-damage entry for the next update dispatch (render thread).
+     * Absolute writes: the buffer's limit may have been shrunk by the last
+     * upload, so restore it to capacity first (absolute puts bounds-check
+     * against the limit, not the capacity).
+     */
+    private void enqueueDamage(int idx, float damage, float kbVecX, float kbVecZ) {
+        if (this.dmgCount >= ParticleBuffers.DAMAGE_QUEUE_CAP)
+            return;
+        if (this.dmgTmp.limit() != this.dmgTmp.capacity())
+            this.dmgTmp.limit(this.dmgTmp.capacity());
+        int off = ParticleBuffers.DAMAGE_HEADER_BYTES + this.dmgCount * ParticleBuffers.DAMAGE_ENTRY_BYTES;
+        this.dmgTmp.putFloat(off, (float) idx);
+        this.dmgTmp.putFloat(off + 4, damage);
+        this.dmgTmp.putFloat(off + 8, kbVecX);
+        this.dmgTmp.putFloat(off + 12, kbVecZ);
+        this.dmgCount++;
+        this.dmgPending = true;
+    }
+
     private static float clampDelta(DeltaTracker deltaTracker) {
         float ticks = deltaTracker.getRealtimeDeltaTicks();
         return Math.max(0.001f, Math.min(0.25f, ticks * 0.05f));
@@ -1495,6 +1810,10 @@ public final class CMIParticleEngine {
             this.translucentSpawnDelta = 0;
             this.translucentLatched = translucent > 0;
             this.liveDisplay = alive;
+            // the same fence covers the hit query, so its snapshot is fresh now
+            int[] hit = this.gpu.readbackHit();
+            this.hitKeySnapshot = hit[0];
+            this.hitHpBits = hit[1];
         }
         GL32.glDeleteSync(this.pendingFence);
         this.pendingFence = 0;
@@ -1578,6 +1897,9 @@ public final class CMIParticleEngine {
         this.stormActive = false;
         this.stormOmega = 0f;
         this.pendingStormSpawns = 0;
+        // the storm members compact away on the next update: any hit-query
+        // snapshot pointing into the pool would target a shifted particle
+        this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
     }
 
     /** Full storm teardown (level clear/shutdown): forget the emitter id too. */

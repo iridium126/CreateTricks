@@ -97,9 +97,9 @@ vec4 cmiKeyframeColor(vec4 frames[8], int cc, float life) {
 // with a sqrt-eased angle over the 20-tick death timer:
 //   f = sqrt(min(((deathTime + partialTick - 1) / 20) * 1.6, 1)); rotZ(f*90deg)
 
-/** Death-roll angle in radians for a particle age of {@code ageSec} seconds. */
-float cmiDeathRollAngle(float ageSec) {
-    float u = clamp((ageSec * 20.0 - 1.0) / 20.0, 0.0, 1.0);
+/** Death-roll angle in radians for {@code sinceDeathSec} seconds since death. */
+float cmiDeathRollAngle(float sinceDeathSec) {
+    float u = clamp((sinceDeathSec * 20.0 - 1.0) / 20.0, 0.0, 1.0);
     return sqrt(min(u * 1.6, 1.0)) * (CMI_PI / 2.0);
 }
 
@@ -109,8 +109,8 @@ float cmiDeathRollAngle(float ageSec) {
  * absolute position would orbit it around the world origin. Direction vectors
  * (normals) are origin-free and pass unchanged in kind.
  */
-vec3 cmiDeathRoll(vec3 v, float ageSec) {
-    float a = cmiDeathRollAngle(ageSec);
+vec3 cmiDeathRoll(vec3 v, float sinceDeathSec) {
+    float a = cmiDeathRollAngle(sinceDeathSec);
     float c = cos(a);
     float s = sin(a);
     return vec3(c * v.x - s * v.y, s * v.x + c * v.y, v.z);

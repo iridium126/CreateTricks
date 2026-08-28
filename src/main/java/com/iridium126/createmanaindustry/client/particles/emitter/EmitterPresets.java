@@ -125,15 +125,19 @@ public final class EmitterPresets {
     /**
      * Allay-model particle (MODEL material): the vanilla allay rendered as an
      * instanced 3D model, fullbright cutout with depth writes. Total body
-     * height = 2 x size (~0.66 blocks at size 0.33). The four presets differ
-     * only in animation/motion; `/cmip anim <preset> <anim>` switches the
-     * animation of live particles at runtime.
+     * height = 2 x size above the feet (0.60 blocks at size 0.30 = exactly the
+     * vanilla allay's visual height). MODEL particles carry vanilla hit
+     * points (20.0) in the maxLife slot and are immortal: the header lifetime
+     * is unused, death happens only when a player's melee attack drains the
+     * HP (the corpse then plays the vanilla death animation for one second).
+     * The three presets differ only in animation/motion; {@code /cmip anim
+     * <preset> <anim>} switches the animation of live particles at runtime.
      */
     public static final EmitterSpec ALLAY_FLY = EmitterSpec.builder()
             .shape(EmitterShape.POINT)
             .speed(0.6, 1.4)
             .life(10.0, 18.0)
-            .sizeOverLife(0.33, 0.33, 1.0)
+            .sizeOverLife(0.30, 0.30, 1.0)
             .gravity(0, 0.35, 0)       // gentle rise
             .drag(1.2)
             .material(EmitterSpec.Material.MODEL)
@@ -151,7 +155,7 @@ public final class EmitterPresets {
             .shape(EmitterShape.POINT)
             .speed(0.05, 0.2)
             .life(20.0, 30.0)
-            .sizeOverLife(0.33, 0.33, 1.0)
+            .sizeOverLife(0.30, 0.30, 1.0)
             .gravity(0, 0.05, 0)
             .drag(2.0)
             .material(EmitterSpec.Material.MODEL)
@@ -165,39 +169,13 @@ public final class EmitterPresets {
             .shape(EmitterShape.POINT)
             .speed(0.4, 0.9)
             .life(8.0, 14.0)
-            .sizeOverLife(0.33, 0.33, 1.0)
+            .sizeOverLife(0.30, 0.30, 1.0)
             .gravity(0, 0.25, 0)
             .drag(1.0)
             .material(EmitterSpec.Material.MODEL)
             .animation(EmitterSpec.Animation.HOLD)
             .glow(1.0)
             .color(1f, 1f, 1f, 1f)
-            .build();
-
-    /**
-     * Vanilla death sequence: the idle animation keeps playing (clock-driven
-     * arm/wing sway does not stop on corpses) while the corpse rolls up to
-     * 90 degrees about the world Z axis with vanilla's sqrt easing over
-     * exactly 20 ticks (= the fixed 1 s lifetime), dropping under gravity
-     * like a real dying entity ({@code LivingEntity.travel} has no death
-     * gate). The killing-blow red flash is approximated with colour
-     * keyframes -- three of them space the fade across the FIRST half of the
-     * timeline (0.5 s). No poof cloud: triggering a follow-up emitter on
-     * expiry needs event wiring the particle engine does not have yet.
-     */
-    public static final EmitterSpec ALLAY_DEATH = EmitterSpec.builder()
-            .shape(EmitterShape.POINT)
-            .speed(0, 0.15)          // residual momentum of the killing blow
-            .life(1.0, 1.0)          // exactly the vanilla 20-tick death timer
-            .sizeOverLife(0.33, 0.33, 1.0)
-            .gravity(0, -8, 0)       // corpses fall under gravity
-            .drag(0.8)
-            .material(EmitterSpec.Material.MODEL)
-            .animation(EmitterSpec.Animation.DEATH)
-            .glow(1.0)
-            .color(1.0f, 0.42f, 0.42f, 1f)   // hurt flash approximation
-            .color(1f, 1f, 1f, 1f)
-            .color(1f, 1f, 1f, 1f)   // fade completes at half-life (0.5 s)
             .build();
 
     /** Looks up a preset by its command name, or returns null. */
@@ -213,7 +191,6 @@ public final class EmitterPresets {
             case "allay_fly" -> ALLAY_FLY;
             case "allay_dance" -> ALLAY_DANCE;
             case "allay_hold" -> ALLAY_HOLD;
-            case "allay_death" -> ALLAY_DEATH;
             default -> null;
         };
     }
@@ -221,11 +198,11 @@ public final class EmitterPresets {
     /** Names registered for the command argument suggestions. */
     public static String[] names() {
         return new String[] { "mana_spark", "ember", "ash", "soul_flame", "mana_burst", "cherry_leaves", "flood",
-                "allay_fly", "allay_dance", "allay_hold", "allay_death" };
+                "allay_fly", "allay_dance", "allay_hold" };
     }
 
     /** Animation names for the /cmip anim argument suggestions. */
     public static String[] animationNames() {
-        return new String[] { "fly", "dance", "spin", "hold" };
+        return new String[] { "fly", "dance", "hold" };
     }
 }

@@ -36,7 +36,8 @@
     "bnb.KineticBlockEntityChainStressMixin",
     "vanilla.BaseSpawnerAccessor",
     "vanilla.EntityMoltenFluidMixin",
-    "vanilla.LivingEntityMoltenFluidMistMixin"
+    "vanilla.LivingEntityMoltenFluidMistMixin",
+    "vanilla.LivingEntityAccessor"
   ],
   "client": [
     "render.LevelRendererBlockEntitiesMixin",

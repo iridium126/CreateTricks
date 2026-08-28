@@ -61,6 +61,40 @@ final class AllayModelGeometry {
      */
     static final int OPAQUE_INDEX_COUNT;
 
+    /**
+     * Rest-pose model-space Y extents per part: {@code {pivotY rel root, cube
+     * y0, cube y1}} in model units (1/16 block), mirroring the pivots in
+     * chunks/allay_pose.glsl's {@code cmiAllayPartTransform} and the cube()
+     * calls above (including CubeDeformation) -- the two MUST stay in sync.
+     * Used only for the vanilla-size scale divisor below.
+     */
+    private static final float[][] REST_Y_EXTENTS = {
+            { -3.99f, -5f, 0f },      // head
+            { -4.0f, 0f, 4f },        // body skin
+            { -3.5f, -0.49f, 3.49f }, // arms (pivot -4 + 0.5; grow -0.01)
+            { -4.0f, 0.2f, 4.8f },    // body cloak (grow -0.2)
+            { -4.0f, 1f, 6f },        // wings
+    };
+
+    /**
+     * Above-feet height (blocks) of the rest-pose model: {@code (1.501*16 -
+     * top) / 16} where the top is the highest model corner (the head cube at
+     * model y 14.51 units) -- 0.594 blocks, matching the vanilla allay's
+     * visual height (~= its 0.6-block hitbox; vanilla sizes the hitbox to the
+     * model top). This is the scale divisor used by model.vsh, hit.comp and
+     * the shader-pack merged program so an above-feet height of exactly
+     * {@code 2 x size} renders; the previous hardcoded 0.625 was ~5.5% too
+     * tall. Emitted into GLSL as {@code MODEL_ABOVE_FEET}.
+     */
+    public static final float MODEL_ABOVE_FEET = computeAboveFeet();
+
+    private static float computeAboveFeet() {
+        float minY = Float.MAX_VALUE;
+        for (float[] p : REST_Y_EXTENTS)
+            minY = Math.min(minY, 23.5f + p[0] + p[1]);
+        return (1.501f * 16f - minY) / 16f;
+    }
+
     static {
         List<Float> verts = new ArrayList<>(1024);
         List<Integer> idx = new ArrayList<>(600);

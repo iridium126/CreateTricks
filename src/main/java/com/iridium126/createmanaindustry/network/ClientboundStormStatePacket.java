@@ -1,6 +1,9 @@
 package com.iridium126.createmanaindustry.network;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
+import com.iridium126.createmanaindustry.storm.StormData;
+
+import io.netty.handler.codec.DecoderException;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -43,6 +46,17 @@ public record ClientboundStormStatePacket(
     public static final int ACTION_UPDATE = 1;
     public static final int ACTION_DEACTIVATE = 2;
     public static final int ACTION_STOP = 3;
+
+    /**
+     * Maximum ACTIVATE dead-bitmap size the decoder accepts: the worst
+     * legitimate case is one bit per member ({@code StormData.MAX_COUNT / 8}
+     * = 16 KB — the server builds it from {@code BitSet.toByteArray()}). The
+     * length is a raw VAR_INT and drives the byte array allocation, so a
+     * longer value is a protocol violation: the decoder throws a
+     * {@link DecoderException} and the network layer drops the connection
+     * instead of allocating an attacker-sized array.
+     */
+    public static final int MAX_DEAD_BYTES = (StormData.MAX_COUNT + 7) / 8;
 
     public static final ClientboundStormStatePacket ACTIVATE(BlockPos anchor, int count, float radius,
             int mode, float omega, int stormSeed, boolean authority, double hz, byte[] deadBitmap) {
@@ -110,7 +124,9 @@ public record ClientboundStormStatePacket(
         byte[] dead = null;
         if (action == ACTION_ACTIVATE) {
             int len = ByteBufCodecs.VAR_INT.decode(buffer);
-            dead = new byte[Math.max(0, len)];
+            if (len < 0 || len > MAX_DEAD_BYTES)
+                throw new DecoderException("storm dead bitmap length out of bounds: " + len);
+            dead = new byte[len];
             buffer.readBytes(dead);
         }
         return new ClientboundStormStatePacket(action, authority, hz,

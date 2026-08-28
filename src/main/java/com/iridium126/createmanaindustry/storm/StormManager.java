@@ -163,18 +163,22 @@ public final class StormManager {
     /** Re-evaluates every player's activation state and the authority assignment. */
     private static void scan(ServerLevel level, Runtime rt, StormData data) {
         // players that left the level (dimension change, logout) drop their
-        // track; cross-dimension players still receive DEACTIVATE so the
-        // client they now render in disperses its local swarm
+        // track. The player lookup is GLOBAL across dimensions, so "still
+        // online" is NOT enough: a cross-dimension player must be detected
+        // via their current ServerLevel, or their stale active track would
+        // pin the authority forever and their client would never be told to
+        // disperse (belt-and-braces: the client also resets itself on the
+        // level-change events)
         for (var it = rt.tracks.entrySet().iterator(); it.hasNext();) {
             var entry = it.next();
-            if (level.getServer().getPlayerList().getPlayer(entry.getKey()) == null) {
+            ServerPlayer player = level.getServer().getPlayerList().getPlayer(entry.getKey());
+            if (player == null || player.serverLevel() != level) {
                 Track t = entry.getValue();
                 if (t.active) {
                     t.active = false;
                     t.authority = false;
-                    ServerPlayer gone = rt.level.getServer().getPlayerList().getPlayer(entry.getKey());
-                    if (gone != null)
-                        PacketDistributor.sendToPlayer(gone, ClientboundStormStatePacket.DEACTIVATE());
+                    if (player != null)
+                        PacketDistributor.sendToPlayer(player, ClientboundStormStatePacket.DEACTIVATE());
                 }
                 it.remove();
             }
@@ -319,12 +323,20 @@ public final class StormManager {
         Track t = rt.tracks.get(player.getUUID());
         if (t == null || !t.active || !t.authority)
             return; // only the authority feeds the stream
-        // coarse sanity: every entry within the storm's plausible bounds
+        // coarse sanity per entry. Stride-8 layout: (memberIdx, pad,
+        // relPos.xyz, vel.xyz) — the positions are offsets 2..4 (the old
+        // check started at the always-zero pad slot and never looked at z),
+        // and memberIdx must be a plausible member of the CURRENT population
+        // (a snapshot from a just-replaced generation with a larger count
+        // fails here and drops — fine, the soft layer self-heals). Any
+        // violation discards the whole snapshot.
         float[] e = packet.entries();
-        for (int i = 0; i + 6 < e.length; i += ServerboundStormPositionsPacket.STRIDE) {
-            if (Math.abs(e[i + 1]) > RELAY_BOUND || Math.abs(e[i + 2]) > RELAY_BOUND
-                    || Math.abs(e[i + 3]) > RELAY_BOUND)
-                return; // drop the whole snapshot; the soft layer self-heals
+        int stride = ServerboundStormPositionsPacket.STRIDE;
+        for (int i = 0; i + stride - 1 < e.length; i += stride) {
+            if (e[i] < 0 || e[i] >= data.count
+                    || Math.abs(e[i + 2]) > RELAY_BOUND || Math.abs(e[i + 3]) > RELAY_BOUND
+                    || Math.abs(e[i + 4]) > RELAY_BOUND)
+                return;
         }
         ClientboundStormPositionsPacket relay = new ClientboundStormPositionsPacket(packet.gameTime(), e);
         for (var entry : rt.tracks.entrySet()) {

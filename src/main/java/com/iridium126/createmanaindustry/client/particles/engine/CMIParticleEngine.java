@@ -2372,6 +2372,30 @@ public final class CMIParticleEngine {
      */
     // ---- Allay Storm internals (render thread) ------------------------------
 
+    /**
+     * ClientLevel changed (dimension change, disconnect, relog): every live
+     * particle is world-space state of the OLD level, so the pool, storm
+     * state and all collision bakes drop — vanilla parity with
+     * {@code ParticleEngine.clearEffects}. Without this, an Allay Storm the
+     * server no longer counts this player as watching (its track left with
+     * the old dimension) would keep rendering the old anchor forever.
+     * <p>
+     * Called from client events that fire on the main thread BEFORE any
+     * packet of the new level is processed — the enqueueWork queue is FIFO,
+     * so freshly arrived storm state of the new level is never wiped by this.
+     */
+    public void onLevelChanged() {
+        if (this.initialized) {
+            dropAll();
+            this.collisionBake.reset();
+        } else {
+            // engine never came up: GPU work is impossible, but the storm
+            // mirror may still hold packet-fed state (payload handlers run
+            // regardless of engine init) — clear it the cheap way
+            resetStormState();
+        }
+    }
+
     /** Full storm teardown (level clear/shutdown): forget the emitter id too. */
     private void resetStormState() {
         this.stormActive = false;

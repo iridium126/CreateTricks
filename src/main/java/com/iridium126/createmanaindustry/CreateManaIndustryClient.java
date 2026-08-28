@@ -137,19 +137,26 @@ public class CreateManaIndustryClient {
                 MistClientHandler.clearAll();
                 FuelRodBloomHandler.clearAll();
             }
-            // The particle engine is self-hosted GL — clear regardless of Veil.
-            CMIParticleEngine.INSTANCE.clear();
+            // The particle engine is self-hosted GL — reset regardless of Veil.
+            // The reset must be SYNCHRONOUS here (NeoForge posts Unload inside
+            // setLevel, BEFORE the dimension loading screen): the old queued
+            // clear() was only drained at the new level's first compute frame,
+            // so a new-dimension storm ACTIVATE applied on the loading screen
+            // in between was wiped right after (the server never re-sends an
+            // ACTIVATE until the player re-enters the activation range).
+            CMIParticleEngine.INSTANCE.onLevelChanged();
         }
     }
 
     /**
      * Clears GPU particles on world join as well (the engine pool is world
      * anchored; entering a new world must not keep the previous one's particles).
+     * Synchronous for the same reason as {@link #onLevelUnload}.
      */
     @SubscribeEvent
     private static void onLevelLoad(LevelEvent.Load event) {
         if (event.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel) {
-            CMIParticleEngine.INSTANCE.clear();
+            CMIParticleEngine.INSTANCE.onLevelChanged();
         }
     }
 }

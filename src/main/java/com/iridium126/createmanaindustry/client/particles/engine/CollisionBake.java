@@ -284,6 +284,28 @@ public final class CollisionBake {
         metaDirty = true;
     }
 
+    /**
+     * Drops every slice and discards any in-flight build (level change:
+     * occupancy volumes are world coordinates and are meaningless across
+     * dimensions — stale presence flags would both falsely collide
+     * new-dimension particles near the old anchors and squat slots until LRU
+     * eviction). Keeps the texture and the worker alive; {@code
+     * finishBuild} re-validates slot identity, so a build completing after
+     * this reset is discarded instead of resurrecting an evicted slice, and
+     * the next {@link #ensure}/{@link #ensureQuadrants} re-allocates lazily.
+     */
+    public void reset() {
+        // leave the old future to finish on the worker unpollled: nulling the
+        // task reference makes tick() treat the worker as free and submit the
+        // next build (queued behind the running one on the single thread)
+        this.inFlight = null;
+        this.inFlightTask = null;
+        this.slots.clear();
+        for (int i = 0; i < MAX_SLICES; i++)
+            this.occupied[i] = false;
+        this.metaDirty = true; // presence flags upload as 0 on the next frame
+    }
+
     // ------------------------------------------------------------------
     // Async rebuild internals (render thread: submit/finish; worker: query)
     // ------------------------------------------------------------------

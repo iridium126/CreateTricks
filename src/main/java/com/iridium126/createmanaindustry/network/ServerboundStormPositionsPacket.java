@@ -2,6 +2,8 @@ package com.iridium126.createmanaindustry.network;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 
+import io.netty.handler.codec.DecoderException;
+
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
@@ -29,6 +31,19 @@ public record ServerboundStormPositionsPacket(long gameTime, float[] entries) im
 
     public static final int STRIDE = 8;
 
+    /**
+     * Maximum snapshot entries the decoder accepts (mirrors the client-side
+     * readback cap {@code ParticleBuffers.STORMPOS_CAP}, which is NOT
+     * referenced here — network payloads must stay server-safe). The count is
+     * a raw VAR_INT and drives the entry array allocation, so without this cap
+     * a single malformed packet could make the server allocate gigabytes.
+     * Anything outside [0, MAX_ENTRIES] is a protocol violation: the decoder
+     * throws a {@link DecoderException} and the network layer drops the
+     * connection (vanilla semantics for malformed packets — there is no way
+     * to skip a length-prefixed payload without desyncing the stream).
+     */
+    public static final int MAX_ENTRIES = 256;
+
     public static final CustomPacketPayload.Type<ServerboundStormPositionsPacket> TYPE =
             new CustomPacketPayload.Type<>(CreateManaIndustry.modLoc("storm_positions_up"));
 
@@ -54,6 +69,8 @@ public record ServerboundStormPositionsPacket(long gameTime, float[] entries) im
     private static ServerboundStormPositionsPacket decode(RegistryFriendlyByteBuf buffer) {
         long gameTime = ByteBufCodecs.VAR_LONG.decode(buffer);
         int count = ByteBufCodecs.VAR_INT.decode(buffer);
+        if (count < 0 || count > MAX_ENTRIES)
+            throw new DecoderException("storm positions snapshot count out of bounds: " + count);
         float[] entries = new float[count * STRIDE];
         for (int i = 0; i < count; i++) {
             int o = i * STRIDE;

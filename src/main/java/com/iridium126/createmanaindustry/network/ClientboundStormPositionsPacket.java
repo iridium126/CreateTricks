@@ -2,6 +2,8 @@ package com.iridium126.createmanaindustry.network;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 
+import io.netty.handler.codec.DecoderException;
+
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
@@ -49,6 +51,12 @@ public record ClientboundStormPositionsPacket(long gameTime, float[] entries) im
     private static ClientboundStormPositionsPacket decode(RegistryFriendlyByteBuf buffer) {
         long gameTime = ByteBufCodecs.VAR_LONG.decode(buffer);
         int count = ByteBufCodecs.VAR_INT.decode(buffer);
+        // Same cap as the upstream Serverbound packet (the server relays its
+        // payload verbatim, so a legit snapshot can never exceed it). The
+        // count drives the entry array allocation — an out-of-bounds value is
+        // a protocol violation and kills the connection instead.
+        if (count < 0 || count > ServerboundStormPositionsPacket.MAX_ENTRIES)
+            throw new DecoderException("storm positions snapshot count out of bounds: " + count);
         float[] entries = new float[count * ServerboundStormPositionsPacket.STRIDE];
         for (int i = 0; i < count; i++) {
             int o = i * ServerboundStormPositionsPacket.STRIDE;

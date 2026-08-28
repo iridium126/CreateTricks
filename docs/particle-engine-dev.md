@@ -321,3 +321,25 @@
   `clear → 绝对写头部 → limit(used)·position(0) → 上传 → limit(capacity)`，`enqueueDamage` 防御性
   先恢复 limit=capacity。教训：LWJGL `glBufferSubData` 语义 = 从 position 读 remaining 字节；
   绝对写缓冲的 limit 是隐式边界，缩小后必须还原。
+- **修复（症状三联 #34）**："打不到 Allay、打不到原版实体、挖不了方块"——两个新增 SSBO 绑定违反踩坑
+  #24 纪律（`unbindShaders()` 每帧全清 0..17，每个 pass 声明的绑定必须在派发前重绑）：① reset 派发
+  漏 `bindHit()` → `reset.comp` 的 MISS 写进未绑定 SSBO 被 NVIDIA 静默丢弃 → 首次真实命中后命中 key
+  永久锁存 → 之后每次点击都被 `handlePlayerAttack` 以陈旧快照消费、事件被取消（实体攻击/挖掘全部失灵）；
+  ② update 派发漏 `bindDamage()` → update.comp 读未绑定 SSBO 返回 0 → 伤害队列恒空 → 打不到 allay。
+  修复：两处补绑 + 防御性"消费即作废"（syntheticAttack 成功后清 hitKeySnapshot，防同一快照在
+  fence 滞后窗口内二次触发）。教训：新增任何 SSBO 绑定，grep 该 binding 常量的全部声明着色器，
+  逐一核对派发点的 bind 调用。
+
+### 审查修复三则（本轮）
+
+- **model.fsh 手动深度死分支删除**：`uManualDepth/uMainDepth` 全仓库无赋值/绑定方（L0 与 pack 合并
+  路径都走硬件深度），且该分支本身带潜伏 bug——`texture(uMainDepth, gl_FragCoord.xy)` 把窗口像素
+  坐标当归一化 UV 采样（无目标尺寸 uniform、无除法），启用即产生错误遮挡。整段删除；将来若真要
+  服务无深度附件目标，必须补 uTargetSize 并按 `gl_FragCoord.xy / uTargetSize` 重写。
+- **drawPass 无条件绑 BIND_INDIRECT**：textured.vsh 静态声明 indirect SSBO，而 compute 尾部
+  `unbindShaders()` 已清 0..17；此前仅 mode==2（ALPHA 牌面）补绑，mode==1（OPAQUE cutout）未绑——
+  uniform 分支虽不执行该 load，但属 #34 同类"声明即须绑定"隐患，现两模式均绑定（additive.vsh
+  不声明该块，多绑无害）。
+- **L0 四处 sizeEase 防御钳制**：`pow(life, 0)` 在 life=0 为 GLSL 未定义行为；pack 合并路径已有
+  `max(sizeEase, 0.001)`，additive.vsh / textured.vsh / model.vsh / hit.comp 四处对齐。
+  compileJava 通过（L1）；着色器改动待 F3+T / runClient L2 验证。

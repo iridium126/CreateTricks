@@ -81,7 +81,8 @@ void main() {
 
     float sizeStart = emitters.u[hb + 5u].z;
     float sizeEnd = emitters.u[hb + 5u].w;
-    float sizeEase = emitters.u[hb + 6u].x;
+    // pow(life, 0) at life=0 is undefined GLSL -- keep the exponent positive
+    float sizeEase = max(emitters.u[hb + 6u].x, 0.001);
     float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * p0.w;
     // above-feet body height = 2*size blocks exactly: MODEL_ABOVE_FEET is the
     // rest-pose model's above-feet height in blocks, derived from the bake

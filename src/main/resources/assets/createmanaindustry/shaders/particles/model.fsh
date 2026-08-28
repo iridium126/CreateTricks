@@ -13,12 +13,6 @@
 //       blend per pixel from BOTH sides.
 uniform sampler2D uSprite;
 uniform float uFadeDist;
-// Shader-pack hook fallback: when the target framebuffer carries no depth
-// attachment, hardware depth testing cannot occlude particles -- instead the
-// hook binds the MAIN render target's depth here and every fragment compares
-// against it manually (same technique as the mist volumetric pass).
-uniform sampler2D uMainDepth;
-uniform int uManualDepth;
 
 in vec2 vUv;
 in vec3 vColor;
@@ -44,11 +38,6 @@ const vec3 LIGHT1_DIR = vec3(-0.16169, 0.80845, 0.56594);
 const float BASE_BRIGHTNESS = 1.0;
 
 void main() {
-    if (uManualDepth == 1) {
-        float sceneDepth = texture(uMainDepth, gl_FragCoord.xy).r;
-        if (gl_FragCoord.z > sceneDepth + 1e-4)
-            discard;
-    }
     vec4 tex = texture(uSprite, vUv);
     float farFade = 1.0 - smoothstep(uFadeDist, uFadeDist + 24.0, vDist);
     // double-wound shells expose either winding; orient the normal against the

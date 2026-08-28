@@ -53,7 +53,8 @@ void main() {
     float life = clamp(p3.x / max(p3.y, 1e-5), 0.0, 1.0);
     float sizeStart = emitters.u[hb + 5u].z;
     float sizeEnd = emitters.u[hb + 5u].w;
-    float sizeEase = emitters.u[hb + 6u].x;
+    // pow(life, 0) at life=0 is undefined GLSL -- keep the exponent positive
+    float sizeEase = max(emitters.u[hb + 6u].x, 0.001);
     float size = mix(sizeStart, sizeEnd, pow(life, sizeEase)) * p0.w;
     float scale = (2.0 * size) / MODEL_ABOVE_FEET;
     float halfW = 0.175 * scale + HIT_INFLATE;

@@ -1012,6 +1012,11 @@ public final class CMIParticleEngine {
             GL20.glUseProgram(this.programs.reset());
             this.gpu.bindIndirect(2);
             this.gpu.bindCounter(3, slot);
+            // reset.comp also re-arms the hit query to MISS -- EVERY binding a
+            // pass declares must be bound at its dispatch (unbindShaders() has
+            // cleared 0..17 since last frame; an unbound write is silently
+            // dropped, which latched the hit key after its first real hit)
+            this.gpu.bindHit();
             GL43.glDispatchCompute(1, 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
 
@@ -1046,6 +1051,7 @@ public final class CMIParticleEngine {
             // swapped (good) frame, so gate compaction on THAT frame's slot.
             this.gpu.bindPrevCounter(ParticleBuffers.PREVCOUNTER_BINDING, this.lastGoodSlot);
             this.gpu.bindEmitters(5);
+            this.gpu.bindDamage(); // melee damage queue (update.comp scans it)
             if (this.collisionBake.ready()) {
                 this.collisionBake.bind(0);
                 this.gpu.bindBakeMeta();
@@ -1530,10 +1536,11 @@ public final class CMIParticleEngine {
             RenderSystem.depthMask(false);
         }
 
-        if (mode == 2) {
-            // textured.vsh mode 0 reads the ALPHA partition start from cmd[IDX_CNT_MODELOP]
-            this.gpu.bindIndirect(ParticleBuffers.INDIRECT_BB);
-        }
+        // textured.vsh declares the indirect SSBO unconditionally (mode 0 reads
+        // the ALPHA partition start from cmd[IDX_CNT_MODELOP]), while the
+        // compute phase's finally unbinds every SSBO base -- keep the declared
+        // binding valid in BOTH modes.
+        this.gpu.bindIndirect(ParticleBuffers.INDIRECT_BB);
         this.gpu.bindDrawIndirect();
         if (mode == 0)
             this.gpu.drawIndirect(0);
@@ -1621,7 +1628,12 @@ public final class CMIParticleEngine {
         if (clip.getType() != HitResult.Type.MISS
                 && clip.getLocation().distanceToSqr(eye) < eye.distanceToSqr(hitPos) - 1.0E-4)
             return false; // a block is closer than the allay: wall between
-        return syntheticAttack(mc, player, idx, hitPos);
+        boolean attacked = syntheticAttack(mc, player, idx, hitPos);
+        if (attacked)
+            // consume-once: never let one snapshot fire twice between fence
+            // refreshes (two rapid clicks must not double-hit one allay)
+            this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
+        return attacked;
     }
 
     /**

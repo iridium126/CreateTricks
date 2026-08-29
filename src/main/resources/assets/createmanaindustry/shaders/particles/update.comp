@@ -86,6 +86,13 @@ uniform int   uPlayerCount;
 // add spring acceleration and blend velocity -- positions keep moving
 // through the integrator, never teleport (see the design doc).
 layout(std430, binding = BIND_CORRECTION) readonly buffer CorrectionBuf { vec4 c[]; } correction;
+// Storm member identity -> pool-slot map, rebuilt EVERY frame by this pass:
+// each member present in the input pool writes map[memberIdx] = its INPUT
+// slot + 1 (0 = absent). The input slot is exactly what emit.comp's combat
+// styles resolve against in the SAME dispatch (they read the read pool), so
+// member-keyed origin tracking survives pool recompaction across frames.
+// Sized like the correction slots (2 vec4 there, 1 float here per slot).
+layout(std430, binding = BIND_MEMBERMAP) buffer MemberMapBuf { float m[]; } memberMap;
 uniform uint  uKillEmit;   // emitter id force-expired this frame (none = ~0u)
 uniform float uStormOmega; // SIGNED angular velocity rad/s (vortex mode; 0 = n/a)
 
@@ -194,6 +201,18 @@ void main() {
     if (eid == uKillEmit)
         return; // storm stopped: drop out of the compacted output immediately
     uint hb = eid * VEC4_PER_EMITTER;
+
+    // identity map write (see the buffer declaration). Header-flag gate
+    // matches gridbuild/stormpos/hit (the storm spec dedupes to its own
+    // emitter id, so every particle of a flagged emitter is a member); the
+    // capacity guard mirrors the correction slots. Written BEFORE any early
+    // return: even a corpse-expiring thread's entry stays factually correct
+    // for this dispatch (the corpse IS in the input pool at this slot).
+    if (emitters.u[hb + 18u].x > 0.5) {
+        uint mi = uint(p0.w + 0.5) - 1u;
+        if (mi < uCapacity)
+            memberMap.m[mi] = uintBitsToFloat(idx + 1u);
+    }
     float matId = emitters.u[hb + 7u].x;
     bool isModel = matId >= 1.5 && matId < 2.5;
 

@@ -197,6 +197,8 @@ public final class CMIParticleEngine {
     private final float[] emitLight = new float[ParticleBuffers.MAX_EMIT_COMMANDS];
     /** Storm member index base of each emit command (storm batch scheduling). */
     private final int[] emitMemberBase = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
+    /** Storm member key (memberIdx+1, 0 = legacy pool-index source) of each emit command. */
+    private final int[] emitMemberKey = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
 
     // ---- vanilla combat particles (crit / enchanted-hit / heart / poof) ----
     /**
@@ -205,9 +207,11 @@ public final class CMIParticleEngine {
      * per tick around its AABB (~25 accepted particles in total). The engine
      * re-sends one small {@code originRef} command per frame over the window;
      * emit.comp resolves the source allay's CURRENT pool position, so the
-     * stars track the knockback like vanilla. The window inherits the same
-     * index-shift exposure as the hit snapshot: storm stop / clear invalidate
-     * it immediately.
+     * stars track the knockback like vanilla. Storm sources carry their MEMBER
+     * identity and resolve through the identity map (rebuild per dispatch) —
+     * immune to pool recompaction; non-storm sources keep the pool index and
+     * inherit its one-frame-shift exposure. Storm stop / clear invalidate the
+     * window immediately (cleared map = absent entries = spawns dropped).
      */
     private static final class TrackingBurst {
         static final double DURATION = 0.15;
@@ -215,20 +219,23 @@ public final class CMIParticleEngine {
 
         final int emitId;
         final int sourceIdx;
+        /** Storm member identity (-1 = non-storm source); carries the ride across pool recompaction. */
+        final int memberIdx;
         final float light;
         double remaining = RATE * DURATION;
         double elapsed = 0;
         double acc = 0;
 
-        TrackingBurst(int emitId, int sourceIdx, float light) {
+        TrackingBurst(int emitId, int sourceIdx, int memberIdx, float light) {
             this.emitId = emitId;
             this.sourceIdx = sourceIdx;
+            this.memberIdx = memberIdx;
             this.light = light;
         }
     }
 
     /** One-shot combat burst (damage-indicator hearts), drained next compute. */
-    private record CombatBurst(int emitId, int sourceIdx, float light, int count) {
+    private record CombatBurst(int emitId, int sourceIdx, int memberIdx, float light, int count) {
     }
 
     private final List<TrackingBurst> trackings = new ArrayList<>();
@@ -529,6 +536,11 @@ public final class CMIParticleEngine {
                 // full restart: expire whatever storm generation is live
                 if (this.stormActive && this.stormEmitId >= 0)
                     this.stormKillEmitId = this.stormEmitId;
+                // identities may be re-derived against a new seed: stale
+                // identity -> slot entries must never serve member-keyed
+                // combat origins
+                if (this.initialized)
+                    this.gpu.clearMemberMap();
                 this.stormDead.clear();
                 if (deadBitmap != null) {
                     byte[] bm = deadBitmap;
@@ -571,6 +583,8 @@ public final class CMIParticleEngine {
                 // local dispersal; server state is not this side's business
                 if (this.stormActive && this.stormEmitId >= 0)
                     this.stormKillEmitId = this.stormEmitId;
+                if (this.initialized)
+                    this.gpu.clearMemberMap();
                 this.stormActive = false;
                 this.stormAuthority = false;
                 this.pendingStormSpawns = 0;
@@ -943,6 +957,10 @@ public final class CMIParticleEngine {
         // combat bursts reference pool indices; a pool reset shifts them all
         this.trackings.clear();
         this.combatBursts.clear();
+        // member-keyed bursts must never resolve a stale identity -> slot
+        // entry (close() frees the GPU first, hence the guard)
+        if (this.initialized)
+            this.gpu.clearMemberMap();
         if (this.pendingFence != 0) {
             GL32.glDeleteSync(this.pendingFence);
             this.pendingFence = 0;
@@ -1076,6 +1094,7 @@ public final class CMIParticleEngine {
                     this.emitOriginRef[entryCount] = 0f;
                     this.emitLight[entryCount] = 0f;
                     this.emitMemberBase[entryCount] = runStart;
+                    this.emitMemberKey[entryCount] = 0; // c.z unused by the storm spawn style
                     totalSpawn += runLen;
                     scheduled += runLen;
                     entryCount++;
@@ -1101,6 +1120,7 @@ public final class CMIParticleEngine {
             this.emitTranslucent[entryCount] = isTranslucent(b.spec);
             this.emitOriginRef[entryCount] = 0f;
             this.emitLight[entryCount] = 0f;
+            this.emitMemberKey[entryCount] = 0;
             totalSpawn += n;
             entryCount++;
         }
@@ -1119,6 +1139,7 @@ public final class CMIParticleEngine {
             this.emitTranslucent[entryCount] = false; // combat specs are OPAQUE
             this.emitOriginRef[entryCount] = (float) (cb.sourceIdx() + 1);
             this.emitLight[entryCount] = cb.light();
+            this.emitMemberKey[entryCount] = cb.memberIdx() + 1; // 0 = non-storm source
             totalSpawn += cb.count();
             entryCount++;
         }
@@ -1139,6 +1160,7 @@ public final class CMIParticleEngine {
                     this.emitTranslucent[entryCount] = false;
                     this.emitOriginRef[entryCount] = (float) (t.sourceIdx + 1);
                     this.emitLight[entryCount] = t.light;
+                    this.emitMemberKey[entryCount] = t.memberIdx + 1; // 0 = non-storm source
                     totalSpawn += n;
                     entryCount++;
                     t.remaining -= n;
@@ -1170,6 +1192,7 @@ public final class CMIParticleEngine {
             this.emitTranslucent[entryCount] = isTranslucent(s.spec);
             this.emitOriginRef[entryCount] = 0f;
             this.emitLight[entryCount] = 0f;
+            this.emitMemberKey[entryCount] = 0;
             totalSpawn += n;
             entryCount++;
         }
@@ -1235,8 +1258,10 @@ public final class CMIParticleEngine {
                 // b: emitterId, seed, prefix (exclusive), originRef (0 = absolute)
                 this.emitFront.put(this.emitIds[i]).put(seed).put((float) prefix).put(this.emitOriginRef[i]);
                 // c: spawn-time packed light (combat), storm member index base
-                // (storm style 3; combat styles read c.x only)
-                this.emitFront.put(this.emitLight[i]).put(this.emitMemberBase[i]).put(0f).put(0f);
+                // (storm style 3), combat member key (c.z: memberIdx+1, 0 =
+                // legacy pool-index source; consumed only by combat styles 1/2)
+                this.emitFront.put(this.emitLight[i]).put(this.emitMemberBase[i])
+                        .put((float) this.emitMemberKey[i]).put(0f);
                 // b.z carries the exclusive prefix offset so the shader can
                 // binary-search its command instead of scanning linearly
                 prefix += this.emitCounts[i];
@@ -1339,6 +1364,7 @@ public final class CMIParticleEngine {
             this.gpu.bindDamage(); // melee damage queue (update.comp scans it)
             this.gpu.bindPlayers(); // all-player repulsion source
             this.gpu.bindCorrections(); // network correction slots (storm sync)
+            this.gpu.bindMemberMap(); // member identity -> pool-slot map (this pass rebuilds it)
             if (this.collisionBake.ready()) {
                 this.collisionBake.bind(0);
                 this.gpu.bindBakeMeta();
@@ -1373,6 +1399,7 @@ public final class CMIParticleEngine {
                 this.gpu.bindCounter(3, slot);
                 this.gpu.bindEmitBuffer(4, ringId);
                 this.gpu.bindEmitters(5);
+                this.gpu.bindMemberMap(); // combat styles resolve member-keyed origins through it
                 setUIntUniform(this.programs.emit(), "uTotalSpawn", totalSpawn);
                 setUIntUniform(this.programs.emit(), "uEmitCount", entryCount);
                 setUIntUniform(this.programs.emit(), "uCapacity", cap);
@@ -2102,21 +2129,24 @@ public final class CMIParticleEngine {
         // sendParticles (f8 > 2.0 hearts, count = f8·0.5). Spawns resolve
         // against the GPU pool at the next compute pass, at the light sampled
         // here — allays are not real entities, so vanilla draws none of these.
+        // Storm members ride their MEMBER identity across pool recompaction
+        // (the map in emit.comp resolves it per dispatch); non-storm sources
+        // keep the legacy pool-index path.
         float light = lightSample(mc.level, hitPos);
         if (crit) {
             int cid = ensureCombatEmitter(CombatSpecs.CRIT);
             if (cid >= 0)
-                this.trackings.add(new TrackingBurst(cid, idx, light));
+                this.trackings.add(new TrackingBurst(cid, idx, memberIdx, light));
         }
         if (enchBonus > 0.0F) {
             int mid = ensureCombatEmitter(CombatSpecs.MAGIC);
             if (mid >= 0)
-                this.trackings.add(new TrackingBurst(mid, idx, light));
+                this.trackings.add(new TrackingBurst(mid, idx, memberIdx, light));
         }
         if (total > 2.0F) {
             int hid = ensureCombatEmitter(CombatSpecs.HEART);
             if (hid >= 0)
-                this.combatBursts.add(new CombatBurst(hid, idx, light, (int) (total * 0.5F)));
+                this.combatBursts.add(new CombatBurst(hid, idx, memberIdx, light, (int) (total * 0.5F)));
         }
 
         // vanilla knockback (LivingEntity.knockback, airborne target: y is

@@ -73,7 +73,7 @@ repositories {
         }
     }
     ivy {
-        url = uri("https://ci.blamejared.com/job/petrakat/job/Hexcasting/job/1.21/38/artifact/Neoforge/build/libs")
+        url = uri("https://ci.blamejared.com/job/petrakat/job/Hexcasting/job/1.21/49/artifact/Neoforge/build/libs")
         
         patternLayout {
             artifact "[artifact].[ext]"
@@ -216,7 +216,7 @@ dependencies {
     compileOnly "curse.maven:iris-veil-compat-1541252:8280410"
     implementation "mezz.jei:jei-${minecraft_version}-neoforge:${jei_version}"
 
-    implementation "hexcasting:hexcasting-neoforge-1.21.1-0.12.0-devel-pre-38@jar"
+    implementation "hexcasting:hexcasting-neoforge-1.21.1-0.12.0-devel-pre-49@jar"
     localRuntime "paucal:paucal-0.7.1-pre-27+1.21.1-neoforge@jar"
     localRuntime "curse.maven:caelus-308989:5694215"
     implementation "curse.maven:inline-971167:6556868"

@@ -153,6 +153,19 @@ public final class ParticleBuffers {
     public static final int CORRECTION_BB = 19;
     /** Authority readback staging (see stormpos.comp): uint count + entry floats. */
     public static final int STORMPOS_BB = 20;
+    /**
+     * Storm member identity -> pool-slot map, rebuilt by update.comp every
+     * frame (slot+1 per member present in the input pool, 0 = absent; sized
+     * cap * 4 B like the correction slots). Combat spawn commands carry
+     * memberIdx+1 in command word c.z and resolve their origin source through
+     * this map (emit.comp styles 1/2), so origin tracking survives pool
+     * recompaction across frames — the last pool-index consumer that outlives
+     * a frame goes member-addressed, matching the damage queue / corrections /
+     * hit reporting. Cleared on every generation-killing storm transition and
+     * on pool resets; identity &gt;= capacity can never hold a slot (same
+     * guard as the correction slots).
+     */
+    public static final int MEMBERMAP_BB = 21;
     /** Players fed to the storm repulsion / readback passes. */
     public static final int MAX_STORM_PLAYERS = 16;
     /** Entries per authority readback snapshot (nearest-to-players cap). */
@@ -260,6 +273,7 @@ public final class ParticleBuffers {
     private int playersSSBO = -1;
     private int correctionSSBO = -1;
     private int stormPosSSBO = -1;
+    private int memberMapSSBO = -1;
     /** Static element indices for the MODEL sub-draws (bound into the VAO). */
     private int modelIndexBuffer = -1;
     private int vao = -1;
@@ -390,6 +404,8 @@ public final class ParticleBuffers {
         // Authority readback staging: uint count + capped entry floats.
         this.stormPosSSBO = createBuffer(
                 4L + (long) STORMPOS_CAP * STORMPOS_ENTRY_FLOATS * 4L, null);
+        // Storm member identity -> pool-slot map (see MEMBERMAP_BB).
+        this.memberMapSSBO = createBuffer((long) cap * 4L, null);
 
         // initial indirect payload: one command per slot (6 verts / 0 inst
         // each; the 5th uint pads arrays commands to the uniform 20 B stride)
@@ -726,6 +742,30 @@ public final class ParticleBuffers {
         GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.tmp4);
     }
 
+    /** Binds the storm member identity map at its fixed binding. */
+    public void bindMemberMap() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, MEMBERMAP_BB, this.memberMapSSBO);
+    }
+
+    /**
+     * Zeroes the whole member identity map. Every generation-killing storm
+     * transition (ACTIVATE restart / DEACTIVATE / STOP) and every pool reset
+     * must call this: identities reshuffle or vanish, and a stale entry would
+     * resolve a member-keyed combat origin onto whatever now occupies the old
+     * slot.
+     */
+    public void clearMemberMap() {
+        if (this.memberMapSSBO <= 0 || this.capacity <= 0)
+            return;
+        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            java.nio.IntBuffer zero = stack.mallocInt(1);
+            zero.put(0).flip();
+            GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.memberMapSSBO);
+            GL43.glClearBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, GL30.GL_R32UI,
+                    0, (long) this.capacity * 4L, GL30.GL_RED_INTEGER, GL11.GL_UNSIGNED_INT, zero);
+        }
+    }
+
     /**
      * Reads one completed readback snapshot (fence-covered — same stall
      * discipline as {@link #readbackCounts(int)}): returns a float array of
@@ -982,6 +1022,8 @@ public final class ParticleBuffers {
             GL15.glDeleteBuffers(this.correctionSSBO);
         if (this.stormPosSSBO > 0)
             GL15.glDeleteBuffers(this.stormPosSSBO);
+        if (this.memberMapSSBO > 0)
+            GL15.glDeleteBuffers(this.memberMapSSBO);
         for (int[] t : this.mergedTbos)
             if (t[0] > 0)
                 GL11.glDeleteTextures(t[0]);

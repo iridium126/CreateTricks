@@ -110,7 +110,7 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 - 成员 i 的种子 = **宽跨度双通道组合**：`s0 = hash(seed + 31.7)`；`q = i·0.6123 + 0.7 + s0·97`（跨度 ~8 万，`hash` 首步 `fract(p·0.1031)` 折叠 ~8285 次）；`mseed = hash(q)·0.618 + hash(q·7.31)·0.382`。
   - **教训（实测前修复）**：初版 `hash(hash(i·0.6123+0.7) + stormSeed·17.17)` 有两处灾难——① `stormSeed·17.17` 最大 ~2.9e8，float 该量级 ULP = 32，加法直接吞掉 [0,1) 的成员哈希：**94% 的种子下全体成员同一身份 → 单点堆叠**，且分离力的 `d² > 1e-8` 守卫让重合成员受力恒等（位置对称的力场永不破缺），堆叠自锁；② `cmiHash1` 输出仅 ~13.7K 有效桶（[0,1) 级输入首步不折叠、雪崩不足），单次哈希撑不起 131072 成员。修复经严格 IEEE 模拟量化验证：2048 成员全种子全离散，131072 时 ~95%（残余两两成对，视觉不可辨）。
   - **FMA 纪律**：派生链每条语句都是单次乘/加，无任何 `a*b+c` 形式——`a*b+c` 可被合法收缩为 FMA，跨厂商舍入差 1 ULP 经哈希雪崩放大成不同身份（~8e4 量级 1 ULP = 0.0078）。`cmiHash1` 本体（`p *= p + 33.33` 是 `a*(b+c)` 形式）天然安全。
-- 身份编码进 **p0.w**（= memberIdx + 1，0 不可能出现）：MODEL 粒子该槽位原为恒 1.0 的尺寸乘数，风暴成员征用后，**全部尺寸消费点**改由 emitter 头的风暴槽 `18.x > 0.5` 判定常量 1.0 乘数——共 5 处：`keygen.comp`、`model.vsh`、`hit.comp`、`update.comp`（死亡 poof 的 poof 尺寸）、`ShaderPackProgramCompiler`（光影包合并路径顶点源）。
+- 身份编码进 **p0.w**（= memberIdx + 1，0 不可能出现）：MODEL 粒子该槽位原为恒 1.0 的尺寸乘数，风暴成员征用后，**全部尺寸消费点**改由 emitter 头的风暴槽 `18.x > 0.5` 判定常量 1.0 乘数——共 6 处：`keygen.comp`、`model.vsh`、`hit.comp`、`update.comp`（死亡 poof 的 poof 尺寸）、`emit.comp`（`sourceMetrics`，combat 粒子以风暴成员为 originRef 源——实测前修复轮漏掉此处，暴击星/伤害红心的出生偏移按 memberIdx+1 缩放、生成在几十上百格外不可见，已补）、`ShaderPackProgramCompiler`（光影包合并路径顶点源）。
   - 身份不受池压缩影响（池索引每帧 `atomicAdd` 重排，身份不重排）。
 
 ### 5.2 共享时钟
@@ -145,6 +145,18 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 - `hitSSBO` 从 8 B 扩到 16 B（uvec4）：`{打包距离+池索引, HP 位, 成员身份, unused}`——池索引用于战斗粒子的 originRef 追踪，**成员身份用于服务器上报**。`capture.comp` 发布 z 字（p0.w ≥ 1.5 ⇒ 身份，否则 HIT_MISS = 非风暴走遗留路径）。命中键的距离位：**1/32 格步长 × 10 位（上限 31.99 格）**——覆盖 Hexcasting 32 格施法范围等模组 reach（旧 1/256 步长上限 3.999，超界命中全部折叠成同键、最近目标退化为池序号最小者）；引擎解包（`handlePlayerAttack`）与打包同一步长，`capture.comp` 不消费距离位。
 - 读回节奏：快照间隔由 `stormCorrectionHz` 决定，fence 零停（与计数读回同一 fence、同一轮询点）。
 - `syntheticAttack` 分流：风暴成员 → **只上报**（`ServerboundStormHitPacket`，含命中点相对锚点坐标），本地不落伤；非风暴 MODEL → 遗留本地队列。战斗粒子/音效本地照常（攻击者即时反馈，与原版一致）。
+
+### 5.7a combat 源的成员身份寻址（identity → slot 映射，池索引漂移修复）
+
+combat 爆发（追踪星 0.15 s 骑乘窗口 + 一次性红心）的出生源原以**命中查询时的池索引**寻址。深入核查后的暴露面：红心在常态下精确（下一次 emit 解析读的读池 = 命中查询扫描的那一代池），但 ① 追踪星跨越 ~9 次 emit 派发（60 fps 下 0.15 s），第 2 次起每次解析的都是重新压缩过的池——环境粒子周转（爆发/流/poof 过期）即令风暴成员索引每秒位移数槽，击杀（尸体 1 s 后压出）加剧；② GPU fence 滞后帧（重负载轮询超时保留 k 帧前快照）下连红心也会解析到错误槽。修复沿用伤害队列/修正槽/命中上报已有的"成员身份寻址"惯例，补上最后一个还在用池索引的跨帧消费者：
+
+- **`MEMBERMAP_BB`(21)**：成员身份 → 池槽位映射（cap × 4 B，值 = 槽位+1，0 = 缺席），与修正槽同尺寸惯例、同越界守卫（`memberIdx < uCapacity`）。显存 +4 B × 池容量。
+- **写入侧（update.comp）**：每帧重建——输入池中每个风暴成员线程（emitter 头风暴槽 `18.x > 0.5` 门控，与 gridbuild/stormpos/hit 同一惯例）写 `map[memberIdx] = 输入槽 idx+1`。**关键：写输入槽而非压缩后的输出槽**——同一次派发中 emit.comp 解析读的正是这代输入池，逐帧推导保证映射与解析池永远同代。
+- **解析侧（emit.comp 样式 1/2）**：命令字 **c.z = memberIdx+1**（对样式 1/2 空闲；0 = 遗留池索引路径，非风暴调试粒子继续走 `originRef`）。成员键 ≥1 时经映射 O(1) 解析；**缺席条目（未生成/LRU 逐出/越界）丢弃该颗生成**，绝不落到陈旧槽位上的无关粒子。
+- **清零点**：ACTIVATE（新种子重排身份）/DEACTIVATE/STOP（世代结束）、`resetPoolState()`（clear/换维度/池清空；`initialized` 守卫——close 先 free GPU）。UPDATE 不清（身份保留）。
+- **死亡时序界（无需排空守卫）**：被击杀成员的尸体在池内存活 1 s，映射条目此期间保持有效且事实正确——致命一击自己的追踪星（点击时已入队，窗口 0.15 s ≪ 尸体窗 1 s）继续骑在尸体上收敛于击杀点，视觉自然；尸体压出后不存在任何仍活跃的爆发引用该身份。
+- **性能账目**：每风暴成员每帧 +1 次 4 B 写（13 万成员 ≈ 0.5 MB/帧，噪声级）；combat 生成时 +1 次 O(1) 读。借此核查了全部身份相关路径的运行时成本——伤害队列扫描（O(N×Q) 但被"非空队列"门控，空帧零成本，有条目帧为 GPU 缓存友好的小缓冲广播读）、修正槽/boids（已预算封顶）、stormpos/hit（廉价测试 + 命中才原子）——**均无值得现在动手的优化点**。
+- **残留边缘（记录在案）**：LRU 逐出的**存活**成员在自愈重滴入前，其映射条目为缺席 → 该成员身上的星/心丢弃一帧（缺席即丢弃语义保证绝不错位）；非风暴 MODEL 调试粒子保留池索引路径（数量个位数，无漂移场景）。
 
 ### 5.8 客户端状态机（`applyStormState`）
 
@@ -186,7 +198,7 @@ radius=8、ω=0.625（默认）→ 5 ≤ 6 不触发；radius=8 + ω=3 → ω_ef
 | 风暴启动/激活 | ~18 B + 死亡位图（满血 0 B；击杀 1 万 ≈ 1.2 KB，一次性） |
 | 服务器 CPU | 每 20 tick 一次玩家距离扫描 + 稀疏 HP 再生；**无物理、无粒子**——无 GPU 服务器完全胜任 |
 | 服务器存档 | 风暴定义 ~100 B + 死亡位图 ~12.5 B/千死员 + 稀疏 HP |
-| 客户端显存新增 | 修正槽 2 MB（200 万池容量时；身份寻址稀疏使用）+ 玩家/读回暂存 ~10 KB |
+| 客户端显存新增 | 修正槽 2 MB（200 万池容量时；身份寻址稀疏使用）+ 玩家/读回暂存 ~10 KB + 成员身份映射 4 B × 池容量（每帧重建，见 §5.7a） |
 
 ## 8. 明确不做 / 已知限制（记录在案）
 
@@ -222,12 +234,12 @@ radius=8、ω=0.625（默认）→ 5 ≤ 6 不触发；radius=8 + ω=3 → ω_ef
 | `client/particles/storm/StormClientHandler.java` | 新增 — 客户端包接收端 |
 | `shaders/particles/stormpos.comp` | 新增 — 权威读回 pass |
 | `CMIAttachments.java` / `CreateManaIndustry.java` / `ServerConfig.java` | 修改 — 注册/配置 |
-| `client/particles/engine/CMIParticleEngine.java` | 修改 — 状态 API/时钟/调度/双键伤害/双索引命中/修正层/权威读回/ω_eff 钳制/onLevelChanged 同步重置 |
-| `client/particles/engine/ParticleBuffers.java` | 修改 — 3 新 SSBO + 16 B hit + 上传/读回 |
+| `client/particles/engine/CMIParticleEngine.java` | 修改 — 状态 API/时钟/调度/双键伤害/双索引命中/修正层/权威读回/ω_eff 钳制/onLevelChanged 同步重置/combat 爆发携带成员身份 + 映射清零（§5.7a） |
+| `client/particles/engine/ParticleBuffers.java` | 修改 — 4 新 SSBO（含 MEMBERMAP_BB）+ 16 B hit + 上传/读回/映射清零 |
 | `client/particles/engine/CollisionBake.java` | 修改 — `reset()`（维度切换清烘焙槽位与在途构建） |
 | `client/particles/engine/ParticlePrograms.java` | 修改 — stormpos 程序 + prelude 常量 |
 | `client/particles/allaystorm/AllayStormSpec.java` | 修改 — spawnStyle 3 + seed 掩码 |
 | `client/particles/command/CMIParticleCommand.java` | 修改 — allaystorm 子树迁出 |
 | `client/particles/shaderpack/ShaderPackProgramCompiler.java` | 修改 — 风暴尺寸守卫 |
 | `CreateManaIndustryClient.java` | 修改 — LevelEvent.Unload/Load 同步接 `onLevelChanged()`（旧为排队 clear，存在 ACTIVATE 抹除竞态） |
-| `shaders/particles/{reset,emit,update,keygen,hit,capture}.comp`、`model.vsh` | 修改 — 身份/双键/排斥/修正/解析出生/uvec4/伺服/1-32 量化 |
+| `shaders/particles/{reset,emit,update,keygen,hit,capture}.comp`、`model.vsh` | 修改 — 身份/双键/排斥/修正/解析出生/uvec4/伺服/1-32 量化；update.comp 每帧重建身份→槽位映射、emit.comp combat 成员键解析（§5.7a） |

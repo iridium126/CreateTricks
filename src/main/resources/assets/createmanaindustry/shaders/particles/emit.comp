@@ -25,13 +25,20 @@ layout(local_size_x = 64) in;
 // Flat command view, 12 floats per entry (EMIT_ENTRY_FLOATS):
 //   a: origin.xyz, count              (offsets 0..3)
 //   b: emitterId, seed, prefixOffset (exclusive), originRef (offsets 4..7)
-//   c: lightPacked, memberIdxBase (storm style 3), 0, 0 (offsets 8..11)
+//   c: lightPacked, memberIdxBase (storm style 3), memberKey (combat styles:
+//      memberIdx+1 -> identity-map source resolution, 0 = legacy originRef),
+//      0 (offsets 8..11)
 layout(std430, binding = BIND_POOL_WRITE) buffer ParticleWrite { vec4 data[]; } writeBuf;
 // Read pool: combat styles resolve originRef against the committed pool.
 layout(std430, binding = BIND_POOL_READ) readonly buffer ParticleRead { vec4 data[]; } readBuf;
 layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
 layout(std430, binding = BIND_EMITCMD) readonly buffer EmitCmdBuf { float entries[]; } emitCmd;
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+// Storm member identity -> pool-slot map (write side: update.comp, THIS same
+// dispatch). Combat styles resolve member-keyed origins through it: command
+// word c.z carries memberIdx+1 (0 = legacy pool-index addressing), so a hit's
+// origin tracking survives pool recompaction across frames.
+layout(std430, binding = BIND_MEMBERMAP) readonly buffer MemberMapBuf { float m[]; } memberMap;
 
 uniform uint uTotalSpawn;
 uniform uint uEmitCount;
@@ -77,7 +84,12 @@ void sourceMetrics(uint srcIdx, out vec3 feet, out float width, out float height
     vec4 sp3 = readBuf.data[sb + 3u];
     uint seid = floatBitsToUint(sp3.w);
     uint shb = seid * VEC4_PER_EMITTER;
-    float ssize = emitters.u[shb + 5u].w * sp0.w;
+    // storm members carry their IDENTITY in p0.w (memberIdx+1) — the size
+    // multiplier is the constant 1.0 then (header storm slot 18.x), same
+    // guard as hit.comp/model.vsh/update.comp's death chain; without it the
+    // combat spawn offsets scale with the member index
+    float pmul = emitters.u[shb + 18u].x > 0.5 ? 1.0 : sp0.w;
+    float ssize = emitters.u[shb + 5u].w * pmul;
     float sscale = (2.0 * ssize) / MODEL_ABOVE_FEET;
     feet = sp0.xyz;
     width = 0.35 * sscale;  // vanilla Allay bbWidth × render scale
@@ -187,10 +199,31 @@ void main() {
         return;
     }
     if (spawnStyle > 0.5) {
-        if (originRef < 1.0)
-            return; // malformed combat command: drop, never fall to classic
         // ---- combat styles: origin resolves against the committed pool ----
-        uint srcIdx = uint(originRef) - 1u;
+        // c.z = memberIdx+1 selects MEMBER addressing through the identity
+        // map (rebuilt by update.comp this same dispatch, so the resolved
+        // slot always matches the read pool being spawned into): immune to
+        // recompaction between the hit snapshot and multi-frame tracking
+        // rides, and to stale snapshots under GPU fence lag. 0 = the legacy
+        // pool-index path (non-storm MODEL debug particles). An absent entry
+        // (member not in this generation's pool: not yet spawned, LRU-evicted
+        // or identity beyond capacity) DROPS the spawn instead of resolving
+        // onto whatever now occupies a stale slot.
+        uint srcIdx;
+        float memberKey = emitCmd.entries[eb + 10u];
+        if (memberKey > 0.5) {
+            uint mi = uint(memberKey) - 1u;
+            if (mi >= uCapacity)
+                return;
+            uint slot = floatBitsToUint(memberMap.m[mi]);
+            if (slot == 0u)
+                return;
+            srcIdx = slot - 1u;
+        } else {
+            if (originRef < 1.0)
+                return; // malformed combat command: drop, never fall to classic
+            srcIdx = uint(originRef) - 1u;
+        }
         vec3 feet;
         float sw, sh;
         sourceMetrics(srcIdx, feet, sw, sh);

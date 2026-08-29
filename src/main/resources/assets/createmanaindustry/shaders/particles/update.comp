@@ -125,10 +125,47 @@ const int   STORM_MAX_VISITS = 256;
 bool solidAt(vec3 wp, vec3 mOrigin, int slice) {
     vec3 rel = wp - mOrigin;
     ivec3 tc = ivec3(floor(rel + vec3(0.0001)));
-    if (tc.x < 0 || tc.x >= SX || tc.y < 0 || tc.y >= SY || tc.z < 0 || tc.z >= SZ)
-        return false;
-    tc.z += slice * SZ;
-    return texelFetch(uCollision, tc, 0).r > 0.5;
+    if (tc.x >= 0 && tc.x < SX && tc.y >= 0 && tc.y < SY && tc.z >= 0 && tc.z < SZ) {
+        tc.z += slice * SZ;
+        return texelFetch(uCollision, tc, 0).r > 0.5;
+    }
+    // SEAM FALLBACK: the point lies outside this slice — almost always a
+    // NEIGHBOUR quadrant of the storm's 2x2 bake grid, whose seam runs
+    // through the storm anchor (an integer BlockPos, so the seam coincides
+    // with a block seam on the ground). Out-of-bounds used to read as FREE,
+    // which LIES at seams: an embedded particle's escape scan then "exited"
+    // sideways into the neighbour floor block across the seam (the scan's
+    // +x probe at distance 1 tied with the true free up-exit and won by
+    // check order), and the escape ping-ponged the particle between the two
+    // floor blocks astride the seam, one teleport per frame — the reported
+    // flicker. Test the slice that actually CONTAINS the point instead.
+    // Cost: the hot sweep path pays the meta loop only within ~1 block of
+    // the two seam lines (or on genuine escape scans); everything else hits
+    // the fast path above.
+    for (int i = 0; i < BAKE_SLICES; i++) {
+        vec4 meta = bakeMeta.m[i];
+        if (meta.w < 0.5)
+            continue;
+        vec3 nrel = wp - meta.xyz;
+        ivec3 ntc = ivec3(floor(nrel + vec3(0.0001)));
+        if (ntc.x < 0 || ntc.x >= SX || ntc.y < 0 || ntc.y >= SY || ntc.z < 0 || ntc.z >= SZ)
+            continue;
+        ntc.z += i * SZ;
+        if (texelFetch(uCollision, ntc, 0).r > 0.5)
+            return true;
+    }
+    return false; // outside every baked volume: no collision (honest)
+}
+
+// First FREE voxel along dir from pos, in whole-voxel steps (1-based
+// distance), or 0.0 when every voxel within maxVox is solid. Stepping
+// outside the baked volume reads as free — there is no collision there.
+float escapeScan(vec3 pos, vec3 mOrigin, int slice, vec3 dir, int maxVox) {
+    for (int i = 1; i <= maxVox; i++) {
+        if (!solidAt(pos + dir * float(i), mOrigin, slice))
+            return float(i);
+    }
+    return 0.0;
 }
 
 vec2 cmiGauss2(float s) {
@@ -549,48 +586,163 @@ void main() {
         }
         if (slice >= 0) {
             swept = true;
-            // Each probe resolves one texel, so a single test move larger than
-            // ~1 block tunnels straight through a thin wall AND strands the
-            // particle inside it (every neighbour then reads solid). Split the
-            // frame move into <= half-voxel substeps: storm members capped at
-            // STORM_MAX_SPEED over the clamped 0.25 s worst-case frame travel
-            // up to 1.5 blocks. Ordinary speeds keep steps at exactly 1.
-            float span = max(abs(vel.x), max(abs(vel.y), abs(vel.z))) * uDt;
-            int steps = 1 + int(clamp(span / 0.5, 0.0, 15.0));
-            float sdt = uDt / float(steps);
-            for (int si = 0; si < steps; si++) {
-                float sx = vel.x * sdt;
-                if (sx != 0.0) {
-                    if (solidAt(pos + vec3(sx, 0.0, 0.0), mOrigin, slice))
-                        vel.x = 0.0;
-                    else
-                        pos.x += sx;
-                }
-                float sy = vel.y * sdt;
-                if (sy != 0.0) {
-                    if (solidAt(pos + vec3(0.0, sy, 0.0), mOrigin, slice)) {
-                        vel.y = 0.0;
-                        if (sy < 0.0) {
-                            landed = true;
-                            // if the blocked step's target voxel is the voxel
-                            // the particle already sits in (spawned inside a
-                            // block), pop it up onto that voxel's top face
-                            float top = floor(pos.y + sy + 0.0001) + 1.0;
-                            pos.y = max(pos.y, top);
-                        }
-                    } else {
-                        pos.y += sy;
+            // ESCAPE: a particle sitting INSIDE a solid voxel used to be stuck
+            // forever — the per-axis sweep zeroed every move, and the landed
+            // pop-up below only fires on a BLOCKED DOWNWARD step, which a
+            // zero-gravity storm member never takes. Embedding happens when
+            // the collision volume APPEARS around a free-flying particle
+            // (storm activation while the quadrants still build, a block
+            // placed onto a member, coverage-boundary re-entry). The escape
+            // OWNS this frame's position update (the sweep below is skipped —
+            // same "collision owns the move" contract as always) and exits
+            // through the nearest opening:
+            //   1. ENTRY AXIS first: scan opposite the DOMINANT velocity axis
+            //      (back the way the particle came); a free voxel within 8
+            //      wins outright and no other face is scanned.
+            //   2. otherwise scan all six directions and take the NEAREST
+            //      free voxel.
+            //   3. no opening within 8 anywhere: bounded up-rise (deep burial
+            //      continues next frame).
+            // Exiting zeroes ONLY the exit-axis velocity component (vanilla
+            // axis-wise collision response — tangential motion survives; the
+            // entry-axis component would re-embed the particle). Resting
+            // particles are never touched — their positions sit on voxel top
+            // faces, which the +0.0001 epsilon in solidAt reads as the free
+            // voxel above. Steady-state cost: one texel fetch per particle
+            // per frame; the scans only run on genuine embeds.
+            bool insideSolid = solidAt(pos, mOrigin, slice);
+            if (insideSolid) {
+                vec3 escDir = vec3(0.0);
+                float escDist = 0.0;
+                if (dot(vel, vel) > 1e-6) {
+                    vec3 nav = -vel;
+                    vec3 d1 = abs(nav.x) >= abs(nav.y) && abs(nav.x) >= abs(nav.z)
+                            ? vec3(sign(nav.x), 0.0, 0.0)
+                            : (abs(nav.y) >= abs(nav.z)
+                                    ? vec3(0.0, sign(nav.y), 0.0)
+                                    : vec3(0.0, 0.0, sign(nav.z)));
+                    float dist = escapeScan(pos, mOrigin, slice, d1, 8);
+                    if (dist > 0.0) {
+                        escDir = d1;
+                        escDist = dist;
                     }
                 }
-                float sz = vel.z * sdt;
-                if (sz != 0.0) {
-                    if (solidAt(pos + vec3(0.0, 0.0, sz), mOrigin, slice))
-                        vel.z = 0.0;
-                    else
-                        pos.z += sz;
+                if (escDist == 0.0) {
+                    float best = 1e9;
+                    for (int d = 0; d < 6; d++) {
+                        vec3 dir = vec3(0.0);
+                        float sgn = (d & 1) == 0 ? 1.0 : -1.0;
+                        int axis = d >> 1;
+                        if (axis == 0)
+                            dir.x = sgn;
+                        else if (axis == 1)
+                            dir.y = sgn;
+                        else
+                            dir.z = sgn;
+                        float dist = escapeScan(pos, mOrigin, slice, dir, 8);
+                        if (dist > 0.0 && dist < best) {
+                            best = dist;
+                            escDir = dir;
+                        }
+                    }
+                    if (best < 1e8)
+                        escDist = best;
                 }
-                if (landed && collideMode > 1.5)
-                    break; // dying leaf: no need to keep sweeping this frame
+                if (escDist > 0.0) {
+                    pos += escDir * escDist;
+                    // vanilla axis-wise response: only the exit axis stops
+                    if (escDir.x != 0.0)
+                        vel.x = 0.0;
+                    else if (escDir.y != 0.0)
+                        vel.y = 0.0;
+                    else
+                        vel.z = 0.0;
+                } else {
+                    // no opening within 8 voxels anywhere (deep burial):
+                    // bounded up-rise, continues next frame
+                    float risen = 0.0;
+                    do {
+                        pos.y += 0.5;
+                        risen += 0.5;
+                    } while (risen < 4.0 && solidAt(pos, mOrigin, slice));
+                }
+            }
+            if (!insideSolid) {
+                // Each probe resolves one texel, so a single test move larger
+                // than ~1 block tunnels straight through a thin wall AND
+                // strands the particle inside it (every neighbour then reads
+                // solid). Split the frame move into <= half-voxel substeps:
+                // storm members capped at STORM_MAX_SPEED over the clamped
+                // 0.25 s worst-case frame travel up to 1.5 blocks. Ordinary
+                // speeds keep steps at exactly 1.
+                // MODEL particles additionally collide as their vanilla AABB
+                // (EntityType ALLAY: sized 0.35 x 0.6) — the test point leads
+                // the move by the half-width horizontally (0.175: the model
+                // surface just touches the wall face instead of overlapping
+                // it) and by the full height upward (0.6: the HEAD is tested —
+                // a feet-only check never sees a ceiling); downward never
+                // leads (the feet ARE the box bottom and land on the floor).
+                // Sprites keep the plain point test. The lead shifts the whole
+                // substep probe line by a constant, so consecutive samples
+                // stay one substep apart (< 1 voxel — no tunneling).
+                float marginXZ = isModel ? 0.175 : 0.0;
+                float marginYUp = isModel ? 0.6 : 0.0;
+                float span = max(abs(vel.x), max(abs(vel.y), abs(vel.z))) * uDt;
+                int steps = 1 + int(clamp(span / 0.5, 0.0, 15.0));
+                float sdt = uDt / float(steps);
+                for (int si = 0; si < steps; si++) {
+                    float sx = vel.x * sdt;
+                    if (sx != 0.0) {
+                        float probe = sx + (sx > 0.0 ? marginXZ : -marginXZ);
+                        if (solidAt(pos + vec3(probe, 0.0, 0.0), mOrigin, slice))
+                            vel.x = 0.0;
+                        else
+                            pos.x += sx;
+                    }
+                    float sy = vel.y * sdt;
+                    if (sy != 0.0) {
+                        // Up-moves on MODEL particles test the head at BOTH
+                        // ends of its substep path (pos+0.6 and pos+sy+0.6):
+                        // the head's start can already sit inside a ceiling
+                        // reached HORIZONTALLY (x/z probes only test the feet
+                        // row), and a single end-of-move probe 0.6 ahead would
+                        // then jump clean over a 1-block ceiling (0.5 substep
+                        // + 0.6 lead > 1 voxel). Segment ends ≤ 0.5 apart
+                        // cannot straddle a 1-thick solid span, so both ends
+                        // together are airtight. Feet-after is tested first
+                        // for every material (a ledge below the head path is
+                        // invisible to the head probes); sprites never pay the
+                        // two extra fetches (marginYUp == 0 short-circuits).
+                        bool blockedY = solidAt(pos + vec3(0.0, sy, 0.0), mOrigin, slice);
+                        if (!blockedY && sy > 0.0 && marginYUp > 0.0) {
+                            blockedY = solidAt(pos + vec3(0.0, marginYUp, 0.0), mOrigin, slice)
+                                    || solidAt(pos + vec3(0.0, sy + marginYUp, 0.0), mOrigin, slice);
+                        }
+                        if (blockedY) {
+                            vel.y = 0.0;
+                            if (sy < 0.0) {
+                                landed = true;
+                                // if the blocked step's target voxel is the voxel
+                                // the particle already sits in (spawned inside a
+                                // block), pop it up onto that voxel's top face
+                                float top = floor(pos.y + sy + 0.0001) + 1.0;
+                                pos.y = max(pos.y, top);
+                            }
+                        } else {
+                            pos.y += sy;
+                        }
+                    }
+                    float sz = vel.z * sdt;
+                    if (sz != 0.0) {
+                        float probe = sz + (sz > 0.0 ? marginXZ : -marginXZ);
+                        if (solidAt(pos + vec3(0.0, 0.0, probe), mOrigin, slice))
+                            vel.z = 0.0;
+                        else
+                            pos.z += sz;
+                    }
+                    if (landed && collideMode > 1.5)
+                        break; // dying leaf: no need to keep sweeping this frame
+                }
             }
         }
     }

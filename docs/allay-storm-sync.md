@@ -165,7 +165,9 @@ combat 爆发（追踪星 0.15 s 骑乘窗口 + 一次性红心）的出生源�
 - **DEACTIVATE / STOP**：本地驱散（kill 路径），服务器状态非本侧业务。
 - **维度切换 / 登录登出的同步重置**：`LevelEvent.Unload/Load`（客户端自己的 ClientLevel；NeoForge 在 `Minecraft.setLevel` 内、**加载画面之前**同步触发）直接调 `onLevelChanged()` = `dropAll()` + `CollisionBake.reset()`（后者清烘焙槽位——旧维度的占用体积 presence 旗标跨维度会幽灵碰撞、并赖住 8 槽中的 4 个）。必须**同步**于事件内：旧实现走排队的 `clear()`（新维度首个计算帧才消费），而加载画面期间 enqueueWork 先行处理了新维度的 ACTIVATE——风暴先生效再被清空，服务器不重发（track 已 active），风暴就此隐身。同维度死亡重生两事件都不触发，Boss 战重生不清场。
 
-接线：`client/particles/storm/StormClientHandler`（payload 处理在渲染线程 enqueueWork，直接调引擎公开方法）。
+接线：`client/particles/allaystorm/StormClientHandler`（payload 处理在渲染线程 enqueueWork，直接调引擎公开方法）。
+
+- **运行时类拆分（本轮重构）**：引擎主类的全部可变风暴状态与行为（17 个同步字段、共享时钟 `timeSec`/`clockSeconds`、准星命中快照四件套、同步玩家三件套、权威读回派发、~55 行滴入调度）迁入 `allaystorm/AllayStormRuntime`——组合持有 + 引擎回引，构造器只存引用不解引用。定性依据：MODEL 材质整体为风暴服务（非风暴 allay 是早期测试载体），故命中快照与姿势时钟按风暴资产归类。引擎保留**帧骨架触点**并读 storm 访问器：`tickClock`、`killPending`/`dropHitKeys`（kill 帧）、`needsGridPass`（grid 门控）、`killEmitId`/`omega`/`seed`（uniform）、`retireKill`（swap 成功尾）、`onHitReadback`/`pollPositionSnapshot`（fence 轮询）、`dropHitSnapshots`（resetPoolState）、`dispatchStormPosReadback`（引擎算好池普查派发上界后传入）。引擎 public API（`applyStormState`/`applyCorrections`/`applyStormDamage`/`timeSec`）保留一行委托——`StormClientHandler` 与光影包 merge hook **零改动**。伤害队列写入器泛化为 `enqueueDamageEntry(key, …, flags)`（遗留路径 flags=0，storm 路径 flags 由协议语义计算），缓冲所有权留引擎。**循环纪律**（零回归契约）：逐元素循环只触碰自有字段或循环前捕获的上下文（`EmitSchedule` 携带命令数组引用与可变计数器），引擎访问器不出现在循环内；调用点全部单态（单例 + 单实现），JIT 预热后委托与 getter 全内联——GPU 路径零变化（着色器零改动），CPU 增量低于测量噪声。consume-once 语义保持精确：点击路径 `consumeHitSnapshot()` 只清 `hitKeySnapshot`，`crosshairHitKey` 镜像保留（准星不闪烁）。
 
 ### 5.9 涡旋转向：世界系伺服（替换参考系伪力）
 
@@ -275,11 +277,12 @@ radius=8、ω=0.625（默认）→ 5 ≤ 6 不触发；radius=8 + ω=3 → ω_ef
 | `client/particles/storm/StormClientHandler.java` | 新增 — 客户端包接收端 |
 | `shaders/particles/stormpos.comp` | 新增 — 权威读回 pass |
 | `CMIAttachments.java` / `CreateManaIndustry.java` / `ServerConfig.java` | 修改 — 注册/配置 |
-| `client/particles/engine/CMIParticleEngine.java` | 修改 — 状态 API/时钟/调度/双键伤害/双索引命中/修正层/权威读回/ω_eff 钳制/onLevelChanged 同步重置/combat 爆发携带成员身份 + 映射清零（§5.7a）/命中管线对齐（§5.11） |
+| `client/particles/engine/CMIParticleEngine.java` | 修改 — 状态 API/时钟/调度/双键伤害/双索引命中/修正层/权威读回/ω_eff 钳制/onLevelChanged 同步重置/combat 爆发携带成员身份 + 映射清零（§5.7a）/命中管线对齐（§5.11）；风暴运行时状态整体拆出至 AllayStormRuntime（§5.8），本类保留帧骨架触点 + 一行委托 |
 | `client/particles/engine/ParticleBuffers.java` | 修改 — 4 新 SSBO（含 MEMBERMAP_BB）+ 16 B hit + 上传/读回/映射清零 |
 | `client/particles/engine/CollisionBake.java` | 修改 — `reset()`（维度切换清烘焙槽位与在途构建） |
 | `client/particles/engine/ParticlePrograms.java` | 修改 — stormpos 程序 + prelude 常量 |
 | `client/particles/allaystorm/AllayStormSpec.java` | 修改 — spawnStyle 3 + seed 掩码 |
+| `client/particles/allaystorm/AllayStormRuntime.java` | 新增 — 引擎主类的全部可变风暴运行时状态（同步状态机/共享时钟/命中快照/玩家收集/权威读回派发/滴入调度，见 §5.8 运行时类拆分） |
 | `client/particles/command/CMIParticleCommand.java` | 修改 — allaystorm 子树迁出 |
 | `client/particles/shaderpack/ShaderPackProgramCompiler.java` | 修改 — 风暴尺寸守卫 |
 | `CreateManaIndustryClient.java` | 修改 — LevelEvent.Unload/Load 同步接 `onLevelChanged()`（旧为排队 clear，存在 ACTIVATE 抹除竞态） |

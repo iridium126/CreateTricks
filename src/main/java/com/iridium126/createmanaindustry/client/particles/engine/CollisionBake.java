@@ -131,15 +131,16 @@ public final class CollisionBake {
 
     /**
      * Ensures a 2x2 grid of bake volumes tiled in the HORIZONTAL plane around
-     * {@code origin} (all four share one Y band): the tile seams sit on the
-     * lattice of 48-block multiples nearest the origin, yielding a seamless
-     * 96 x 96 XZ footprint whose nearest edge is at least one half-width
-     * (24 blocks) away on every side. Allay Storm swarms use this because
-     * their wander + radius reach past a single centred volume. Tiles abut
-     * rather than overlap — containment bounds are exclusive, so a particle
-     * crossing a seam lands in exactly one neighbour and the coverage stays
-     * watertight. Each tile allocates independently; full-pool LRU eviction
-     * applies per tile as in {@link #ensure}.
+     * {@code origin} (all four share one Y band): the tile SEAM passes through
+     * the origin itself, so the seamless 96 x 96 XZ footprint is always
+     * CENTRED on it — coverage extends exactly one tile (48 blocks) on every
+     * side, regardless of where the origin falls relative to any world
+     * lattice. Allay Storm swarms use this because their wander + radius
+     * reach past a single centred volume. Tiles abut rather than overlap —
+     * containment bounds are exclusive, so a particle crossing a seam lands
+     * in exactly one neighbour and the coverage stays watertight. Each tile
+     * allocates independently; full-pool LRU eviction applies per tile as in
+     * {@link #ensure}.
      */
     public void ensureQuadrants(Vec3 origin) {
         if (origin == null)
@@ -147,14 +148,16 @@ public final class CollisionBake {
         if (textureId < 0 && !createTexture())
             return;
 
-        long lx = Math.round(origin.x / (double) SX) * SX;
-        long lz = Math.round(origin.z / (double) SZ) * SZ;
+        // seam THROUGH the origin: the union always spans
+        // [floor(x)-48, floor(x)+48) XZ — centred coverage, no lattice swing
+        int ax = floor(origin.x);
+        int az = floor(origin.z);
         int ay = floor(origin.y) - CENTER_Y;
 
-        ensureAnchor((int) lx - SX, ay, (int) lz - SZ);
-        ensureAnchor((int) lx, ay, (int) lz - SZ);
-        ensureAnchor((int) lx - SX, ay, (int) lz);
-        ensureAnchor((int) lx, ay, (int) lz);
+        ensureAnchor(ax - SX, ay, az - SZ);
+        ensureAnchor(ax, ay, az - SZ);
+        ensureAnchor(ax - SX, ay, az);
+        ensureAnchor(ax, ay, az);
     }
 
     /**
@@ -354,7 +357,19 @@ public final class CollisionBake {
                             int wx = task.slot.ax + x;
                             int wz = task.slot.az + z;
                             LevelChunk chunk = task.chunks.get(ChunkPos.asLong(wx >> 4, wz >> 4));
-                            solid = chunk != null && !chunk.getBlockState(pos.set(wx, wy, wz)).isAir();
+                            // Bake only blocks with an actual COLLISION shape:
+                            // grass, flowers, torches, crops, rails and fluids
+                            // have none and let particles pass through (vanilla
+                            // particle parity — vanilla particles ignore no-
+                            // collision blocks and fluids too). The 2-arg
+                            // getCollisionShape reads the per-state cached shape
+                            // (BlockStateBase.Cache.collisionShape, computed
+                            // against EmptyBlockGetter at state init), so the
+                            // off-thread call carries the same benign-race
+                            // tolerance as getBlockState above; a failed build
+                            // retries on the next pick.
+                            solid = chunk != null && !chunk.getBlockState(pos.set(wx, wy, wz))
+                                    .getCollisionShape(chunk, pos).isEmpty();
                         }
                         voxels[i++] = solid ? SOLID : AIR;
                     }

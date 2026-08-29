@@ -10,11 +10,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.client.particles.allaystorm.AllayStormSpec;
+import com.iridium126.createmanaindustry.client.particles.allaystorm.AllayStormRuntime;
 import com.iridium126.createmanaindustry.client.particles.emitter.EmitterSpec;
 import com.iridium126.createmanaindustry.config.ClientConfig;
-import com.iridium126.createmanaindustry.network.ClientboundStormStatePacket;
-import com.iridium126.createmanaindustry.network.ServerboundStormPositionsPacket;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Camera;
@@ -260,22 +258,10 @@ public final class CMIParticleEngine {
     private int dmgCount = 0;
     private boolean dmgPending = false;
     private boolean dmgClearNext = false;
-    /**
-     * Newest fence-signalled hit-query snapshot: the packed sort key of the
-     * allay under the crosshair ({@link ParticleBuffers#HIT_MISS} = none) and
-     * its HP as float bits. At most one frame old -- a click consumes it with
-     * zero stalls; a stale camera for one frame is accepted (documented).
-     */
-    private int hitKeySnapshot = ParticleBuffers.HIT_MISS;
-    private int hitHpBits = 0;
-    /**
-     * Non-consuming mirror of {@link #hitKeySnapshot} for the crosshair pick
-     * ({@link #injectCrosshairPick}): the click path consume-once resets
-     * {@code hitKeySnapshot}, and the crosshair must not flicker for the
-     * frame between a click and the next fence poll. Refreshed at the same
-     * fence poll, cleared wherever the click snapshot is invalidated.
-     */
-    private int crosshairHitKey = ParticleBuffers.HIT_MISS;
+    // hit-query snapshot state (hitKeySnapshot / crosshairHitKey / hitHpBits /
+    // hitMemberIdx) lives on AllayStormRuntime — the MODEL material serves the
+    // storm, so the melee hit state is a storm asset. The engine consumes it
+    // through storm accessors at the fence poll and the pick/attack paths.
     /**
      * Formal attack target for the vanilla damage pipeline (enchantment type
      * queries, CriticalHitEvent, item damage bonus). Never ticked or added to
@@ -450,50 +436,19 @@ public final class CMIParticleEngine {
         }
     }
 
-    // ---- Allay Storm state (render thread only) ----------------------------
+    // ---- Allay Storm runtime (composition; render thread only) --------------
     /**
-     * Shared simulation clock: {@code (gameTime mod 2^21) / 20} seconds. All
-     * clients derive the SAME value (integer modulo, no accumulation), so the
-     * wander centres, vortex phases and correction-slot timestamps agree
-     * without any clock sync. Float precision at the 2^21-tick wrap horizon
-     * (~29 h of continuous uptime) stays at ~8 ms; the wrap itself perturbs
-     * the orbit once per period — accepted (boss fights never span it).
+     * Every mutable storm state and behavior — the sync state machine, the
+     * shared simulation clock, the crosshair hit-query snapshot and the
+     * synced-player collection — lives in {@link AllayStormRuntime}; this
+     * engine keeps only the frame skeleton (dispatch ordering, pool
+     * bookkeeping, abort discipline) and reads storm state through the
+     * accessors below. The runtime's constructor stores this back-reference
+     * WITHOUT dereferencing it (field init order), so composition here is
+     * safe despite the eagerly initialized singleton.
      */
-    private float timeSec = 0f;
-    private boolean stormActive = false;
-    private int stormEmitId = -1;
-    private Vec3 stormAnchor = Vec3.ZERO;
-    private double stormRadius = 8.0;
-    /** SIGNED vortex angular velocity rad/s (0 in ball mode / when idle). */
-    private float stormOmega = 0f;
-    private int pendingStormSpawns = 0;
-    private boolean stormHeaderWritten = false;
-    /** Emitter id force-expired on the NEXT update dispatch (-1 = none). */
-    private int stormKillEmitId = -1;
-    /** Server-owned 24-bit storm instance seed (member identity derivation). */
-    private int stormSeed = 0;
-    /** Total member population of the current storm (alive + dead). */
-    private int stormCount = 0;
-    /** Server-decided dead members (this client's mirror of the truth). */
-    private final java.util.BitSet stormDead = new java.util.BitSet();
-    /** True while THIS client is the authority (runs the position readback). */
-    private boolean stormAuthority = false;
-    private double stormCorrectionHz = 5.0;
-    /** Next member index to schedule for spawning (skips dead members). */
-    private int stormSpawnCursor = 0;
-    /** gameTime (ticks) of the last dispatched position snapshot. */
-    private long lastSnapshotGameTime = Long.MIN_VALUE;
-    /** Storm member identity of the newest hit-query snapshot (-1 = non-storm). */
-    private int hitMemberIdx = -1;
-    /** Player count uploaded with the last collectSyncedPlayers (pass handoff). */
-    private int lastPlayerCount = 0;
-    private final double[] playerDistScratch = new double[ParticleBuffers.MAX_STORM_PLAYERS];
-    /** Set when the compute phase dispatched a readback; consumed at fence poll. */
-    private boolean stormPosPending = false;
-    private long stormPosGameTime = 0;
+    private final AllayStormRuntime storm = new AllayStormRuntime(this);
     private long lastErrorTime = 0;
-    /** Scratch for per-frame synced player positions (xyz per player). */
-    private final float[] playerScratch = new float[ParticleBuffers.MAX_STORM_PLAYERS * 3];
     private final GpuTimerRing computeTimer = new GpuTimerRing();
     private final GpuTimerRing drawTimer = new GpuTimerRing();
     /** Scratch Proj*View and its 6 normalized frustum planes (keygen cull test). */
@@ -528,191 +483,32 @@ public final class CMIParticleEngine {
     }
 
     /**
-     * Applies a server storm-state packet (ACTIVATE / UPDATE / DEACTIVATE /
-     * STOP). Called on the render thread (payload handlers enqueueWork there),
-     * which is the thread all storm state lives on — direct mutation is safe.
-     * <p>
-     * ACTIVATE (also join / dimension change / re-enter range): full restart
-     * against the server definition — existing members are expired via the
-     * kill path, the dead bitmap replaces the local mirror, and exactly the
-     * alive members trickle in with seed-derived identity, so member counts
-     * agree across clients and restarts by construction. UPDATE: parameter
-     * change only — identity, HP and deaths are preserved (springs retarget);
-     * also carries the authority flag and correction rate. DEACTIVATE
-     * (out of range) and STOP (storm over): local dispersal; the members
-     * compact away on the next update dispatch.
+     * Applies a server storm-state packet — full state machine and semantics
+     * live on {@link AllayStormRuntime#applyStormState}.
      */
     public void applyStormState(int action, boolean authority, double correctionHz,
             Vec3 anchor, int count, float radius, int mode, float omega, int seed, byte[] deadBitmap) {
-        switch (action) {
-            case ClientboundStormStatePacket.ACTION_ACTIVATE -> {
-                // full restart: expire whatever storm generation is live
-                if (this.stormActive && this.stormEmitId >= 0)
-                    this.stormKillEmitId = this.stormEmitId;
-                // identities may be re-derived against a new seed: stale
-                // identity -> slot entries must never serve member-keyed
-                // combat origins
-                if (this.initialized)
-                    this.gpu.clearMemberMap();
-                this.stormDead.clear();
-                if (deadBitmap != null) {
-                    byte[] bm = deadBitmap;
-                    for (int i = 0; i < bm.length; i++) {
-                        int b = bm[i] & 0xFF;
-                        for (int bit = 0; bit < 8; bit++)
-                            if ((b & (1 << bit)) != 0)
-                                this.stormDead.set(i * 8 + bit);
-                    }
-                }
-                this.stormActive = true;
-                this.stormAnchor = anchor;
-                this.stormRadius = radius;
-                this.stormOmega = clampVortexOmega(omega, radius); // signed; 0 = ball mode
-                this.stormSeed = seed & AllayStormSpec.SEED_MASK_CLIENT;
-                this.stormCount = count;
-                this.stormAuthority = authority;
-                this.stormCorrectionHz = correctionHz;
-                this.stormSpawnCursor = 0;
-                this.pendingStormSpawns = Math.max(0, count - this.stormDead.cardinality());
-                this.stormHeaderWritten = false;
-                this.hitKeySnapshot = ParticleBuffers.HIT_MISS; // identities reshuffle
-                this.crosshairHitKey = ParticleBuffers.HIT_MISS;
-            }
-            case ClientboundStormStatePacket.ACTION_UPDATE -> {
-                if (!this.stormActive)
-                    return;
-                this.stormAnchor = anchor;
-                this.stormRadius = radius;
-                this.stormOmega = clampVortexOmega(omega, radius);
-                this.stormAuthority = authority;
-                this.stormCorrectionHz = correctionHz;
-                if (this.stormHeaderWritten && this.stormEmitId >= 0) {
-                    // re-pack header so G(t)/springs retarget on the next dispatch
-                    float[] h = AllayStormSpec.packedHeader(this.stormOmega, this.stormRadius, this.stormAnchor);
-                    h[16 * 4 + 0] = ensurePoofEmitter();
-                    this.gpu.setEmitterHeader(this.stormEmitId, h);
-                }
-            }
-            case ClientboundStormStatePacket.ACTION_DEACTIVATE, ClientboundStormStatePacket.ACTION_STOP -> {
-                // local dispersal; server state is not this side's business
-                if (this.stormActive && this.stormEmitId >= 0)
-                    this.stormKillEmitId = this.stormEmitId;
-                if (this.initialized)
-                    this.gpu.clearMemberMap();
-                this.stormActive = false;
-                this.stormAuthority = false;
-                this.pendingStormSpawns = 0;
-                this.stormHeaderWritten = false;
-                this.stormDead.clear();
-                this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
-                this.crosshairHitKey = ParticleBuffers.HIT_MISS;
-            }
-            default -> {
-            }
-        }
+        this.storm.applyStormState(action, authority, correctionHz, anchor, count, radius, mode, omega, seed,
+                deadBitmap);
     }
 
-    /**
-     * Applies one relayed position snapshot ({@code entries} stride
-     * {@code 8: memberIdx, pad, posRelToAnchor.xyz, vel.xyz}) by writing soft
-     * correction slots — positions are never written directly (no teleports);
-     * the update pass eases members toward the extrapolated targets.
-     */
+    /** Applies one relayed position snapshot — semantics on {@link AllayStormRuntime}. */
     public void applyCorrections(float[] entries, long gameTime) {
-        if (!this.stormActive || entries == null || entries.length < 8)
-            return;
-        float arrival = clockSeconds(gameTime);
-        int cap = this.gpu.capacity();
-        for (int o = 0; o + 7 < entries.length; o += 8) {
-            int memberIdx = (int) entries[o];
-            if (memberIdx < 0 || memberIdx >= cap)
-                continue; // no correction slot exists for this identity
-            float mx = (float) this.stormAnchor.x + entries[o + 2];
-            float my = (float) this.stormAnchor.y + entries[o + 3];
-            float mz = (float) this.stormAnchor.z + entries[o + 4];
-            this.gpu.writeCorrection(memberIdx, mx, my, mz, arrival,
-                    entries[o + 5], entries[o + 6], entries[o + 7], 1.0f);
-        }
+        this.storm.applyCorrections(entries, gameTime);
     }
 
     /**
-     * Applies a hit correction from a server DAMAGE broadcast: every client
-     * (authority included) eases the struck member to the attacker's exact
-     * hit spot over a short strong window, so hurt-flash / corpse / poof all
-     * play at the same place without any periodic snapshot needing to catch up.
-     */
-    public void applyHitCorrection(int memberIdx, Vec3 relToAnchor, long gameTime) {
-        if (!this.stormActive || memberIdx < 0 || memberIdx >= this.gpu.capacity())
-            return;
-        float arrival = clockSeconds(gameTime);
-        this.gpu.writeCorrection(memberIdx,
-                (float) (this.stormAnchor.x + relToAnchor.x),
-                (float) (this.stormAnchor.y + relToAnchor.y),
-                (float) (this.stormAnchor.z + relToAnchor.z),
-                arrival, 0f, 0f, 0f, 10.0f);
-    }
-
-    /** Shared simulation clock from a game-time tick value (see {@link #timeSec}). */
-    private static float clockSeconds(long gameTime) {
-        return (gameTime & ((1 << 21) - 1)) / 20.0f;
-    }
-
-    /**
-     * Effective vortex angular velocity. Co-rotation needs the tangential
-     * speed {@code omega * homeR}, and member speed is hard-capped at
-     * {@link AllayStormSpec#MAX_SPEED}, so any |omega| beyond
-     * {@code MAX_SPEED / radius} would make the update.comp servo targets
-     * permanently unreachable — the members would chase a pattern they can
-     * never catch. Clamped by the STORM radius (an upper bound of every
-     * member's homeR), so the whole pattern stays rigidly co-rotating, and
-     * deterministically on every client: both operands are synced params.
-     * The sign survives (zero still selects ball mode).
-     */
-    private static float clampVortexOmega(float omega, double radius) {
-        if (omega == 0f)
-            return 0f;
-        float mag = (float) Math.min(Math.abs(omega), AllayStormSpec.MAX_SPEED / Math.max(radius, 2.0));
-        return Math.signum(omega) * mag;
-    }
-
-    /**
-     * Applies a server DAMAGE broadcast for one storm member: the damage/
-     * knockback entry goes through the GPU damage queue (matched by MEMBER
-     * identity, immune to pool recompaction; the server's death bit forces
-     * the corpse unconditionally) and a strong short hit-correction slot
-     * eases the member to the attacker's exact hit spot. Every active client
-     * — the attacker included — runs this identical path.
+     * Applies a server DAMAGE broadcast for one storm member — semantics on
+     * {@link AllayStormRuntime#applyStormDamage}.
      */
     public void applyStormDamage(int memberIdx, float damage, float kbX, float kbZ,
             float light, boolean died, Vec3 relToAnchor, long gameTime) {
-        if (!this.stormActive)
-            return;
-        enqueueStormDamage(memberIdx, damage, kbX, kbZ, light, died);
-        applyHitCorrection(memberIdx, relToAnchor, gameTime);
+        this.storm.applyStormDamage(memberIdx, damage, kbX, kbZ, light, died, relToAnchor, gameTime);
     }
 
-    /** Enqueues one storm damage entry for the next update dispatch (render thread). */
-    private void enqueueStormDamage(int memberIdx, float damage, float kbX, float kbZ,
-            float light, boolean died) {
-        if (this.dmgCount >= ParticleBuffers.DAMAGE_QUEUE_CAP)
-            return;
-        if (this.dmgTmp.limit() != this.dmgTmp.capacity())
-            this.dmgTmp.limit(this.dmgTmp.capacity());
-        int off = ParticleBuffers.DAMAGE_HEADER_BYTES + this.dmgCount * ParticleBuffers.DAMAGE_ENTRY_BYTES;
-        this.dmgTmp.putFloat(off, memberIdx);
-        this.dmgTmp.putFloat(off + 4, damage);
-        this.dmgTmp.putFloat(off + 8, kbX);
-        this.dmgTmp.putFloat(off + 12, kbZ);
-        this.dmgTmp.putFloat(off + 16, light);
-        this.dmgTmp.putFloat(off + 20,
-                ParticleBuffers.DAMAGE_FLAG_MEMBER | (died ? ParticleBuffers.DAMAGE_FLAG_DIED : 0));
-        this.dmgCount++;
-        this.dmgPending = true;
-    }
-
-    /** Accumulated clamped simulation seconds (storm wander/burst clock). */
+    /** Shared simulation clock (storm wander/burst + allay pose paths). */
     public float timeSec() {
-        return this.timeSec;
+        return this.storm.timeSec();
     }
 
     /**
@@ -950,7 +746,7 @@ public final class CMIParticleEngine {
         this.streams.clear();
         this.gpu.clearParticles();
         resetPoolState();
-        resetStormState();
+        this.storm.resetStormState();
         this.streamCount = 0;
         this.profiler.reset();
     }
@@ -963,10 +759,7 @@ public final class CMIParticleEngine {
         this.translucentSpawnDelta = 0;
         this.translucentLatched = false;
         this.liveDisplay = 0;
-        this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
-        this.crosshairHitKey = ParticleBuffers.HIT_MISS;
-        this.hitHpBits = 0;
-        this.hitMemberIdx = -1;
+        this.storm.dropHitSnapshots();
         this.dmgCount = 0;
         this.dmgPending = false;
         this.dmgClearNext = false;
@@ -1028,7 +821,7 @@ public final class CMIParticleEngine {
             this.streams.clear();
             this.gpu.clearParticles();
             resetPoolState();
-            resetStormState();
+            this.storm.resetStormState();
         }
 
         int cap = this.gpu.capacity();
@@ -1038,91 +831,29 @@ public final class CMIParticleEngine {
         // any hit snapshot (fresh or the one the poll just reloaded) would
         // mis-target a shifted particle, so drop it here. doClear already
         // cleared it via resetPoolState and skips the poll.
-        if (this.stormKillEmitId >= 0) {
-            this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
-            this.crosshairHitKey = ParticleBuffers.HIT_MISS;
-        }
+        if (this.storm.killPending())
+            this.storm.dropHitKeys();
 
         float dt = clampDelta(deltaTracker);
         // Shared clock: (gameTime mod 2^21)/20 — identical on every client (see
-        // the field doc); drives wander centres, vortex phases and correction
-        // timestamps without any clock sync.
+        // AllayStormRuntime's clock doc); drives wander centres, vortex phases
+        // and correction timestamps without any clock sync.
         Minecraft mcClock = Minecraft.getInstance();
         if (mcClock.level != null)
-            this.timeSec = (mcClock.level.getGameTime() & ((1 << 21) - 1)) / 20.0f;
+            this.storm.tickClock(mcClock.level.getGameTime());
 
-        // 2. Build emit entries (storm first, then bursts, then streams).
-        int entryCount = 0;
-        int totalSpawn = 0;
-
-        // Storm trickle-in: at most MAX_EMIT_COMMANDS members per frame until
-        // the requested population is reached. At 2048 the bait ball assembles
-        // over ~8 frames (~0.4 s) -- reads as fish arriving, not popping in.
-        // Storm upkeep every active frame, not just while trickle-spawning:
-        // the first members of frame one draw in this very tick (so the allay
-        // atlas must be live BEFORE emission), and a stray burst evicting a
-        // storm volume via LRU must heal instead of silently stripping REST
-        // collision. The swarm pins a dedicated 2x2 bake grid (+-48 block
-        // footprint); routing it through ensureEmitterRuntime would squat an
-        // extra off-grid centred slot the swarm never needs.
-        if (this.stormActive) {
-            this.allayAtlas.ensureLoaded();
-            this.collisionBake.ensureQuadrants(this.stormAnchor);
-        }
-        if (this.stormActive && this.pendingStormSpawns > 0) {
-            int id = ensureEmitter(AllayStormSpec.SPEC);
-            if (id >= 0) {
-                if (!this.stormHeaderWritten) {
-                    // Anchor + storm parameters ride the per-id header slots 18/19
-                    // (specs stay position-free; this spec dedupes to its own id).
-                    // AllayStormSpec owns the slot layout; only the death-chain
-                    // emitter id is patched here (MODEL particles poof on expiry).
-                    float[] h = AllayStormSpec.packedHeader(this.stormOmega, this.stormRadius, this.stormAnchor);
-                    h[16 * 4 + 0] = ensurePoofEmitter();
-                    this.gpu.setEmitterHeader(id, h); // uploaded below this frame
-                    this.stormEmitId = id;
-                    this.stormHeaderWritten = true;
-                }
-                // Drain in ~60 frames regardless of population (the swarm
-                // assembles over ~1s instead of popping in), SPLITTING batches
-                // around the server-reported dead members so each command's
-                // member index base + inner (GPU-side) reproduces the server's
-                // member numbering exactly — identity stays cross-client.
-                int budget = Math.min(this.pendingStormSpawns,
-                        Math.max(ParticleBuffers.MAX_EMIT_COMMANDS,
-                                (this.pendingStormSpawns + 59) / 60));
-                int scheduled = 0;
-                while (scheduled < budget && entryCount < ParticleBuffers.MAX_EMIT_COMMANDS
-                        && this.stormSpawnCursor < this.stormCount) {
-                    while (this.stormSpawnCursor < this.stormCount && this.stormDead.get(this.stormSpawnCursor))
-                        this.stormSpawnCursor++;
-                    if (this.stormSpawnCursor >= this.stormCount)
-                        break;
-                    int runStart = this.stormSpawnCursor;
-                    while (this.stormSpawnCursor < this.stormCount && !this.stormDead.get(this.stormSpawnCursor)
-                            && scheduled + (this.stormSpawnCursor - runStart) < budget)
-                        this.stormSpawnCursor++;
-                    int runLen = this.stormSpawnCursor - runStart;
-                    if (runLen <= 0)
-                        break;
-                    this.emitIds[entryCount] = id;
-                    this.emitCounts[entryCount] = runLen;
-                    this.emitOrigins[entryCount] = this.stormAnchor;
-                    this.emitTranslucent[entryCount] = isTranslucent(AllayStormSpec.SPEC);
-                    this.emitOriginRef[entryCount] = 0f;
-                    this.emitLight[entryCount] = 0f;
-                    this.emitMemberBase[entryCount] = runStart;
-                    this.emitMemberKey[entryCount] = 0; // c.z unused by the storm spawn style
-                    totalSpawn += runLen;
-                    scheduled += runLen;
-                    entryCount++;
-                }
-                if (this.stormSpawnCursor >= this.stormCount)
-                    this.pendingStormSpawns = 0;
-                else
-                    this.pendingStormSpawns -= scheduled;
-            }
-        }
+        // 2. Build emit entries (storm first, then bursts, then streams). The
+        // storm's trickle-in scheduling fills the FIRST command slots — it
+        // writes the shared command arrays through an EmitSchedule context
+        // (carrying the runCompute-local counters) and the bursts/streams
+        // below append with plain locals. See AllayStormRuntime for the
+        // scheduling semantics (dead-member run splitting, ~60-frame drain,
+        // atlas + bake-quadrant upkeep).
+        var schedule = new AllayStormRuntime.EmitSchedule(this.emitIds, this.emitCounts, this.emitOrigins,
+                this.emitTranslucent, this.emitOriginRef, this.emitLight, this.emitMemberBase, this.emitMemberKey);
+        this.storm.scheduleSpawnRuns(schedule);
+        int entryCount = schedule.entryCount;
+        int totalSpawn = schedule.totalSpawn;
 
         for (Burst b : bursts) {
             int id = ensureEmitter(b.spec);
@@ -1358,7 +1089,7 @@ public final class CMIParticleEngine {
             // freshly built grid). Non-storm emitters carry motion mode 0 in
             // header slot 18 and never touch the structure, so skipping both the
             // heads clear and the dispatch on stormless frames is safe.
-            if (this.stormActive || this.stormKillEmitId >= 0) {
+            if (this.storm.needsGridPass()) {
                 this.gpu.clearGridHeads();
                 GL20.glUseProgram(this.programs.grid());
                 this.gpu.bindParticleRead(0);
@@ -1393,14 +1124,14 @@ public final class CMIParticleEngine {
             }
             setUIntUniform(this.programs.update(), "uCapacity", cap);
             setFloatUniform(this.programs.update(), "uDt", dt);
-            setFloatUniform(this.programs.update(), "uTimeSec", this.timeSec);
+            setFloatUniform(this.programs.update(), "uTimeSec", this.timeSec());
             // all synced players feed the repulsion (vanilla entity sync — no
             // extra packets); nearest 16 by distance to the storm anchor
-            int playerCount = collectSyncedPlayers();
-            this.gpu.uploadPlayers(this.playerScratch, playerCount);
+            int playerCount = this.storm.collectSyncedPlayers();
+            this.gpu.uploadPlayers(this.storm.playerScratch(), playerCount);
             setIntUniform(this.programs.update(), "uPlayerCount", playerCount);
-            setUIntUniform(this.programs.update(), "uKillEmit", this.stormKillEmitId);
-            setFloatUniform(this.programs.update(), "uStormOmega", this.stormOmega);
+            setUIntUniform(this.programs.update(), "uKillEmit", this.storm.killEmitId());
+            setFloatUniform(this.programs.update(), "uStormOmega", this.storm.omega());
             GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
             // uKillEmit is retired at the SUCCESS TAIL (after the pool swap), not
@@ -1422,9 +1153,9 @@ public final class CMIParticleEngine {
                 setUIntUniform(this.programs.emit(), "uEmitCount", entryCount);
                 setUIntUniform(this.programs.emit(), "uCapacity", cap);
                 // storm style 3 (analytic spawn): shared clock + instance seed
-                setFloatUniform(this.programs.emit(), "uTimeSec", this.timeSec);
-                setFloatUniform(this.programs.emit(), "uStormSeed", this.stormSeed);
-                setFloatUniform(this.programs.emit(), "uStormOmega", this.stormOmega);
+                setFloatUniform(this.programs.emit(), "uTimeSec", this.timeSec());
+                setFloatUniform(this.programs.emit(), "uStormSeed", this.storm.seed());
+                setFloatUniform(this.programs.emit(), "uStormOmega", this.storm.omega());
                 GL43.glDispatchCompute(Math.max(1, (totalSpawn + 63) / 64), 1, 1);
                 GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
             }
@@ -1527,7 +1258,10 @@ public final class CMIParticleEngine {
             // 6c. Authority-client readback: storm members within melee reach
             // of any synced player, for the position-correction stream. The
             // snapshot rides the same fence back and is sent at the next poll.
-            dispatchStormPosReadback(slot, cap);
+            // The dispatch bound comes from THIS engine's pool census — pool
+            // bookkeeping stays on the skeleton side of the seam.
+            int stormUpper = Math.min(cap, Math.max(0, this.aliveKnown + this.spawnDelta + 64));
+            this.storm.dispatchStormPosReadback(slot, cap, stormUpper);
 
             // 7. Census capture + commit markers. NO DRAW SUBMISSION happens in
             //    this phase any more — the old "Draw" section moved to runDraws
@@ -1607,7 +1341,7 @@ public final class CMIParticleEngine {
             // pool is now the authoritative read source, so every kill target
             // provably compacted away. Until then the pending id keeps the
             // grid pass armed and refires the kill (see the update dispatch).
-            this.stormKillEmitId = -1;
+            this.storm.retireKill();
 
             // Compute phase committed in full: pool swapped, permutation
             // promoted, kill retired. Only NOW may the draw phase submit — any
@@ -1801,7 +1535,7 @@ public final class CMIParticleEngine {
         Vec3 pos = camera.getPosition();
         setFloatUniform(prog, "uCamPos", (float) pos.x, (float) pos.y, (float) pos.z);
         setFloatUniform(prog, "uFadeDist", (float) ClientConfig.particleFadeDistance);
-        setFloatUniform(prog, "uTimeSec", this.timeSec);
+        setFloatUniform(prog, "uTimeSec", this.timeSec());
         this.allayAtlas.bind(1);
         setIntUniform(prog, "uSprite", 1);
 
@@ -1952,91 +1686,9 @@ public final class CMIParticleEngine {
         GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
-    /**
-     * 6c. Authority-only: dispatches {@code stormpos.comp} over the freshly
-     * written pool at the configured snapshot rate, compacting storm members
-     * within melee reach of any synced player into the staging buffer. The
-     * readback happens at the next fence poll ({@link #pollCounterSnapshot})
-     * and ships as a {@link ServerboundStormPositionsPacket}. Skipped on
-     * non-authority clients and while no storm runs; costs the distance tests
-     * alone in steady state.
-     */
-    private void dispatchStormPosReadback(int slot, int cap) {
-        if (!this.stormActive || !this.stormAuthority || this.stormCorrectionHz <= 0)
-            return;
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null)
-            return;
-        long now = mc.level.getGameTime();
-        if (this.lastSnapshotGameTime != Long.MIN_VALUE
-                && now - this.lastSnapshotGameTime < 20.0 / this.stormCorrectionHz)
-            return;
-        int upper = Math.min(cap, Math.max(0, this.aliveKnown + this.spawnDelta + 64));
-        if (upper <= 0 || this.lastPlayerCount <= 0)
-            return;
-        this.lastSnapshotGameTime = now;
-        int sp = this.programs.stormPos();
-        if (sp == 0)
-            return;
-        this.gpu.clearStormPosCount();
-        GL20.glUseProgram(sp);
-        this.gpu.bindParticleWrite(ParticleBuffers.PARTICLE_BB_WRITE);
-        this.gpu.bindCounter(3, slot);
-        this.gpu.bindEmitters(5);
-        this.gpu.bindPlayers();
-        this.gpu.bindStormPos();
-        Vec3 a = this.stormAnchor;
-        setFloatUniform(sp, "uAnchor", (float) a.x, (float) a.y, (float) a.z);
-        setIntUniform(sp, "uPlayerCount", this.lastPlayerCount);
-        GL43.glDispatchCompute(Math.max(1, (upper + 63) / 64), 1, 1);
-        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
-        this.stormPosPending = true;
-        this.stormPosGameTime = now;
-    }
-
-    /**
-     * Collects the nearest {@link ParticleBuffers#MAX_STORM_PLAYERS} synced
-     * players (vanilla entity sync positions) by distance to the storm anchor
-     * into {@link #playerScratch}. Every client feeds the SAME player set
-     * (others lagged by interpolation), so the repulsion field is
-     * near-identical across clients with zero extra packets.
-     */
-    private int collectSyncedPlayers() {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null) {
-            this.lastPlayerCount = 0;
-            return 0;
-        }
-        int count = 0;
-        double[] dist = this.playerDistScratch;
-        for (var p : mc.level.players()) {
-            double dx = p.getX() - this.stormAnchor.x;
-            double dy = p.getY() - this.stormAnchor.y;
-            double dz = p.getZ() - this.stormAnchor.z;
-            double d2 = dx * dx + dy * dy + dz * dz;
-            int max = ParticleBuffers.MAX_STORM_PLAYERS;
-            if (count >= max) {
-                // worse than the farthest kept player: skip
-                if (d2 >= dist[max - 1])
-                    continue;
-                count = max - 1; // overwrite the farthest, then re-insert
-            }
-            int i = count++;
-            while (i > 0 && dist[i - 1] > d2) {
-                dist[i] = dist[i - 1];
-                this.playerScratch[i * 3] = this.playerScratch[(i - 1) * 3];
-                this.playerScratch[i * 3 + 1] = this.playerScratch[(i - 1) * 3 + 1];
-                this.playerScratch[i * 3 + 2] = this.playerScratch[(i - 1) * 3 + 2];
-                i--;
-            }
-            dist[i] = d2;
-            this.playerScratch[i * 3] = (float) p.getX();
-            this.playerScratch[i * 3 + 1] = (float) p.getY();
-            this.playerScratch[i * 3 + 2] = (float) p.getZ();
-        }
-        this.lastPlayerCount = count;
-        return count;
-    }
+    // dispatchStormPosReadback / collectSyncedPlayers moved to AllayStormRuntime
+    // (the engine call site computes the pool-census dispatch bound and hands it
+    // over; the GL dispatch itself is the storm runtime's).
 
     /**
      * Crosshair-pick injection ({@code GameRenderer.pick} tail mixin): makes
@@ -2063,12 +1715,12 @@ public final class CMIParticleEngine {
      */
     public void injectCrosshairPick(Minecraft mc) {
         if (!this.available() || !ClientConfig.particleEnabled
-                || this.crosshairHitKey == ParticleBuffers.HIT_MISS)
+                || this.storm.crosshairHitKey() == ParticleBuffers.HIT_MISS)
             return;
         if (mc.level == null || mc.player == null || mc.player.isSpectator()
                 || mc.getCameraEntity() != mc.player)
             return;
-        float t = (this.crosshairHitKey >>> ParticleBuffers.HIT_KEY_INDEX_BITS) / 32.0F;
+        float t = (this.storm.crosshairHitKey() >>> ParticleBuffers.HIT_KEY_INDEX_BITS) / 32.0F;
         // same ray as dispatchHitQuery/hit.comp — player eye origin, camera
         // rotation direction (vanilla's pick also casts from the camera
         // ENTITY's eye, not the third-person camera) — so the injected ray
@@ -2105,7 +1757,7 @@ public final class CMIParticleEngine {
     public boolean handlePlayerAttack() {
         if (!available() || !ClientConfig.particleEnabled)
             return false;
-        int key = this.hitKeySnapshot;
+        int key = this.storm.hitKeySnapshot();
         if (key == ParticleBuffers.HIT_MISS)
             return false;
         Minecraft mc = Minecraft.getInstance();
@@ -2127,11 +1779,11 @@ public final class CMIParticleEngine {
         if (clip.getType() != HitResult.Type.MISS
                 && clip.getLocation().distanceToSqr(eye) < eye.distanceToSqr(hitPos) - 1.0E-4)
             return false; // a block is closer than the allay: wall between
-        boolean attacked = syntheticAttack(mc, player, idx, hitPos, this.hitMemberIdx);
+        boolean attacked = syntheticAttack(mc, player, idx, hitPos, this.storm.hitMemberIdx());
         if (attacked)
             // consume-once: never let one snapshot fire twice between fence
             // refreshes (two rapid clicks must not double-hit one allay)
-            this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
+            this.storm.consumeHitSnapshot();
         return attacked;
     }
 
@@ -2243,7 +1895,7 @@ public final class CMIParticleEngine {
 
         // target sound chosen from the SNAPSHOT hp (at most one frame old;
         // regen drift is a few tenths of an HP at worst)
-        float hpSnapshot = Float.intBitsToFloat(this.hitHpBits);
+        float hpSnapshot = this.storm.hitHp();
         boolean lethal = hpSnapshot - total <= 0.0F;
         mc.level.playLocalSound(hitPos.x, hitPos.y, hitPos.z,
                 lethal ? SoundEvents.ALLAY_DEATH : SoundEvents.ALLAY_HURT,
@@ -2260,7 +1912,7 @@ public final class CMIParticleEngine {
         // vanilla exhausts 0.1 per landed hit (Player.attack, both halves);
         // the storm path lands every consumed snapshot
         player.causeFoodExhaustion(0.1F);
-        if (memberIdx >= 0 && this.stormActive) {
+        if (memberIdx >= 0 && this.storm.active()) {
             // Server-authoritative storm path: REPORT ONLY. The server owns
             // HP and death, and its DAMAGE broadcast applies the hit to every
             // active client including this one (pure server circuit — the
@@ -2270,11 +1922,11 @@ public final class CMIParticleEngine {
             net.neoforged.neoforge.network.PacketDistributor.sendToServer(
                     new com.iridium126.createmanaindustry.network.ServerboundStormHitPacket(
                             memberIdx, total, kbVecX, kbVecZ, light,
-                            hitPos.x - this.stormAnchor.x, hitPos.y - this.stormAnchor.y,
-                            hitPos.z - this.stormAnchor.z));
+                            hitPos.x - this.storm.anchor().x, hitPos.y - this.storm.anchor().y,
+                            hitPos.z - this.storm.anchor().z));
         } else {
             // legacy local-authority path (non-storm MODEL debug particles)
-            enqueueDamage(idx, total, kbVecX, kbVecZ, light);
+            enqueueDamageEntry(idx, total, kbVecX, kbVecZ, light, 0f);
         }
         player.swing(InteractionHand.MAIN_HAND);
         player.resetAttackStrengthTicker();
@@ -2365,25 +2017,30 @@ public final class CMIParticleEngine {
     }
 
     /**
-     * Queues one melee-damage entry for the next update dispatch (render thread).
-     * Absolute writes: the buffer's limit may have been shrunk by the last
-     * upload, so restore it to capacity first (absolute puts bounds-check
-     * against the limit, not the capacity). The entry carries the spawn-time
-     * packed light; update.comp stashes it in the target's p1.w so the death
-     * chain's poof burst lights like the hit did.
+     * Queues one melee-damage entry for the next update dispatch (render
+     * thread). Shared writer for BOTH damage paths: the legacy local-authority
+     * entries (key = pool index, flags 0) and the storm member entries (key =
+     * memberIdx, {@link ParticleBuffers#DAMAGE_FLAG_MEMBER} plus the server's
+     * death bit — flags are protocol semantics, computed by the caller
+     * {@code AllayStormRuntime.applyStormDamage}). Absolute writes: the
+     * buffer's limit may have been shrunk by the last upload, so restore it to
+     * capacity first (absolute puts bounds-check against the limit, not the
+     * capacity). The entry carries the spawn-time packed light; update.comp
+     * stashes it in the target's p1.w so the death chain's poof burst lights
+     * like the hit did.
      */
-    private void enqueueDamage(int idx, float damage, float kbVecX, float kbVecZ, float light) {
+    public void enqueueDamageEntry(int key, float damage, float kbVecX, float kbVecZ, float light, float flags) {
         if (this.dmgCount >= ParticleBuffers.DAMAGE_QUEUE_CAP)
             return;
         if (this.dmgTmp.limit() != this.dmgTmp.capacity())
             this.dmgTmp.limit(this.dmgTmp.capacity());
         int off = ParticleBuffers.DAMAGE_HEADER_BYTES + this.dmgCount * ParticleBuffers.DAMAGE_ENTRY_BYTES;
-        this.dmgTmp.putFloat(off, (float) idx);
+        this.dmgTmp.putFloat(off, (float) key);
         this.dmgTmp.putFloat(off + 4, damage);
         this.dmgTmp.putFloat(off + 8, kbVecX);
         this.dmgTmp.putFloat(off + 12, kbVecZ);
         this.dmgTmp.putFloat(off + 16, light);
-        this.dmgTmp.putFloat(off + 20, 0f);
+        this.dmgTmp.putFloat(off + 20, flags);
         this.dmgCount++;
         this.dmgPending = true;
     }
@@ -2415,7 +2072,7 @@ public final class CMIParticleEngine {
                 this.lastErrorTime = now;
                 CreateManaIndustry.LOGGER.warn("[CMI particles] counter fence wait failed; keeping stale snapshot");
             }
-            this.stormPosPending = false; // a fresh snapshot is scheduled anyway
+            this.storm.dropPositionSnapshot(); // a fresh snapshot is scheduled anyway
         } else {
             int[] counts = this.gpu.readbackCounts(this.pendingSlot);
             int alive = counts[0];
@@ -2432,18 +2089,9 @@ public final class CMIParticleEngine {
             this.liveDisplay = alive;
             // the same fence covers the hit query, so its snapshot is fresh now
             int[] hit = this.gpu.readbackHit();
-            this.hitKeySnapshot = hit[0];
-            this.crosshairHitKey = hit[0];
-            this.hitHpBits = hit[1];
-            this.hitMemberIdx = hit[2] == ParticleBuffers.HIT_MISS ? -1 : hit[2];
+            this.storm.onHitReadback(hit[0], hit[1], hit[2]);
             // ...and the authority position readback dispatched last compute phase
-            if (this.stormPosPending) {
-                this.stormPosPending = false;
-                float[] entries = this.gpu.readbackStormPos();
-                if (entries != null && entries.length >= 8)
-                    net.neoforged.neoforge.network.PacketDistributor.sendToServer(
-                            new ServerboundStormPositionsPacket(this.stormPosGameTime, entries));
-            }
+            this.storm.pollPositionSnapshot();
         }
         GL32.glDeleteSync(this.pendingFence);
         this.pendingFence = 0;
@@ -2488,7 +2136,7 @@ public final class CMIParticleEngine {
     }
 
     /** Allocates (or returns) the GPU emitter header id for a spec, cached by equals. */
-    private int ensureEmitter(EmitterSpec spec) {
+    public int ensureEmitter(EmitterSpec spec) {
         Integer existing = this.emitterIds.get(spec);
         if (existing != null)
             return existing;
@@ -2535,7 +2183,7 @@ public final class CMIParticleEngine {
     }
 
     /** The death-poof emitter id (0 = none: emitter table full). */
-    private float ensurePoofEmitter() {
+    public float ensurePoofEmitter() {
         int id = ensureCombatEmitter(CombatSpecs.POOF);
         return id >= 0 ? (float) id : 0f;
     }
@@ -2567,24 +2215,8 @@ public final class CMIParticleEngine {
             // engine never came up: GPU work is impossible, but the storm
             // mirror may still hold packet-fed state (payload handlers run
             // regardless of engine init) — clear it the cheap way
-            resetStormState();
+            this.storm.resetStormState();
         }
-    }
-
-    /** Full storm teardown (level clear/shutdown): forget the emitter id too. */
-    private void resetStormState() {
-        this.stormActive = false;
-        this.pendingStormSpawns = 0;
-        this.stormHeaderWritten = false;
-        this.stormEmitId = -1;
-        this.stormKillEmitId = -1;
-        this.stormOmega = 0f;
-        this.stormDead.clear();
-        this.stormAuthority = false;
-        this.stormSpawnCursor = 0;
-        this.stormCount = 0;
-        this.stormPosPending = false;
-        this.lastSnapshotGameTime = Long.MIN_VALUE;
     }
 
     private void applyAnimation(EmitterSpec spec, EmitterSpec.Animation animation) {
@@ -2616,35 +2248,61 @@ public final class CMIParticleEngine {
     }
 
     /** Whether a spec's particles feed the combined translucent sort (ALPHA or MODEL). */
-    private static boolean isTranslucent(EmitterSpec spec) {
+    public static boolean isTranslucent(EmitterSpec spec) {
         return spec.material == EmitterSpec.Material.ALPHA || spec.material == EmitterSpec.Material.MODEL;
     }
 
-    private static int loc(int prog, String name) {
+    // ------------------------------------------------------------------
+    // Internal accessors + helpers shared with AllayStormRuntime (the storm
+    // runtime lives in another package and reaches back through these).
+    // Public for cross-package access ONLY — this is NOT mod API.
+    // ------------------------------------------------------------------
+
+    public ParticleBuffers gpu() {
+        return this.gpu;
+    }
+
+    public ParticlePrograms programs() {
+        return this.programs;
+    }
+
+    public CollisionBake collisionBake() {
+        return this.collisionBake;
+    }
+
+    public ParticleAtlas allayAtlas() {
+        return this.allayAtlas;
+    }
+
+    public boolean initialized() {
+        return this.initialized;
+    }
+
+    public static int loc(int prog, String name) {
         return INSTANCE.uniformLocations
                 .computeIfAbsent(prog, p -> new HashMap<>())
                 .computeIfAbsent(name, n -> GL20.glGetUniformLocation(prog, n));
     }
 
-    private static void setUIntUniform(int prog, String name, int value) {
+    public static void setUIntUniform(int prog, String name, int value) {
         int l = loc(prog, name);
         if (l >= 0)
             GL30.glUniform1ui(l, value);
     }
 
-    private static void setIntUniform(int prog, String name, int value) {
+    public static void setIntUniform(int prog, String name, int value) {
         int l = loc(prog, name);
         if (l >= 0)
             GL20.glUniform1i(l, value);
     }
 
-    private static void setFloatUniform(int prog, String name, float value) {
+    public static void setFloatUniform(int prog, String name, float value) {
         int l = loc(prog, name);
         if (l >= 0)
             GL20.glUniform1f(l, value);
     }
 
-    private static void setFloatUniform(int prog, String name, float x, float y, float z) {
+    public static void setFloatUniform(int prog, String name, float x, float y, float z) {
         int l = loc(prog, name);
         if (l >= 0)
             GL20.glUniform3f(l, x, y, z);

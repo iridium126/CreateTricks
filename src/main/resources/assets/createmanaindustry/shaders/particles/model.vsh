@@ -99,7 +99,11 @@ void main() {
     vec4 stormA = emitters.u[hb + 18u];
     if (stormA.x > 0.5) {
         vec3 anchor = emitters.u[hb + 19u].xyz;
-        vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
+        // typhoon members gate on the chased anchor (the eye center); ball
+        // members keep the per-member wandering attractor
+        vec3 G = stormA.x > 1.5
+                ? anchor
+                : cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
         anim = cmiStormAnimOverride(int(stormA.x), anim, length(p1.xyz),
                 distance(p0.xyz, G), stormA.y, p3.z, uTimeSec);
     }

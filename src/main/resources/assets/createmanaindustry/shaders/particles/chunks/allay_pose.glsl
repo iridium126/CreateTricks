@@ -58,6 +58,112 @@ vec3 cmiStormCenter(vec3 anchor, float wanderR, float seed, float timeSec) {
         cos(t * 0.60 + h2) + 0.5 * cos(t * 1.30 + h1));
 }
 
+// ---- typhoon home-point (vortex mode 2) ------------------------------------
+// Shared servo-target / analytic-spawn function for the typhoon shape rework.
+// Consumed by update.comp (the servo target + its velocity) and emit.comp (the
+// analytic spawn, whose state IS the servo's equilibrium — late joiners start
+// settled). Pure function of (memberSeed, radius, omega, maxSpeed, timeSec,
+// center): synced params + the shared clock only, so every client derives the
+// same targets by construction; local separation / repulsion / collision drift
+// is healed by the soft correction layer. The center is the SERVER-CHASED
+// anchor — there is no per-member wander on this path (the ball mode keeps
+// cmiStormCenter).
+//
+// Shape contract (design review):
+//   - 6 trailing log-spiral arms, total winding pi across [rEye, reach],
+//     chirality = -sign(omega): the outer ends lag the spin, like real
+//     rainbands. Each member's own reach tops out past R (uniform per-member
+//     fringe of max(2, 0.15R)) — density decays ~linearly beyond R and the
+//     edge-turnaround dwell pile spreads into a soft rim.
+//   - Members ride a closed SECONDARY-CIRCULATION loop per arm: eyewall ascent
+//     -> outflow deck -> outer-edge sink -> low-level inflow -> repeat. r(s)
+//     is a raised cosine (zero radial speed at BOTH turnarounds) and the aloft
+//     fraction w(s) = 0.5 + 0.5*sin (rise peaks AT the eyewall, sink AT the
+//     edge). The eyewall density pile-up is the dwell time at the r
+//     turnaround — no explicit radial bias needed (the outer edge gains a
+//     softer rim the same way).
+//   - VERTICAL BAND FILL: the circulation line is only the column's CENTER —
+//     every member adds a static uniform offset (v_i - 0.5) * H with
+//     H = clamp(0.4R, 3, 8), so the ensemble fills the storm's volume instead
+//     of riding the circulation surface (the old shell was hollow inside).
+//   - Funnel: the outflow deck stands clamp(0.2R, 2, 6) above the flat deck at
+//     the eyewall, tapering linearly to zero at the outer edge.
+//   - Static per-member micro jitter (<= 0.4 blocks) keeps the swarm organic.
+//
+// Hash discipline (emit.comp's storm-style notes apply): every hash input is
+// built from NAMED single-mul statements — never an inline a*b+c — so driver
+// FMA contraction cannot fork per-member constants between GPU vendors. The
+// remaining mul+add chains are value math, where a 1-ULP contraction
+// difference is sub-visual and correction-absorbed.
+void cmiTyphoonHome(float ms, float radiusR, float omega, float maxSpeed,
+        float timeSec, vec3 center, out vec3 pos, out vec3 vel) {
+    float rEye = max(radiusR * 0.10, 1.0);
+
+    // arm index (0..5) + gaussian angular jitter, sigma = 0.2 * arm spacing
+    // (2pi/6 = 1.04719755; sigma = 0.2094 rad — arm gaps drop to ~4% of the
+    // arm-core density)
+    float hArm = ms * 5.7;
+    float armAngle = floor(cmiHash1(hArm) * 6.0) * 1.04719755;
+    float hG = ms * 9.1;
+    float gu1 = max(cmiHash1(hG), 1e-6);
+    float gu2 = cmiHash1(hG + 17.17);
+    float jitter = sqrt(-2.0 * log(gu1)) * cos(6.2831853 * gu2) * 0.2094;
+
+    // circulation phase + loop rate (mean radial speed 0.15..0.35 b/s)
+    float hPh = ms * 11.3;
+    float phase = cmiHash1(hPh);
+    float hRt = ms * 13.9;
+    float rate = 0.15 + cmiHash1(hRt) * 0.2;
+    // per-member outer reach: the loop tops out past R — a uniform fringe of
+    // max(2, 0.15R) feathers the boundary and spreads the edge dwell pile
+    float hFr = ms * 23.1;
+    float reach = radiusR + cmiHash1(hFr) * max(2.0, radiusR * 0.15);
+    float loopT = 2.0 * (reach - rEye) / rate;
+    float sc = 6.2831853 * fract(phase + timeSec / loopT);
+
+    // the (r, y) circulation loop: raised-cosine radius, sinusoidal aloft
+    float cyc = (1.0 - cos(sc)) * 0.5;      // 0 at the eyewall .. 1 at the edge
+    float r = rEye + (reach - rEye) * cyc;
+    float aloft = 0.5 + 0.5 * sin(sc);
+    // funnel height at r — (r - rEye) / (reach - rEye) IS cyc, no division needed
+    float funnel = clamp(radiusR * 0.2, 2.0, 6.0) * (1.0 - cyc);
+    // vertical band fill: the circulation line is the column's CENTER, every
+    // member adds a static uniform offset across the band half-width H — the
+    // ensemble fills the volume (the old circulation-only shell was hollow)
+    float hV = ms * 29.3;
+    float bandH = clamp(radiusR * 0.4, 3.0, 8.0);
+    float y = -1.2 + (funnel + 1.2) * aloft + (cmiHash1(hV) - 0.5) * bandH;
+
+    // trailing spiral arm + rigid co-rotation (pattern phase = pure clock)
+    float spiral = 3.14159265 / log(reach / rEye);
+    float theta = armAngle + jitter + omega * timeSec
+            - sign(omega) * spiral * log(r / rEye);
+    float ct = cos(theta);
+    float st = sin(theta);
+
+    // static organic micro jitter (<= 0.4 blocks, unit direction from hashes)
+    float hJ = ms * 17.3;
+    float ja = cmiHash1(hJ) * 6.2831853;
+    float hJc = hJ + 3.1;
+    float jc = cmiHash1(hJc) * 2.0 - 1.0;
+    float jr = sqrt(max(0.0, 1.0 - jc * jc));
+    float hJm = ms * 19.3;
+    vec3 joff = vec3(cos(ja) * jr, jc, sin(ja) * jr) * (0.4 * cmiHash1(hJm));
+
+    pos = center + vec3(ct * r, y, st * r) + joff;
+
+    // target velocity: orbital + circulation slide (radial + vertical) + the
+    // arm-parallel slide implied by theta(r) — capped at the member speed cap
+    float invT = rate / (2.0 * (reach - rEye));
+    float drdt = (reach - rEye) * 3.14159265 * sin(sc) * invT;
+    float dydt = (funnel + 1.2) * 3.14159265 * cos(sc) * invT;
+    float tang = omega * r - sign(omega) * spiral * drdt;
+    vel = vec3(-st * tang + ct * drdt, dydt, ct * tang + st * drdt);
+    float spd = length(vel);
+    if (spd > maxSpeed)
+        vel = vel * (maxSpeed / spd);
+}
+
 // Procedural dance-burst arbitration for storm members, per motion mode.
 //   ball (mode 1): slow individuals near the wandering centre
 //   vortex (mode 2): inner-band members regardless of speed -- tangential

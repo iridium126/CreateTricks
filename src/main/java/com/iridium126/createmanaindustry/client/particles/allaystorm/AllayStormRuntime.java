@@ -4,6 +4,7 @@ import java.util.BitSet;
 
 import com.iridium126.createmanaindustry.client.particles.engine.CMIParticleEngine;
 import com.iridium126.createmanaindustry.client.particles.engine.ParticleBuffers;
+import com.iridium126.createmanaindustry.content.allaystorm.AllayStormManager;
 import com.iridium126.createmanaindustry.network.ClientboundStormStatePacket;
 import com.iridium126.createmanaindustry.network.ServerboundStormPositionsPacket;
 
@@ -108,6 +109,59 @@ public final class AllayStormRuntime {
     /** Advances the shared clock from the level's game time (render thread). */
     public void tickClock(long gameTime) {
         this.timeSec = (gameTime & ((1 << 21) - 1)) / 20.0f;
+        refreshInterpolatedCenter();
+    }
+
+    /**
+     * Re-evaluates the interpolated center for this frame: render time sits
+     * one interval behind the newest snapshot; before the first center packet
+     * (and after deactivation) it falls back to the raw packet anchor.
+     */
+    private void refreshInterpolatedCenter() {
+        if (!this.centerValid) {
+            this.center = this.stormAnchor;
+            return;
+        }
+        float renderT = this.timeSec - CENTER_LAG_SECONDS;
+        float span = this.centerCurrT - this.centerPrevT;
+        float alpha = span <= 0.0f ? 1.0f : (renderT - this.centerPrevT) / span;
+        alpha = Math.max(0.0f, Math.min(1.0f, alpha));
+        this.center = new Vec3(
+                this.centerPrevX + (this.centerCurrX - this.centerPrevX) * alpha,
+                this.centerPrevY + (this.centerCurrY - this.centerPrevY) * alpha,
+                this.centerPrevZ + (this.centerCurrZ - this.centerPrevZ) * alpha);
+    }
+
+    /**
+     * Applies one {@code ClientboundStormCenterPacket}: the previous current
+     * snapshot rolls into prev, the packet becomes current. The FIRST packet
+     * initializes both snapshots (no lerp from the stale block anchor).
+     * Timestamps share the simulation clock's seconds domain, exactly like
+     * the correction slots. {@code velX}/{@code velZ} ride the wire for
+     * diagnostics / a future extrapolation path — the clamped lerp ignores
+     * them (a late packet freezes the center for under a second, invisible
+     * at 2 b/s).
+     */
+    public void applyStormCenter(float x, float y, float z, float velX, float velZ, long gameTime) {
+        if (!this.stormActive)
+            return;
+        float t = clockSeconds(gameTime);
+        if (!this.centerValid) {
+            this.centerPrevX = x;
+            this.centerPrevY = y;
+            this.centerPrevZ = z;
+            this.centerPrevT = t;
+        } else if (this.centerCurrT != t) {
+            this.centerPrevX = this.centerCurrX;
+            this.centerPrevY = this.centerCurrY;
+            this.centerPrevZ = this.centerCurrZ;
+            this.centerPrevT = this.centerCurrT;
+        }
+        this.centerCurrX = x;
+        this.centerCurrY = y;
+        this.centerCurrZ = z;
+        this.centerCurrT = t;
+        this.centerValid = true;
     }
 
     /** Shared simulation clock in seconds (storm wander/burst + pose paths). */
@@ -125,6 +179,37 @@ public final class AllayStormRuntime {
     private boolean stormActive = false;
     private int stormEmitId = -1;
     private Vec3 stormAnchor = Vec3.ZERO;
+
+    // ---- continuous chased center (double-snapshot interpolation) -----------
+    /**
+     * The chased center arrives as {@code ClientboundStormCenterPacket}
+     * snapshots every {@code AllayStormManager.CENTER_INTERVAL_TICKS} (20
+     * ticks = 1 s). Every frame renders ONE INTERVAL BEHIND the newest
+     * snapshot, lerping the last two — the standard entity-sync scheme, and a
+     * deterministic function of the packet stream: every client derives the
+     * SAME center, so the servo targets stay mutually consistent while the
+     * motion is continuous at frame rate. Each client sits ~2 blocks (one
+     * interval at the 2 b/s chase speed) behind the server's truth; the hit
+     * reach check's +8 margin absorbs that, and every anchor-relative wire
+     * coordinate (hit reports, corrections, snapshots) is produced AND
+     * consumed against this same interpolated center.
+     * <p>
+     * A packet that never arrives clamps alpha at 1 — the center freezes for
+     * under a second instead of teleporting; the wire's velocity fields are
+     * carried for diagnostics and any future extrapolation path.
+     */
+    private static final float CENTER_LAG_SECONDS = AllayStormManager.CENTER_INTERVAL_TICKS / 20.0f;
+    private float centerPrevX;
+    private float centerPrevY;
+    private float centerPrevZ;
+    private float centerCurrX;
+    private float centerCurrY;
+    private float centerCurrZ;
+    private float centerPrevT;
+    private float centerCurrT;
+    private boolean centerValid = false;
+    /** Interpolated center, refreshed every {@link #tickClock}; all consumers read this. */
+    private Vec3 center = Vec3.ZERO;
     private double stormRadius = 8.0;
     /** SIGNED vortex angular velocity rad/s (0 in ball mode / when idle). */
     private float stormOmega = 0f;
@@ -219,6 +304,11 @@ public final class AllayStormRuntime {
                 }
                 this.stormActive = true;
                 this.stormAnchor = anchor;
+                // the immediate center packet on the server's activation path
+                // seeds the interpolation; until then consumers read the raw
+                // (block-quantized) anchor
+                this.centerValid = false;
+                this.center = anchor;
                 this.stormRadius = radius;
                 this.stormOmega = clampVortexOmega(omega, radius); // signed; 0 = ball mode
                 this.stormSeed = seed & AllayStormSpec.SEED_MASK_CLIENT;
@@ -240,7 +330,7 @@ public final class AllayStormRuntime {
                 this.stormCorrectionHz = correctionHz;
                 if (this.stormHeaderWritten && this.stormEmitId >= 0) {
                     // re-pack header so G(t)/springs retarget on the next dispatch
-                    float[] h = AllayStormSpec.packedHeader(this.stormOmega, this.stormRadius, this.stormAnchor);
+                    float[] h = AllayStormSpec.packedHeader(this.stormOmega, this.stormRadius, this.center);
                     h[16 * 4 + 0] = engine.ensurePoofEmitter();
                     engine.gpu().setEmitterHeader(this.stormEmitId, h);
                 }
@@ -256,6 +346,7 @@ public final class AllayStormRuntime {
                 this.pendingStormSpawns = 0;
                 this.stormHeaderWritten = false;
                 this.stormDead.clear();
+                this.centerValid = false;
                 dropHitKeys();
             }
             default -> {
@@ -279,9 +370,9 @@ public final class AllayStormRuntime {
             int memberIdx = (int) entries[o];
             if (memberIdx < 0 || memberIdx >= cap)
                 continue; // no correction slot exists for this identity
-            float mx = (float) this.stormAnchor.x + entries[o + 2];
-            float my = (float) this.stormAnchor.y + entries[o + 3];
-            float mz = (float) this.stormAnchor.z + entries[o + 4];
+            float mx = (float) this.center.x + entries[o + 2];
+            float my = (float) this.center.y + entries[o + 3];
+            float mz = (float) this.center.z + entries[o + 4];
             gpu.writeCorrection(memberIdx, mx, my, mz, arrival,
                     entries[o + 5], entries[o + 6], entries[o + 7], 1.0f);
         }
@@ -298,9 +389,9 @@ public final class AllayStormRuntime {
             return;
         float arrival = clockSeconds(gameTime);
         engine.gpu().writeCorrection(memberIdx,
-                (float) (this.stormAnchor.x + relToAnchor.x),
-                (float) (this.stormAnchor.y + relToAnchor.y),
-                (float) (this.stormAnchor.z + relToAnchor.z),
+                (float) (this.center.x + relToAnchor.x),
+                (float) (this.center.y + relToAnchor.y),
+                (float) (this.center.z + relToAnchor.z),
                 arrival, 0f, 0f, 0f, 10.0f);
     }
 
@@ -335,6 +426,8 @@ public final class AllayStormRuntime {
         this.stormCount = 0;
         this.stormPosPending = false;
         this.lastSnapshotGameTime = Long.MIN_VALUE;
+        this.centerValid = false;
+        this.center = Vec3.ZERO;
     }
 
     /**
@@ -462,9 +555,14 @@ public final class AllayStormRuntime {
         return this.hitMemberIdx;
     }
 
-    /** Storm anchor (world space) — hit-report relative coordinates. */
-    public Vec3 anchor() {
-        return this.stormAnchor;
+    /**
+     * Storm center (world space) — the INTERPOLATED chased center. Every
+     * anchor-relative wire coordinate is produced and consumed against this
+     * reference; the raw packet anchor stays internal (fallback until the
+     * first center snapshot lands).
+     */
+    public Vec3 center() {
+        return this.center;
     }
 
     // ---- synced player collection ---------------------------------------------
@@ -485,9 +583,9 @@ public final class AllayStormRuntime {
         int count = 0;
         double[] dist = this.playerDistScratch;
         for (var p : mc.level.players()) {
-            double dx = p.getX() - this.stormAnchor.x;
-            double dy = p.getY() - this.stormAnchor.y;
-            double dz = p.getZ() - this.stormAnchor.z;
+            double dx = p.getX() - this.center.x;
+            double dy = p.getY() - this.center.y;
+            double dz = p.getZ() - this.center.z;
             double d2 = dx * dx + dy * dy + dz * dz;
             int max = ParticleBuffers.MAX_STORM_PLAYERS;
             if (count >= max) {
@@ -554,7 +652,7 @@ public final class AllayStormRuntime {
         engine.gpu().bindEmitters(5);
         engine.gpu().bindPlayers();
         engine.gpu().bindStormPos();
-        Vec3 a = this.stormAnchor;
+        Vec3 a = this.center;
         CMIParticleEngine.setFloatUniform(sp, "uAnchor", (float) a.x, (float) a.y, (float) a.z);
         CMIParticleEngine.setIntUniform(sp, "uPlayerCount", this.lastPlayerCount);
         org.lwjgl.opengl.GL43.glDispatchCompute(Math.max(1, (upper + 63) / 64), 1, 1);
@@ -601,7 +699,7 @@ public final class AllayStormRuntime {
     public void scheduleSpawnRuns(EmitSchedule s) {
         if (this.stormActive) {
             engine.allayAtlas().ensureLoaded();
-            engine.collisionBake().ensureQuadrants(this.stormAnchor);
+            engine.collisionBake().ensureQuadrants(this.center);
         }
         if (this.stormActive && this.pendingStormSpawns > 0) {
             int id = engine.ensureEmitter(AllayStormSpec.SPEC);
@@ -611,7 +709,9 @@ public final class AllayStormRuntime {
                     // (specs stay position-free; this spec dedupes to its own id).
                     // AllayStormSpec owns the slot layout; only the death-chain
                     // emitter id is patched here (MODEL particles poof on expiry).
-                    float[] h = AllayStormSpec.packedHeader(this.stormOmega, this.stormRadius, this.stormAnchor);
+                    // refreshCenterHeader rewrites the center every frame after
+                    // this, so the initial value is just the seed.
+                    float[] h = AllayStormSpec.packedHeader(this.stormOmega, this.stormRadius, this.center);
                     h[16 * 4 + 0] = engine.ensurePoofEmitter();
                     engine.gpu().setEmitterHeader(id, h); // uploaded below this frame
                     this.stormEmitId = id;
@@ -640,7 +740,7 @@ public final class AllayStormRuntime {
                         break;
                     s.emitIds[s.entryCount] = id;
                     s.emitCounts[s.entryCount] = runLen;
-                    s.emitOrigins[s.entryCount] = this.stormAnchor;
+                    s.emitOrigins[s.entryCount] = this.center;
                     s.emitTranslucent[s.entryCount] = translucent;
                     s.emitOriginRef[s.entryCount] = 0f;
                     s.emitLight[s.entryCount] = 0f;
@@ -656,5 +756,20 @@ public final class AllayStormRuntime {
                     this.pendingStormSpawns -= scheduled;
             }
         }
+    }
+
+    /**
+     * Per-frame (compute phase, before the emitter upload): re-packs the storm
+     * emitter header with the INTERPOLATED center so the servo targets ride
+     * the continuous chase — snapshots land at 1 Hz, this renders the motion
+     * at frame rate. Marks the header dirty for this frame's upload (~1.25 KB,
+     * noise). Cheap no-op on every non-storm frame.
+     */
+    public void refreshCenterHeader() {
+        if (!this.stormActive || !this.stormHeaderWritten || this.stormEmitId < 0)
+            return;
+        float[] h = AllayStormSpec.packedHeader(this.stormOmega, this.stormRadius, this.center);
+        h[16 * 4 + 0] = engine.ensurePoofEmitter();
+        engine.gpu().setEmitterHeader(this.stormEmitId, h);
     }
 }

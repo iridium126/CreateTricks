@@ -39,6 +39,13 @@ public final class AllayStormData {
     public static final float OMEGA_STEP = 1.0f / 16.0f;
     /** stormSeed is quantized to 24 bits so it survives a float round-trip in GLSL. */
     public static final int SEED_MASK = (1 << 24) - 1;
+    /**
+     * Fixed storm altitude: the typhoon is a SKY storm — the chased anchor
+     * lives at this Y forever (command input Y is overridden). At this height
+     * the collision bake volumes are all air, members never touch terrain,
+     * and melee combat is only contestable by flight.
+     */
+    public static final int CHASE_Y = 128;
 
     public boolean active;
     public BlockPos anchor = BlockPos.ZERO;
@@ -78,7 +85,7 @@ public final class AllayStormData {
     public static AllayStormData create(BlockPos anchor, int count, double radius, int mode, double omegaMagnitude, int seed) {
         AllayStormData d = new AllayStormData();
         d.active = true;
-        d.anchor = anchor.immutable();
+        d.anchor = anchor.atY(CHASE_Y);
         d.count = Math.max(1, Math.min(MAX_COUNT, count));
         d.radius = quantizeRadius(radius);
         d.mode = mode == 2 ? 2 : 1;

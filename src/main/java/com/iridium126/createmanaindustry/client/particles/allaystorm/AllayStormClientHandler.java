@@ -1,6 +1,7 @@
 package com.iridium126.createmanaindustry.client.particles.allaystorm;
 
 import com.iridium126.createmanaindustry.client.particles.engine.CMIParticleEngine;
+import com.iridium126.createmanaindustry.network.ClientboundStormCenterPacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormDamagePacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormPositionsPacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormStatePacket;
@@ -43,6 +44,12 @@ public final class AllayStormClientHandler {
     /** {@link ClientboundStormPositionsPacket}: relayed authority snapshot. */
     public static void onPositions(ClientboundStormPositionsPacket packet) {
         CMIParticleEngine.INSTANCE.applyCorrections(packet.entries(), packet.gameTime());
+    }
+
+    /** {@link ClientboundStormCenterPacket}: continuous chased-center snapshot. */
+    public static void onCenter(ClientboundStormCenterPacket packet) {
+        CMIParticleEngine.INSTANCE.applyStormCenter(packet.x(), packet.y(), packet.z(),
+                packet.velX(), packet.velZ(), packet.gameTime());
     }
 
     /** The client's shared simulation clock (game ticks; the engine mod-masks). */

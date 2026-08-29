@@ -11,9 +11,10 @@
 //   3  storm member (server-synced Allay Storm): the command's c.y carries
 //      the MEMBER INDEX BASE; memberIdx = base + inner derives a
 //      deterministic seed hash(stormSeed, memberIdx) (identical on every
-//      client) and spawns ANALYTICALLY — vortex members appear exactly on
-//      their seed-derived home circle at the current shared-clock phase with
-//      matching orbital velocity, so a late-joining client starts in
+//      client) and spawns ANALYTICALLY — typhoon members appear exactly on
+//      their circulating spiral-arm home point at the current shared-clock
+//      phase with matching velocity (the SAME cmiTyphoonHome function the
+//      update servo targets with), so a late-joining client starts in
 //      lock-step with everyone else instead of assembling from the anchor.
 //      Identity rides p0.w as memberIdx+1 (the storm size path uses a
 //      constant 1.0 multiplier — see keygen/model.vsh/hit.comp).
@@ -162,26 +163,20 @@ void main() {
         float mB = hB * 0.382;
         float mseed = mA + mB;                   // [0,1); 2048 members: exact, 131072: ~95% distinct
         float ballR = max(stormA.y, 2.0);
-        vec3 G = cmiStormCenter(anchor, stormA.z, mseed, uTimeSec);
         vec3 spos;
         vec3 svel;
         if (stormA.x > 1.5) {
-            // vortex: ON the seed-derived home circle at the current phase.
-            // The derivation mirrors update.comp's home-point servo EXACTLY
-            // (same radius/deck/phase hashes, same omega) — the spawn state
-            // IS the servo's equilibrium, so late joiners start with no
-            // settling transient.
-            float homeR = mix(ballR * 0.35, ballR, cmiHash1(mseed * 5.7));
-            float homeY = (cmiHash1(mseed * 9.1) * 2.0 - 1.0) * 1.2;
-            float phi = cmiHash1(mseed * 11.3) * 6.2831853;
-            float a = uStormOmega * uTimeSec + phi;
-            vec3 rel = vec3(cos(a) * homeR, homeY, sin(a) * homeR);
-            spos = G + rel;
-            vec3 orb = vec3(-uStormOmega * rel.z, 0.0, uStormOmega * rel.x);
-            float om = length(orb);
-            svel = om > 6.0 ? orb * (6.0 / om) : orb;
+            // typhoon: on the circulating spiral-arm home point at the spawn
+            // instant. cmiTyphoonHome is the SAME function update.comp's
+            // servo targets with (single source in chunks/allay_pose.glsl) —
+            // the spawn state IS the servo's equilibrium, so late joiners
+            // start settled with no transient. The center is the
+            // server-chased anchor; there is no per-member wander.
+            cmiTyphoonHome(mseed, ballR, uStormOmega, max(stormA.w, 0.5),
+                    uTimeSec, anchor, spos, svel);
         } else {
-            // ball (test mode): deterministic point inside the bait ball
+            // ball (test mode): deterministic point inside the wandering bait ball
+            vec3 G = cmiStormCenter(anchor, stormA.z, mseed, uTimeSec);
             vec3 d = randomDir(mseed + 5.0);
             spos = G + d * (ballR * 0.75 * pow(hash1(mseed + 6.0), 1.0 / 3.0));
             svel = randomDir(mseed + 7.0) * 2.0;

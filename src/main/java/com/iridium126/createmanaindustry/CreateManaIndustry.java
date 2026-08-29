@@ -48,6 +48,7 @@ import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 import com.iridium126.createmanaindustry.network.ClientboundMistSyncPacket;
+import com.iridium126.createmanaindustry.network.ClientboundStormCenterPacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormDamagePacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormPositionsPacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormStatePacket;
@@ -170,6 +171,10 @@ public class CreateManaIndustry {
                 ClientboundStormPositionsPacket.TYPE,
                 ClientboundStormPositionsPacket.STREAM_CODEC,
                 ClientboundStormPositionsPacket::handle);
+        registrar.playToClient(
+                ClientboundStormCenterPacket.TYPE,
+                ClientboundStormCenterPacket.STREAM_CODEC,
+                ClientboundStormCenterPacket::handle);
         registrar.playToServer(
                 ServerboundStormHitPacket.TYPE,
                 ServerboundStormHitPacket.STREAM_CODEC,

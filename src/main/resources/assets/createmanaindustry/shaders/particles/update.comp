@@ -104,8 +104,8 @@ const float STORM_W_SEP      = 6.0;
 const float STORM_W_CONTAIN  = 3.0;
 const float STORM_PLAYER_R   = 3.0;
 const float STORM_PLAYER_W   = 14.0;
-// vortex home-point servo (see the vortex branch): stiffness 24 leaves a
-// steady-state centripetal tracking lag of omega^2*homeR/24 (~0.13 blocks at
+// vortex home-point servo (see the typhoon branch): stiffness 24 leaves a
+// steady-state centripetal tracking lag of omega^2*r/24 (~0.13 blocks at
 // the default parameters); damping 6 -> zeta ~ 0.61, and the semi-implicit
 // integrator stays non-amplifying clear up to the 0.25 s worst-case dt.
 const float STORM_VORTEX_K   = 24.0;
@@ -239,18 +239,25 @@ void main() {
         return; // storm stopped: drop out of the compacted output immediately
     uint hb = eid * VEC4_PER_EMITTER;
 
+    // Header rows 18 and 7 are each read ONCE here. Row 18's storm gate is
+    // consulted three more times below (damage scan, ball/vortex steering,
+    // correction block) and row 7's y/z (collide mode, flutter) much later —
+    // hoisting the vec4 loads keeps every consumer on one SSBO read instead
+    // of depending on the compiler to CSE across the early-return ladder.
+    vec4 stormA = emitters.u[hb + 18u]; // x mode(0 none|1 ball|2 vortex), y radius, z wanderRadius, w maxSpeed
+    vec4 matMotion = emitters.u[hb + 7u]; // x matId, y collide mode, z flutter
     // identity map write (see the buffer declaration). Header-flag gate
     // matches gridbuild/stormpos/hit (the storm spec dedupes to its own
     // emitter id, so every particle of a flagged emitter is a member); the
     // capacity guard mirrors the correction slots. Written BEFORE any early
     // return: even a corpse-expiring thread's entry stays factually correct
     // for this dispatch (the corpse IS in the input pool at this slot).
-    if (emitters.u[hb + 18u].x > 0.5) {
+    if (stormA.x > 0.5) {
         uint mi = uint(p0.w + 0.5) - 1u;
         if (mi < uCapacity)
             memberMap.m[mi] = uintBitsToFloat(idx + 1u);
     }
-    float matId = emitters.u[hb + 7u].x;
+    float matId = matMotion.x;
     bool isModel = matId >= 1.5 && matId < 2.5;
 
     float age = p3.x;  // animation clock -- NEVER reset, even on death
@@ -288,7 +295,7 @@ void main() {
         // with a non-storm MODEL's constant 1.0 size multiplier exactly at
         // member 0 -- a p0.w >= 1.5 test silently drops member 0 from the
         // whole damage pipeline
-        bool isStorm = emitters.u[hb + 18u].x > 0.5;
+        bool isStorm = stormA.x > 0.5;
         uint n = min(damageQ.header.x, uint(DAMAGE_QUEUE_CAP));
         for (uint i = 0u; i < n; i++) {
             uint ob = i * 6u;
@@ -340,7 +347,7 @@ void main() {
         // xd in blocks/tick). Converting to blocks/s: 1 blocks/tick = 20 blocks/s and
         // 1 tick = 0.05 s, so the equivalent continuous acceleration is
         // A * f^1.25 * (0.0025 * 20 * 20) = A * f^1.25 * 1.0 blocks/s^2.
-        float flutter = emitters.u[hb + 7u].z;
+        float flutter = matMotion.z;
         if (flutter > 0.0) {
             // hp holds maxLife for non-MODEL materials (flutter is sprite-only)
             float fr = clamp(age / max(hp, 1e-5), 0.0, 1.0);
@@ -362,16 +369,18 @@ void main() {
 
     // ---- storm swarm steering ------------------------------------------------
     // Mode 1 (ball): boids neighbour forces + containment shell around G(t).
-    // Mode 2 (vortex): world-frame SERVO onto each member's rotating home
-    // point (radius + deck from the seed, phase = omega*t + seed phase).
-    // Equilibrium == the analytic spawn state in emit.comp (on the home
-    // circle at phase a, velocity omega x r), so late joiners start settled
-    // and the pattern phase is a pure function of the shared clock --
-    // identical on every client. The engine clamps |omega| to
-    // MAX_SPEED / radius client-side, so servo targets always stay reachable
-    // by the speed-capped members. Only WORLD-frame acceleration leaves this
-    // block: the collision sweep below still owns the final position move.
-    vec4 stormA = emitters.u[hb + 18u]; // x mode(0 none|1 ball|2 vortex), y radius, z wanderRadius, w maxSpeed
+    // Mode 2 (typhoon): world-frame SERVO onto each member's circulating home
+    // point on one of 6 trailing log-spiral arms (shared cmiTyphoonHome:
+    // eyewall ascent -> outflow deck -> edge sink -> inflow, rigid co-rotation
+    // at omega, funnel-shaped outflow deck). The center is the SERVER-CHASED
+    // anchor (header 19) — no per-member wander. Equilibrium == the analytic
+    // spawn state in emit.comp (the SAME shared function), so late joiners
+    // start settled and the pattern phase is a pure function of the shared
+    // clock -- identical on every client. The engine clamps |omega| to
+    // MAX_SPEED / radius client-side and the function caps its own target
+    // velocity at the speed cap, so servo targets always stay reachable.
+    // Only WORLD-frame acceleration leaves this block: the collision sweep
+    // below still owns the final position move.
     if (!corpse && stormA.x > 0.5 && stormA.x < 1.5) {
         vec3 anchor = emitters.u[hb + 19u].xyz;
         vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
@@ -433,12 +442,17 @@ void main() {
             acc -= (toG / dG) * STORM_W_CONTAIN * (ballR * 0.15 - dG);
 
         // fish avoiding EVERY diver (all synced players — same force set on
-        // every client; see the PlayersBuf note above)
+        // every client; see the PlayersBuf note above). Squared-distance gate
+        // first: only members actually inside player reach pay the sqrt and
+        // the normalize divides (length == sqrt(dot) per the GLSL spec, so
+        // the gate is the same test; 1e-6 is the squared 1e-3 guard).
         for (int pi = 0; pi < uPlayerCount; pi++) {
             vec3 dp = pos - players.pl[pi].xyz;
-            float dpL = length(dp);
-            if (dpL < STORM_PLAYER_R && dpL > 1e-3)
+            float dp2 = dot(dp, dp);
+            if (dp2 < STORM_PLAYER_R * STORM_PLAYER_R && dp2 > 1e-6) {
+                float dpL = sqrt(dp2);
                 acc += (dp / dpL) * STORM_PLAYER_W * (STORM_PLAYER_R - dpL) / STORM_PLAYER_R;
+            }
         }
 
         vel += acc * uDt;
@@ -448,23 +462,17 @@ void main() {
             vel *= spMax / spd;
     }
     else if (!corpse && stormA.x > 1.5) {
-        // ----- vortex: world-frame servo to the ROTATING home point ----------
+        // ----- typhoon: world-frame servo onto the circulating arm home point
         vec3 anchor = emitters.u[hb + 19u].xyz;
-        vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
         float omega = uStormOmega;
-        float ballR = max(stormA.y, 2.0);
-        // per-particle home circle + deck + phase (stateless from seed);
-        // the phase hash MUST mirror emit.comp's analytic spawn exactly --
-        // the spawn state IS this servo's equilibrium
-        float homeR = mix(ballR * 0.35, ballR, cmiHash1(p3.z * 5.7));
-        float homeY = (cmiHash1(p3.z * 9.1) * 2.0 - 1.0) * 1.2;
-        float a = omega * uTimeSec + cmiHash1(p3.z * 11.3) * 6.2831853;
-        float ca = cos(a);
-        float sa = sin(a);
-        vec3 target = G + vec3(ca * homeR, homeY, sa * homeR);
-        // target velocity = orbital term of d(target)/dt; the wander center's
-        // own ~0.4 b/s drift is left untracked (absorbed as sub-block lag)
-        vec3 vT = vec3(-sa, 0.0, ca) * (omega * homeR);
+        float spMaxV = max(stormA.w, 0.5);
+        // Shared home-point function (chunks/allay_pose.glsl) — the SAME
+        // function emit.comp spawns with, so the two call sites cannot
+        // diverge and the spawn state IS this servo's equilibrium.
+        vec3 target;
+        vec3 vT;
+        cmiTyphoonHome(p3.z, max(stormA.y, 2.0), omega, spMaxV, uTimeSec,
+                anchor, target, vT);
 
         // separation + player repulsion, world space exactly like ball mode.
         // Same visit budget as the ball-mode sweep.
@@ -499,19 +507,22 @@ void main() {
         }
         sepW *= STORM_W_SEP;
         vec3 repW = vec3(0.0);
-        // every synced player repels (all-client-consistent force set)
+        // every synced player repels (all-client-consistent force set).
+        // Squared-distance gate as in ball mode: the sqrt and the normalize
+        // divides run only for members actually inside player reach.
         for (int pi = 0; pi < uPlayerCount; pi++) {
             vec3 dp = pos - players.pl[pi].xyz;
-            float dpL = length(dp);
-            if (dpL < STORM_PLAYER_R && dpL > 1e-3)
+            float dp2 = dot(dp, dp);
+            if (dp2 < STORM_PLAYER_R * STORM_PLAYER_R && dp2 > 1e-6) {
+                float dpL = sqrt(dp2);
                 repW += (dp / dpL) * STORM_PLAYER_W * (STORM_PLAYER_R - dpL) / STORM_PLAYER_R;
+            }
         }
 
         // servo onto the co-rotating home point, plus the world-space terms,
         // hand ONE acceleration to the integrator (same contract as ball mode)
         vec3 aW = (target - pos) * STORM_VORTEX_K + (vT - vel) * STORM_VORTEX_C + sepW + repW;
         vel += aW * uDt;
-        float spMaxV = max(stormA.w, 0.5);
         float spdV = length(vel);
         if (spdV > spMaxV)
             vel *= spMaxV / spdV;
@@ -529,7 +540,7 @@ void main() {
     // spot the attacker struck.
     // HEADER storm slot gate (see the damage-queue isStorm note): member 0's
     // p0.w (1.0) is indistinguishable from a non-storm MODEL multiplier
-    if (!corpse && emitters.u[hb + 18u].x > 0.5) {
+    if (!corpse && stormA.x > 0.5) {
         uint memberIdx = uint(p0.w + 0.5) - 1u;
         // correction slots are sized by the POOL capacity (2 vec4 per member);
         // an identity beyond it can never have a slot, so skip instead of
@@ -562,7 +573,7 @@ void main() {
     // already-moved position, doubling the speed and tunnelling into blocks).
     bool swept = false;
     bool landed = false;
-    float collideMode = emitters.u[hb + 7u].y;
+    float collideMode = matMotion.y;
     if (uCollisionOn == 1 && collideMode > 0.5) {
         // Slice selection is position-owned, not emitter-owned: the first baked
         // volume that CONTAINS the particle wins (presence gates unbuilt

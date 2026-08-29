@@ -8,6 +8,7 @@ import java.util.UUID;
 import com.iridium126.createmanaindustry.CMIAttachments;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.config.ServerConfig;
+import com.iridium126.createmanaindustry.network.ClientboundStormCenterPacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormDamagePacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormPositionsPacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormStatePacket;
@@ -63,6 +64,18 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  *       the death bit to every active player including the attacker.</li>
  *   <li><b>Regen</b>: vanilla 2 HP/s over the sparse damaged-alive table
  *       (iterating only damaged members; a full-HP boss costs nothing).</li>
+ *   <li><b>Chase</b>: the anchor is not static — the center pursues the
+ *       nearest player (horizontal distance) at {@link #CHASE_SPEED}, altitude
+ *       pinned to {@link AllayStormData#CHASE_Y} (a sky storm). The center
+ *       integrates as DOUBLES in the per-level runtime (no block staircase);
+ *       {@code data.anchor} stays in sync as its containing block for
+ *       persistence, activation scanning and the hit reach check. Clients see
+ *       the center through {@link ClientboundStormCenterPacket} snapshots
+ *       every {@link #CENTER_INTERVAL_TICKS} (plus one on activation) and lerp
+ *       the last two one interval behind — a stream-derivable, continuous
+ *       center that is identical on every client, at half the packet rate the
+ *       old per-step UPDATE broadcast produced. Being server-owned, the chased
+ *       center is the shape-consistency anchor of the typhoon home points.</li>
  * </ul>
  */
 @EventBusSubscriber(modid = CreateManaIndustry.MODID)
@@ -80,6 +93,10 @@ public final class AllayStormManager {
 
     private static final int SCAN_INTERVAL_TICKS = 20;
     private static final int MAX_HITS_PER_SECOND = 12;
+    /** Chase speed toward the nearest player, blocks/s (horizontal only). */
+    public static final double CHASE_SPEED = 2.0;
+    /** Center-snapshot broadcast cadence in ticks (1 Hz; clients lerp one interval behind). */
+    public static final int CENTER_INTERVAL_TICKS = 20;
     /** Coarse sanity bound for relayed positions (blocks from the anchor). */
     private static final float RELAY_BOUND = 320.0f;
     /** Coarse sanity bound for relayed velocities (b/s — the wire's byte envelope). */
@@ -93,6 +110,13 @@ public final class AllayStormManager {
         final ServerLevel level;
         long orderCounter;
         int scanCounter = SCAN_INTERVAL_TICKS; // force a scan on the first tick
+        // Continuous chased center (NaN = seed from data.anchor on first use);
+        // chaseVX/VZ is the current velocity, broadcast for the client stream.
+        double chaseX = Double.NaN;
+        double chaseZ = Double.NaN;
+        double chaseVX;
+        double chaseVZ;
+        int centerTimer;
         final Map<UUID, Track> tracks = new HashMap<>();
 
         Runtime(ServerLevel level) {
@@ -142,9 +166,79 @@ public final class AllayStormManager {
             return;
         }
         regen(level, data);
+        chase(level, data);
         if (++rt.scanCounter >= SCAN_INTERVAL_TICKS) {
             rt.scanCounter = 0;
             scan(level, rt, data);
+        }
+    }
+
+    /**
+     * Integrates the center continuously toward the nearest player (horizontal
+     * distance) at {@link #CHASE_SPEED}; no players (or the player already
+     * overhead) means hover. {@code data.anchor} follows as the containing
+     * block so persistence, activation scanning and the hit reach check keep
+     * working unchanged. Center snapshots fly every
+     * {@link #CENTER_INTERVAL_TICKS}; clients lerp the last two one interval
+     * behind, so a 1 Hz stream renders as continuous motion and every client
+     * derives the same center from the same packets.
+     */
+    private static void chase(ServerLevel level, AllayStormData data) {
+        Runtime rt = runtime(level);
+        if (Double.isNaN(rt.chaseX)) {
+            rt.chaseX = data.anchor.getX() + 0.5;
+            rt.chaseZ = data.anchor.getZ() + 0.5;
+        }
+        ServerPlayer target = null;
+        double best = Double.MAX_VALUE;
+        for (ServerPlayer p : level.players()) {
+            double dx = p.getX() - rt.chaseX;
+            double dz = p.getZ() - rt.chaseZ;
+            double d2 = dx * dx + dz * dz;
+            if (d2 < best) {
+                best = d2;
+                target = p;
+            }
+        }
+        double vx = 0.0;
+        double vz = 0.0;
+        if (target != null) {
+            double dx = target.getX() - rt.chaseX;
+            double dz = target.getZ() - rt.chaseZ;
+            double dist = Math.sqrt(dx * dx + dz * dz);
+            if (dist >= 1.0) {
+                vx = dx / dist * CHASE_SPEED;
+                vz = dz / dist * CHASE_SPEED;
+            }
+        }
+        rt.chaseVX = vx;
+        rt.chaseVZ = vz;
+        if (vx != 0.0 || vz != 0.0) {
+            rt.chaseX += vx / 20.0;
+            rt.chaseZ += vz / 20.0;
+            BlockPos containing = BlockPos.containing(rt.chaseX, AllayStormData.CHASE_Y, rt.chaseZ);
+            if (!containing.equals(data.anchor)) {
+                data.anchor = containing;
+                level.setData(CMIAttachments.STORM_DATA.get(), data);
+            }
+        }
+        if (++rt.centerTimer >= CENTER_INTERVAL_TICKS) {
+            rt.centerTimer = 0;
+            sendCenter(level, rt);
+        }
+    }
+
+    /** Broadcasts the continuous center + chase velocity to every active client. */
+    private static void sendCenter(ServerLevel level, Runtime rt) {
+        ClientboundStormCenterPacket packet = new ClientboundStormCenterPacket(
+                (float) rt.chaseX, AllayStormData.CHASE_Y, (float) rt.chaseZ,
+                (float) rt.chaseVX, (float) rt.chaseVZ, rt.level.getGameTime());
+        for (var entry : rt.tracks.entrySet()) {
+            if (!entry.getValue().active)
+                continue;
+            ServerPlayer p = rt.level.getServer().getPlayerList().getPlayer(entry.getKey());
+            if (p != null)
+                PacketDistributor.sendToPlayer(p, packet);
         }
     }
 
@@ -221,6 +315,10 @@ public final class AllayStormManager {
         PacketDistributor.sendToPlayer(player, ClientboundStormStatePacket.ACTIVATE(
                 data.anchor, data.count, data.radius, data.mode, data.omega, data.stormSeed,
                 t.authority, ServerConfig.stormCorrectionHz, data.dead.toByteArray()));
+        // seed the joining client's center stream immediately — without this
+        // its interpolation would sit at the (block-quantized) ACTIVATE anchor
+        // for up to one interval while the typhoon drifts on
+        sendCenter(level, rt);
     }
 
     private static void deactivate(ServerLevel level, Runtime rt, AllayStormData data, ServerPlayer player) {
@@ -445,7 +543,7 @@ public final class AllayStormManager {
         AllayStormData data = level.getData(CMIAttachments.STORM_DATA.get());
         boolean samePopulation = data.active && data.count == Math.max(1, Math.min(AllayStormData.MAX_COUNT, count));
         if (samePopulation) {
-            data.anchor = anchor.immutable();
+            data.anchor = anchor.atY(AllayStormData.CHASE_Y);
             data.radius = AllayStormData.quantizeRadius(radius);
             data.mode = mode == 2 ? 2 : 1;
             float mag = AllayStormData.quantizeOmega(omega);
@@ -462,6 +560,13 @@ public final class AllayStormManager {
             broadcast(level, data, false);
         }
         Runtime rt = runtime(level);
+        // re-seed the continuous center from the (just re-pinned) anchor —
+        // both the create and update paths land here
+        rt.chaseX = data.anchor.getX() + 0.5;
+        rt.chaseZ = data.anchor.getZ() + 0.5;
+        rt.chaseVX = 0.0;
+        rt.chaseVZ = 0.0;
+        rt.centerTimer = CENTER_INTERVAL_TICKS; // broadcast on the first tick
         rt.scanCounter = SCAN_INTERVAL_TICKS; // force an immediate scan
         scan(level, rt, data);
     }

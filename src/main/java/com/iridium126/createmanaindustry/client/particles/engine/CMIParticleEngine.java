@@ -498,6 +498,14 @@ public final class CMIParticleEngine {
     }
 
     /**
+     * Applies one continuous chased-center snapshot — semantics on
+     * {@link AllayStormRuntime#applyStormCenter}.
+     */
+    public void applyStormCenter(float x, float y, float z, float velX, float velZ, long gameTime) {
+        this.storm.applyStormCenter(x, y, z, velX, velZ, gameTime);
+    }
+
+    /**
      * Applies a server DAMAGE broadcast for one storm member — semantics on
      * {@link AllayStormRuntime#applyStormDamage}.
      */
@@ -852,6 +860,9 @@ public final class CMIParticleEngine {
         var schedule = new AllayStormRuntime.EmitSchedule(this.emitIds, this.emitCounts, this.emitOrigins,
                 this.emitTranslucent, this.emitOriginRef, this.emitLight, this.emitMemberBase, this.emitMemberKey);
         this.storm.scheduleSpawnRuns(schedule);
+        // continuous chased center: rewrite the storm header's anchor slot from
+        // the interpolated center every frame (1 Hz snapshots, frame-rate motion)
+        this.storm.refreshCenterHeader();
         int entryCount = schedule.entryCount;
         int totalSpawn = schedule.totalSpawn;
 
@@ -1922,8 +1933,8 @@ public final class CMIParticleEngine {
             net.neoforged.neoforge.network.PacketDistributor.sendToServer(
                     new com.iridium126.createmanaindustry.network.ServerboundStormHitPacket(
                             memberIdx, total, kbVecX, kbVecZ, light,
-                            hitPos.x - this.storm.anchor().x, hitPos.y - this.storm.anchor().y,
-                            hitPos.z - this.storm.anchor().z));
+                            hitPos.x - this.storm.center().x, hitPos.y - this.storm.center().y,
+                            hitPos.z - this.storm.center().z));
         } else {
             // legacy local-authority path (non-storm MODEL debug particles)
             enqueueDamageEntry(idx, total, kbVecX, kbVecZ, light, 0f);

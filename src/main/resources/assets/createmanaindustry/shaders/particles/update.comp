@@ -246,7 +246,12 @@ void main() {
     // light stash once a damage entry lands; the death chain reads it.
     float roll = p1.w;
     if (isModel) {
-        bool isStorm = p0.w >= 1.5; // identity in p0.w (memberIdx+1)
+        // storm gate rides the HEADER storm slot (18.x, same gate as the
+        // memberMap write above): p0.w identity is memberIdx+1, which collides
+        // with a non-storm MODEL's constant 1.0 size multiplier exactly at
+        // member 0 -- a p0.w >= 1.5 test silently drops member 0 from the
+        // whole damage pipeline
+        bool isStorm = emitters.u[hb + 18u].x > 0.5;
         uint n = min(damageQ.header.x, uint(DAMAGE_QUEUE_CAP));
         for (uint i = 0u; i < n; i++) {
             uint ob = i * 6u;
@@ -485,7 +490,9 @@ void main() {
     // snapshot lands; hit corrections (server DAMAGE broadcasts) run a fixed
     // short window at high strength so the corpse/poof plays at the exact
     // spot the attacker struck.
-    if (!corpse && p0.w >= 1.5) {
+    // HEADER storm slot gate (see the damage-queue isStorm note): member 0's
+    // p0.w (1.0) is indistinguishable from a non-storm MODEL multiplier
+    if (!corpse && emitters.u[hb + 18u].x > 0.5) {
         uint memberIdx = uint(p0.w + 0.5) - 1u;
         // correction slots are sized by the POOL capacity (2 vec4 per member);
         // an identity beyond it can never have a slot, so skip instead of

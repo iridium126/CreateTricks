@@ -1554,6 +1554,10 @@ public final class CMIParticleEngine {
             // so it reads the same fresh pool plus the hit result buffer
             this.gpu.bindParticleWrite(ParticleBuffers.PARTICLE_BB_WRITE);
             this.gpu.bindHit();
+            // capture resolves the winner's STORM identity through the emitter
+            // header's storm slot (p0.w alone is ambiguous at member 0) — every
+            // binding a pass declares must be bound at its dispatch
+            this.gpu.bindEmitters(5);
             // Publish N_model into the metadata tail slot of a sort buffer. When
             // this phase ran a sort, that is THE committed permutation buffer
             // (the same id lastFinalPermId promotes below), so count and items

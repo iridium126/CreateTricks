@@ -12,10 +12,12 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /**
  * Storm position snapshot, authority client → server, at the configured
- * {@code stormCorrectionHz}. Flat entry stride 7 floats:
- * {@code (memberIdx, px, py, pz, vx, vy, vz)} with positions RELATIVE to the
- * storm anchor and velocities in blocks/s. memberIdx rides a float slot —
- * exact for all values below 2^24, and 131072 is comfortably inside.
+ * {@code stormCorrectionHz}. Flat entry stride 8 floats:
+ * {@code (memberIdx, pad, px, py, pz, vx, vy, vz)} with positions RELATIVE to
+ * the storm anchor and velocities in blocks/s. memberIdx rides a float slot —
+ * exact for all values below 2^24, and 131072 is comfortably inside; the pad
+ * slot at offset 1 stays zero so the GPU staging layout maps 1:1, and every
+ * coordinate/velocity consumer MUST skip it (it is never a value).
  * <p>
  * Wire quantization: position 1/16-block steps (short, ±2048 blocks around
  * the anchor), velocity 1/16-blocks-per-second steps (signed byte, ±8 b/s

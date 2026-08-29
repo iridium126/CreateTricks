@@ -82,6 +82,8 @@ public final class AllayStormManager {
     private static final int MAX_HITS_PER_SECOND = 12;
     /** Coarse sanity bound for relayed positions (blocks from the anchor). */
     private static final float RELAY_BOUND = 320.0f;
+    /** Coarse sanity bound for relayed velocities (b/s — the wire's byte envelope). */
+    private static final float RELAY_VEL_BOUND = 8.0f;
 
     // ---- per-level runtime ---------------------------------------------------
 
@@ -396,10 +398,18 @@ public final class AllayStormManager {
         // violation discards the whole snapshot.
         float[] e = packet.entries();
         int stride = ServerboundStormPositionsPacket.STRIDE;
+        // NaN-safe bound form ("!(x <= bound)" also rejects NaN and both
+        // infinities). The wire quantization bounds every value today
+        // (positions short → ±2048 blocks, velocities byte → ±8 b/s), but this
+        // check IS the trust boundary: it stays self-sufficient even if the
+        // codec ever widens, and the velocity components were previously
+        // unchecked outright.
         for (int i = 0; i + stride - 1 < e.length; i += stride) {
-            if (e[i] < 0 || e[i] >= data.count
-                    || Math.abs(e[i + 2]) > RELAY_BOUND || Math.abs(e[i + 3]) > RELAY_BOUND
-                    || Math.abs(e[i + 4]) > RELAY_BOUND)
+            if (!(e[i] >= 0f && e[i] < data.count)
+                    || !(Math.abs(e[i + 2]) <= RELAY_BOUND) || !(Math.abs(e[i + 3]) <= RELAY_BOUND)
+                    || !(Math.abs(e[i + 4]) <= RELAY_BOUND)
+                    || !(Math.abs(e[i + 5]) <= RELAY_VEL_BOUND) || !(Math.abs(e[i + 6]) <= RELAY_VEL_BOUND)
+                    || !(Math.abs(e[i + 7]) <= RELAY_VEL_BOUND))
                 return;
         }
         ClientboundStormPositionsPacket relay = new ClientboundStormPositionsPacket(packet.gameTime(), e);

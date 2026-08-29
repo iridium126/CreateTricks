@@ -33,16 +33,18 @@ void main() {
 
     uint base = idx * 4u;
     vec4 p0 = pool.data[base];
-    if (p0.w < 1.5)
-        return; // not a storm member (identity lives in p0.w)
-    vec4 p1 = pool.data[base + 1u];
     vec4 p3 = pool.data[base + 3u];
     if (p3.y <= 0.0)
         return; // corpse: position is not worth correcting
     uint eid = floatBitsToUint(p3.w);
     uint hb = eid * VEC4_PER_EMITTER;
+    // THE storm gate is the header storm slot (same gate as gridbuild/hit/
+    // update): p0.w identity (memberIdx+1) collides with a non-storm MODEL's
+    // constant 1.0 size multiplier exactly at member 0, so a p0.w < 1.5 test
+    // here would silently exclude member 0 from every snapshot
     if (emitters.u[hb + 18u].x < 0.5)
-        return; // MODEL particle of a non-storm emitter
+        return; // not a storm member
+    vec4 p1 = pool.data[base + 1u];
 
     bool near = false;
     for (int pi = 0; pi < uPlayerCount && !near; pi++) {

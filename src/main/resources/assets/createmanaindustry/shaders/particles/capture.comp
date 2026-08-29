@@ -20,6 +20,7 @@ layout(std430, binding = BIND_INDIRECT) readonly buffer IndirectBuf { uint cmd[I
 layout(std430, binding = BIND_SORT_WRITE) buffer SortMeta { uvec2 kv[]; } sortOut;
 layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
 layout(std430, binding = BIND_POOL_WRITE) readonly buffer Pool { vec4 data[]; } pool;
+layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = BIND_HIT) buffer HitBuf { uvec4 pair; } hitOut;
 
 uniform int uMetaSlot; // == particle capacity: the reserved tail slot index
@@ -31,15 +32,19 @@ void main() {
     // Publish the crosshair hit-query winner's current HP beside its key (see
     // hit.comp) so the CPU can pick hurt vs death sounds when it consumes the
     // snapshot. The third word publishes the winner's STORM MEMBER identity
-    // (p0.w >= 1.5 ⇒ memberIdx = p0.w - 1; HIT_MISS for non-storm MODEL
-    // particles, which keep the legacy local-authority damage path). Same
-    // buffer, same generation, readable under this frame's fence -- no extra
-    // dispatch or sync.
+    // (HIT_MISS for non-storm MODEL particles, which keep the legacy
+    // local-authority damage path). Membership rides the emitter header's
+    // storm slot (18.x, the gate every other identity consumer uses): p0.w
+    // itself is memberIdx+1, which collides with a non-storm MODEL's constant
+    // 1.0 size multiplier exactly at member 0. Same buffer, same generation,
+    // readable under this frame's fence -- no extra dispatch or sync.
     uvec4 h = hitOut.pair;
     if (h.x != 0xFFFFFFFFu) {
         uint idx = h.x & 0x3FFFFFu;
         vec4 wp0 = pool.data[idx * 4u];
-        hitOut.pair.y = floatBitsToUint(pool.data[idx * 4u + 3u].y);
-        hitOut.pair.z = wp0.w >= 1.5 ? uint(wp0.w + 0.5) - 1u : 0xFFFFFFFFu;
+        vec4 wp3 = pool.data[idx * 4u + 3u];
+        hitOut.pair.y = floatBitsToUint(wp3.y);
+        uint web = floatBitsToUint(wp3.w) * VEC4_PER_EMITTER;
+        hitOut.pair.z = emitters.u[web + 18u].x > 0.5 ? uint(wp0.w + 0.5) - 1u : 0xFFFFFFFFu;
     }
 }

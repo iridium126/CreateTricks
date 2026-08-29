@@ -45,6 +45,7 @@
     "render.ModelsMixin",
     "render.SafeBlockEntityRendererMixin",
     "render.LevelRendererAccessor",
+    "vanilla.GameRendererPickMixin",
     "kinetics.KineticBlockEntityVisualMixin",
     "trickster.ModularSpellConstructBlockEntityRendererMixin",
     "bnb.CogwheelChainBehaviourRendererMixin",

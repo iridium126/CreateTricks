@@ -180,6 +180,47 @@ combat 爆发（追踪星 0.15 s 骑乘窗口 + 一次性红心）的出生源�
 
 radius=8、ω=0.625（默认）→ 5 ≤ 6 不触发；radius=8 + ω=3 → ω_eff = 0.75；radius=64 → ω_eff ≤ 0.094（大风暴庄重慢转——这是 6 格/s 成员限速下的诚实行为，旧实现同受此限只是表现为漂移）。emit.comp 出生侧的 6 格/s 速度钳制在 ω_eff 生效后成为死代码（无害保留）。
 
+### 5.11 命中管线原版对齐 + 武器耐久（逐行审计 `.refs/neoforge-21.1.227` 的 `Player.attack`）
+
+**已对齐项**：基础伤害（autoSpin/属性）、冷却缩放 0.2+f²·0.8、附魔伤害×冷却、武器加成在冷却缩放之后且不缩放、疾跑击退音效+标记、暴击条件逐字一致+NeoForge `CriticalHitEvent`、击退数学（空中目标语义、÷2 预乘方向）、暴击星/附魔星、红心阈值（f8>2 → 数量=f8·0.5）、冷却计数器末尾重置。
+
+**本轮补齐**：
+
+- **武器耐久（服务端专属）**：`StormManager.handleHit` 校验全部通过后走原版 `Player.attack` 服务端半边的形状——`weapon.hurtEnemy(代理, player)`（成功即 ITEM_USED 统计）→ `postHurtEnemy`（剑/三叉戟/锤 1 点、挖掘类 2 点、无覆写 0——各物品差异数值由物品自身的覆写携带，非本模组硬编码）→ 破碎时 `onPlayerDestroyItem` + 槽位清空。耐久附魔/创造模式豁免/破碎 shrink+音效全部活在原版 `hurtAndBreak` 内部，免费继承。**被拒报告不扣耐久**（死员/邻近失败/节流——类比原版 hurt() 返回 false）；**击杀命中照扣**（原版语义）。一次性 `Allay` 代理传 target（原版实现不读它，模组物品可能读）。客户端半边零耐久逻辑——原版客户端预测半边同样不扣耐久，这才是完全对齐。
+- **`DAMAGE_DEALT` 统计（服务端）**：f8 = min(命中前 HP, 伤害)——服务器自有的稀疏 HP 无护甲/吸收项，该式即精确实际伤害。
+- **`causeFoodExhaustion(0.1F)`（双端）**：镜像原版命中管线的客户端预测半边 + 服务端权威半边。
+- **STRONG/WEAK 音效拆分**：非暴击时满蓄力 STRONG、否则 WEAK（原版分支；横扫分支不适用）。
+- **攻击者减速门控**：`×0.6 减速 + 停止疾跑` 仅在击退强度 >0 时施加（原版 f4>0 门控；空手非疾跑命中无反馈）。
+- **零伤害路径静音**：原版 `f≤0 && f1≤0` 无任何音效（NODAMAGE 是 hurt() 被拒的音效，GPU 目标无可对应的被拒案例）。
+
+**明确不做（记录在案）**：横扫（需要多成员上报 + SweepAttackEvent，改动面大，Boss 蜂群受益者可疑）；POST_ATTACK 附魔效果（火附魔点燃等——粒子无燃烧状态）；无敌帧（原版 hurtTime 10t——快照节奏连击是 Boss 设计的一部分）。`EnchantmentHelper.modifyDamage/modifyKnockback` 需要 `ServerLevel`，客户端镜像维持"仅无条件效果"（原版条件性伤害附魔对悦灵无一可触发，模组条件性效果为已记录缺口）。
+
+### 5.11a 基础攻击力的客户端镜像（实测修复：满蓄力伤害塌缩至 1.0）
+
+实测症状：下界合金剑满蓄力打风暴成员 0 颗红心、伤害 1；锋利 V 打出 2 颗红心、伤害 4（原版应为 11）。数值唯一解 = `base` 读到裸基础值 1.0 而附魔加成正确。根因链（逐行核对原版）：
+
+- `Attributes.ATTACK_DAMAGE`/`ATTACK_KNOCKBACK` 注册时**没有 `setSyncable(true)`**——攻击类属性从不进入 `ClientboundUpdateAttributesPacket`；
+- 喂给它们的两组修正源又都是**服务端专属套用**：装备修正（`LivingEntity.collectEquipmentChanges` → `addTransientModifier`，整个 `detectEquipmentUpdates` 路径在 `!isClientSide` 分支内）与药水效果修正（`onEffectAdded` 同门控）；
+- 所以客户端 `getAttributeValue(ATTACK_DAMAGE)` **恒等于裸基础值 1.0**。原版自己不在乎——真实实体的伤害由服务器重算——但本引擎的客户端预测要**上报伤害**，预测值就是实值。
+
+修复：`clientAttackAttributeValue(player, weapon, attribute)`——武器 MAINHAND 组件修正（原版自己的客户端先例：`Mob.getApproximateAttackDamageWithItem`）+ 药水效果修正（`MobEffect.createModifiers`），按 `AttributeInstance` 运算序（ADD_VALUE → ADD_MULTIPLIED_BASE → ADD_MULTIPLIED_TOTAL）作用于基础值。`ATTACK_KNOCKBACK` 同门控同修（原版玩家基础 0 + 组件驱动的击退附魔恰好掩盖了问题，一并校正）。`ATTACK_SPEED` 是 syncable 的，冷却读数本就正确。附魔加成本就读自物品组件（`DataComponents.ENCHANTMENTS`），从未受影响——这正是"附魔对、基础错"的分裂症状的来源。
+
+### 5.11b 准星拾取对齐（crosshair pick：Allay 粒子按原版实体方式接管准星）
+
+需求：准星指向 Allay 粒子时给出攻击提示、阻止准星透过粒子选中身后的方块、按住攻击时不挖掘身后的方块——即原版实体在准星拾取（`GameRenderer.pick`）中的全部行为。实现 = **替换 `Minecraft.hitResult` + `crosshairPickEntity` 为指向客户端代理实体的 `EntityHitResult`**，三个需求全部由原版消费者免费达成：
+
+- **攻击提示**：`Gui.renderCrosshair` 在 `crosshairPickEntity != null` 时渲染攻击样式准星，攻击蓄力条（sword charge meter）同理；
+- **方块描边**：`LevelRenderer` 只描边 `BlockHitResult`——Allay 挡住的身后方块不再被选中；
+- **挖掘抑制**：`Minecraft.continueAttack` 只对 `BLOCK` 类型命中挖掘——按住攻击 Allay 永不挖掘身后方块。
+
+注入点：新 mixin `vanilla.GameRendererPickMixin`（`pick(F)V` 的 TAIL，`vanilla.` 子包无条件加载），调用 `CMIParticleEngine.injectCrosshairPick`。逐条设计决策：
+
+- **严格更近才替换**：原版 pick 取实体/方块结果的**更近者**；注入只在本引擎命中距离（1/32 格量化）严格小于当前命中距离时替换——真实实体、更近的墙照常获胜，**遮挡语义与原版逐字节一致且此处零射线检测**（身前有墙 ⇒ 方块命中更近 ⇒ Allay 落选）。
+- **射线基准逐字对齐**：hit.comp 本就以 `player.getEyePosition()` 为原点、相机旋转为方向、`entityInteractionRange()` 为上限——与原版 pick 的实体射线完全同构；注入点用同一构造重建命中点，距离比较共享同一基准（第三人称同样成立）。
+- **非消费读取**：新增 `crosshairHitKey` 作为 `hitKeySnapshot` 的镜像（同一次 fence 轮询刷新、同一组失效点清除：ACTIVATE/STOP/resetPoolState/stormKill 帧），点击路径的 consume-once 语义不变，**准星在点击后的那一帧不闪烁**。
+- **代理实体**：注入的是 `proxyFor` 的客户端代理（位置随命中点更新）。漏网的原版攻击（仅在点击快照刚被消费的帧发生）会向上游发送未知实体 id 的 Interact 包（服务器静默忽略），且 `LivingEntity.hurt` 在客户端早退——无副作用。右键指向粒子：`gameMode.interact` 发的包同样被忽略，物品 `interactLivingEntity` 默认 PASS 回落到正常物品使用；创造模式中键拾取会拾取 Allay 刷怪蛋（与指向真实实体一致）。
+- **守卫**：引擎不可用/旁观者/相机实体非玩家（freecam）时跳过；快照失效（世代切换）时准星自然回落到原版行为。
+
 ## 6. 关键一致性场景推演
 
 - **新玩家中途加入**：≤1 s 内扫描激活 → ACTIVATE（参数+seed+死员位图）→ 解析出生点直接落在当前时刻的轨道位置上 → 与所有老客户端同构开局。
@@ -224,7 +265,7 @@ radius=8、ω=0.625（默认）→ 5 ≤ 6 不触发；radius=8 + ω=3 → ω_ef
 | 文件 | 性质 |
 |---|---|
 | `storm/StormData.java` | 新增 — Level Attachment 状态 + NBT 序列化 |
-| `storm/StormManager.java` | 新增 — 激活门控/权威选举/命中/再生/转发 |
+| `storm/StormManager.java` | 新增 — 激活门控/权威选举/命中/再生/转发/武器耐久+统计+饥饿（§5.11） |
 | `storm/StormCommand.java` | 新增 — 服务器命令（权限 2） |
 | `network/ClientboundStormStatePacket.java` | 新增 |
 | `network/ServerboundStormHitPacket.java` | 新增 |
@@ -234,7 +275,7 @@ radius=8、ω=0.625（默认）→ 5 ≤ 6 不触发；radius=8 + ω=3 → ω_ef
 | `client/particles/storm/StormClientHandler.java` | 新增 — 客户端包接收端 |
 | `shaders/particles/stormpos.comp` | 新增 — 权威读回 pass |
 | `CMIAttachments.java` / `CreateManaIndustry.java` / `ServerConfig.java` | 修改 — 注册/配置 |
-| `client/particles/engine/CMIParticleEngine.java` | 修改 — 状态 API/时钟/调度/双键伤害/双索引命中/修正层/权威读回/ω_eff 钳制/onLevelChanged 同步重置/combat 爆发携带成员身份 + 映射清零（§5.7a） |
+| `client/particles/engine/CMIParticleEngine.java` | 修改 — 状态 API/时钟/调度/双键伤害/双索引命中/修正层/权威读回/ω_eff 钳制/onLevelChanged 同步重置/combat 爆发携带成员身份 + 映射清零（§5.7a）/命中管线对齐（§5.11） |
 | `client/particles/engine/ParticleBuffers.java` | 修改 — 4 新 SSBO（含 MEMBERMAP_BB）+ 16 B hit + 上传/读回/映射清零 |
 | `client/particles/engine/CollisionBake.java` | 修改 — `reset()`（维度切换清烘焙槽位与在途构建） |
 | `client/particles/engine/ParticlePrograms.java` | 修改 — stormpos 程序 + prelude 常量 |

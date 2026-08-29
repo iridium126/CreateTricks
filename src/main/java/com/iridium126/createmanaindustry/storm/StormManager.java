@@ -20,6 +20,11 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.stats.Stats;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.animal.allay.Allay;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -303,7 +308,8 @@ public final class StormManager {
             return;
         if (!rateLimit(t))
             return;
-        float hp = data.hpOf(idx) - packet.damage();
+        float hpBefore = data.hpOf(idx);
+        float hp = hpBefore - packet.damage();
         boolean died = hp <= 0f;
         if (died) {
             data.dead.set(idx);
@@ -312,6 +318,37 @@ public final class StormManager {
             data.hp.put(idx, hp);
         }
         level.setData(CMIAttachments.STORM_DATA.get(), data);
+
+        // vanilla Player.attack SERVER half on a landed hit (verbatim shape):
+        // weapon durability via the item's own hurtEnemy/postHurtEnemy chain
+        // — swords/tridents/maces 1 point, diggers 2, items without overrides
+        // 0; Unbreaking, the creative bypass and the break shrink+sound all
+        // live inside hurtAndBreak. A REJECTED report never reaches here (the
+        // vanilla analog is hurt() returning false — no durability either);
+        // a KILLING hit consumes like any other landed hit. The throwaway
+        // proxy mirrors the client's proxyFor: vanilla implementations never
+        // read the target, but modded items may.
+        ItemStack weapon = player.getWeaponItem();
+        ItemStack weaponCopy = weapon.copy();
+        Allay proxyTarget = new Allay(EntityType.ALLAY, level);
+        boolean hurtEnemyResult = weapon.hurtEnemy(proxyTarget, player);
+        if (!weapon.isEmpty()) {
+            if (hurtEnemyResult)
+                weapon.postHurtEnemy(proxyTarget, player);
+            if (weapon.isEmpty()) {
+                net.neoforged.neoforge.event.EventHooks.onPlayerDestroyItem(player, weaponCopy,
+                        weapon == player.getMainHandItem() ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND);
+                if (weapon == player.getMainHandItem())
+                    player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+                else
+                    player.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
+            }
+        }
+        // f8 = healthBefore - healthAfter; the server-owned hp has no armor /
+        // absorption term, so min(hpBefore, damage) IS the exact damage dealt
+        player.awardStat(Stats.DAMAGE_DEALT, Math.round(Math.min(hpBefore, packet.damage()) * 10.0F));
+        player.causeFoodExhaustion(0.1F);
+
         // server-side hurt/death audio for everyone EXCEPT the attacker —
         // the overload's nullable-player argument excludes exactly that
         // player, who already played its local prediction on the click

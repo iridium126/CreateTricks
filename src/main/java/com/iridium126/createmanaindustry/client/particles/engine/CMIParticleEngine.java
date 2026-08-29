@@ -34,8 +34,12 @@ import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.ai.attributes.Attribute;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.animal.allay.Allay;
 import net.minecraft.world.item.ItemStack;
@@ -46,6 +50,7 @@ import net.minecraft.world.item.enchantment.ItemEnchantments;
 import net.minecraft.world.item.enchantment.effects.EnchantmentValueEffect;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.CommonHooks;
@@ -263,6 +268,14 @@ public final class CMIParticleEngine {
      */
     private int hitKeySnapshot = ParticleBuffers.HIT_MISS;
     private int hitHpBits = 0;
+    /**
+     * Non-consuming mirror of {@link #hitKeySnapshot} for the crosshair pick
+     * ({@link #injectCrosshairPick}): the click path consume-once resets
+     * {@code hitKeySnapshot}, and the crosshair must not flicker for the
+     * frame between a click and the next fence poll. Refreshed at the same
+     * fence poll, cleared wherever the click snapshot is invalidated.
+     */
+    private int crosshairHitKey = ParticleBuffers.HIT_MISS;
     /**
      * Formal attack target for the vanilla damage pipeline (enchantment type
      * queries, CriticalHitEvent, item damage bonus). Never ticked or added to
@@ -563,6 +576,7 @@ public final class CMIParticleEngine {
                 this.pendingStormSpawns = Math.max(0, count - this.stormDead.cardinality());
                 this.stormHeaderWritten = false;
                 this.hitKeySnapshot = ParticleBuffers.HIT_MISS; // identities reshuffle
+                this.crosshairHitKey = ParticleBuffers.HIT_MISS;
             }
             case ClientboundStormStatePacket.ACTION_UPDATE -> {
                 if (!this.stormActive)
@@ -591,6 +605,7 @@ public final class CMIParticleEngine {
                 this.stormHeaderWritten = false;
                 this.stormDead.clear();
                 this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
+                this.crosshairHitKey = ParticleBuffers.HIT_MISS;
             }
             default -> {
             }
@@ -949,6 +964,7 @@ public final class CMIParticleEngine {
         this.translucentLatched = false;
         this.liveDisplay = 0;
         this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
+        this.crosshairHitKey = ParticleBuffers.HIT_MISS;
         this.hitHpBits = 0;
         this.hitMemberIdx = -1;
         this.dmgCount = 0;
@@ -1022,8 +1038,10 @@ public final class CMIParticleEngine {
         // any hit snapshot (fresh or the one the poll just reloaded) would
         // mis-target a shifted particle, so drop it here. doClear already
         // cleared it via resetPoolState and skips the poll.
-        if (this.stormKillEmitId >= 0)
+        if (this.stormKillEmitId >= 0) {
             this.hitKeySnapshot = ParticleBuffers.HIT_MISS;
+            this.crosshairHitKey = ParticleBuffers.HIT_MISS;
+        }
 
         float dt = clampDelta(deltaTracker);
         // Shared clock: (gameTime mod 2^21)/20 — identical on every client (see
@@ -2017,6 +2035,58 @@ public final class CMIParticleEngine {
     }
 
     /**
+     * Crosshair-pick injection ({@code GameRenderer.pick} tail mixin): makes
+     * the GPU allay particles win the crosshair like real entities. The
+     * vanilla consumers then drive everything for free — {@code Gui} renders
+     * the attack crosshair and the charge meter ({@code crosshairPickEntity}
+     * != null), {@code LevelRenderer} outlines only BlockHitResults (the wall
+     * behind an allay is no longer picked through), and
+     * {@code Minecraft.continueAttack} mines only BLOCK hits (holding attack
+     * on an allay never mines through it). Vanilla picks the NEARER of its
+     * entity/block results; the allay replaces the current result only when
+     * strictly closer, so real entities and nearer walls keep winning exactly
+     * like vanilla — occlusion included, with no raycast here (a wall in
+     * front yields a closer block hit and the allay loses). hit.comp casts
+     * from the player's eye along the camera rotation — the same ray vanilla
+     * picks with — at the same {@code entityInteractionRange()} bound.
+     * <p>
+     * The injected entity is the client-side proxy ({@link #proxyFor}): a
+     * stray vanilla attack on it (possible only when the click snapshot was
+     * just consumed) sends an unknown-entity interact packet the server
+     * ignores, and {@code LivingEntity.hurt} early-returns on the client.
+     * The read is NON-consuming ({@link #crosshairHitKey}), so the crosshair
+     * never flickers in the frame between a click and the next fence poll.
+     */
+    public void injectCrosshairPick(Minecraft mc) {
+        if (!this.available() || !ClientConfig.particleEnabled
+                || this.crosshairHitKey == ParticleBuffers.HIT_MISS)
+            return;
+        if (mc.level == null || mc.player == null || mc.player.isSpectator()
+                || mc.getCameraEntity() != mc.player)
+            return;
+        float t = (this.crosshairHitKey >>> ParticleBuffers.HIT_KEY_INDEX_BITS) / 32.0F;
+        // same ray as dispatchHitQuery/hit.comp — player eye origin, camera
+        // rotation direction (vanilla's pick also casts from the camera
+        // ENTITY's eye, not the third-person camera) — so the injected ray
+        // parameter and the block/entity distance comparison below share one
+        // exact base
+        Vec3 eye = mc.player.getEyePosition();
+        Camera camera = mc.gameRenderer.getMainCamera();
+        Vec3 look = Vec3.directionFromRotation(camera.getXRot(), camera.getYRot());
+        Vec3 hitPos = eye.add(look.scale(t));
+        HitResult current = mc.hitResult;
+        double currentDistSq = current == null || current.getType() == HitResult.Type.MISS
+                ? Double.MAX_VALUE
+                : current.getLocation().distanceToSqr(eye);
+        if ((double) t * (double) t >= currentDistSq)
+            return; // a nearer vanilla result (real entity or wall) keeps winning
+        Allay proxy = this.proxyFor(mc.level);
+        proxy.setPos(hitPos.x, hitPos.y, hitPos.z);
+        mc.hitResult = new EntityHitResult(proxy, hitPos);
+        mc.crosshairPickEntity = proxy;
+    }
+
+    /**
      * Client attack-key hook ({@code InputEvent.InteractionKeyMappingTriggered}):
      * consumes the newest completed hit-query snapshot and performs a
      * vanilla-aligned melee attack when an allay is under the crosshair. The
@@ -2066,11 +2136,16 @@ public final class CMIParticleEngine {
      * hit query selected, verbatim from the 1.21.1 source: cooldown scaling
      * on the base damage (0.2 + f²·0.8), the same scaling on the enchantment
      * bonus, the UNCOOLED weapon bonus, the ×1.5 crit through the NeoForge
-     * CriticalHitEvent, sprint-knockback sound + attacker slowdown, and the
-     * cooldown reset at the END (NeoForge moved it there so the scale is
-     * accurate during the attack). Sweep is intentionally absent (documented
-     * deviation); item durability and other server-only consequences do not
-     * exist for decorative particles.
+     * CriticalHitEvent, the STRONG/WEAK hit sound split, knockback-gated
+     * attacker slowdown, per-hit food exhaustion, and the cooldown reset at
+     * the END (NeoForge moved it there so the scale is accurate during the
+     * attack). The SERVER half of the pipeline (weapon durability via
+     * hurtEnemy/postHurtEnemy, DAMAGE_DEALT stat) runs in
+     * {@code StormManager.handleHit} — vanilla consumes durability
+     * server-side only. Documented deviations: sweep absent (no multi-target
+     * hit reports); POST_ATTACK enchantment effects (fire aspect etc.)
+     * absent (particles have no burn state); no invulnerability frames
+     * (snapshot-paced hits are the boss design).
      */
     private boolean syntheticAttack(Minecraft mc, LocalPlayer player, int idx, Vec3 hitPos, int memberIdx) {
         Allay target = proxyFor(mc.level);
@@ -2079,15 +2154,16 @@ public final class CMIParticleEngine {
         float base = player.isAutoSpinAttack()
                 ? ((com.iridium126.createmanaindustry.mixin.vanilla.LivingEntityAccessor) (Object) player)
                         .createmanaindustry$getAutoSpinAttackDmg()
-                : (float) player.getAttributeValue(Attributes.ATTACK_DAMAGE);
+                : clientAttackAttributeValue(player, weapon, Attributes.ATTACK_DAMAGE);
         float enchBonus = enchantValueEffect(EnchantmentEffectComponents.DAMAGE, weapon, base, player) - base;
         float cooldown = player.getAttackStrengthScale(0.5F);
         float damage = base * (0.2F + cooldown * cooldown * 0.8F);
         enchBonus *= cooldown;
 
         if (damage <= 0.0F && enchBonus <= 0.0F) {
-            mc.level.playLocalSound(player.getX(), player.getY(), player.getZ(),
-                    SoundEvents.PLAYER_ATTACK_NODAMAGE, SoundSource.PLAYERS, 1.0F, 1.0F, false);
+            // vanilla plays NOTHING here (PLAYER_ATTACK_NODAMAGE is the
+            // hurt()-rejected sound, a case the GPU target has no analog of);
+            // the swing still happens and the ticker still resets
             player.swing(InteractionHand.MAIN_HAND);
             player.resetAttackStrengthTicker();
             return true;
@@ -2116,7 +2192,9 @@ public final class CMIParticleEngine {
             damage *= critEvent.getDamageMultiplier();
             mc.level.playLocalSound(player.getX(), player.getY(), player.getZ(),
                     SoundEvents.PLAYER_ATTACK_CRIT, SoundSource.PLAYERS, 1.0F, 1.0F, false);
-        } else if (fullCharge) {
+        } else {
+            // vanilla: STRONG on a full charge, WEAK otherwise (sweep is
+            // absent, so its branch of the vanilla if never applies here)
             mc.level.playLocalSound(player.getX(), player.getY(), player.getZ(),
                     SoundEvents.PLAYER_ATTACK_STRONG, SoundSource.PLAYERS, 1.0F, 1.0F, false);
         }
@@ -2153,7 +2231,7 @@ public final class CMIParticleEngine {
         // untouched); the strength is pre-multiplied into the direction so a
         // queue entry stays 16 bytes
         float kb = enchantValueEffect(EnchantmentEffectComponents.KNOCKBACK, weapon,
-                (float) player.getAttributeValue(Attributes.ATTACK_KNOCKBACK), player) + (sprintKnockback ? 1.0F : 0.0F);
+                clientAttackAttributeValue(player, weapon, Attributes.ATTACK_KNOCKBACK), player) + (sprintKnockback ? 1.0F : 0.0F);
         float strength = kb * 0.5F;
         float yawRad = player.getYRot() * (float) (Math.PI / 180.0);
         float kbVecX = Mth.sin(yawRad) * strength;
@@ -2167,9 +2245,17 @@ public final class CMIParticleEngine {
                 lethal ? SoundEvents.ALLAY_DEATH : SoundEvents.ALLAY_HURT,
                 SoundSource.NEUTRAL, 1.0F, 1.0F, false);
 
-        // attacker feedback, exactly like vanilla after a landed hit
-        player.setDeltaMovement(player.getDeltaMovement().multiply(0.6, 1.0, 0.6));
-        player.setSprinting(false);
+        // vanilla gates BOTH the attacker slowdown and the sprint stop on a
+        // nonzero knockback (f4 > 0): a bare-handed non-sprint hit applies no
+        // feedback at all — mirror that
+        if (strength > 0.0F) {
+            player.setDeltaMovement(player.getDeltaMovement().multiply(0.6, 1.0, 0.6));
+            player.setSprinting(false);
+        }
+
+        // vanilla exhausts 0.1 per landed hit (Player.attack, both halves);
+        // the storm path lands every consumed snapshot
+        player.causeFoodExhaustion(0.1F);
         if (memberIdx >= 0 && this.stormActive) {
             // Server-authoritative storm path: REPORT ONLY. The server owns
             // HP and death, and its DAMAGE broadcast applies the hit to every
@@ -2200,6 +2286,42 @@ public final class CMIParticleEngine {
     private static float lightSample(ClientLevel level, Vec3 pos) {
         int packed = LevelRenderer.getLightColor(level, BlockPos.containing(pos));
         return LightTexture.block(packed) + 16f * LightTexture.sky(packed);
+    }
+
+    /**
+     * Client-side mirror of {@code LivingEntity.getAttributeValue} for the
+     * attack attributes. {@code ATTACK_DAMAGE}/{@code ATTACK_KNOCKBACK} are
+     * registered NON-syncable (no {@code setSyncable(true)} in
+     * {@code Attributes}), and BOTH modifier sources that feed them are
+     * applied server-side only — equipment via {@code collectEquipmentChanges}
+     * (runs under {@code !isClientSide}) and mob effects via
+     * {@code onEffectAdded} (ditto) — so the live client attribute always
+     * reads the bare base value (1.0 for a player). Vanilla never minds (it
+     * recomputes server-side for real entities), but this engine's client
+     * prediction REPORTS its damage, so the mirror must be exact: weapon
+     * MAINHAND modifiers from the item component (vanilla's own client-side
+     * precedent, {@code Mob.getApproximateAttackDamageWithItem}) plus
+     * mob-effect modifiers via {@code MobEffect.createModifiers}, applied in
+     * vanilla {@code AttributeInstance} operation order over the base value.
+     */
+    private static float clientAttackAttributeValue(LocalPlayer player, ItemStack weapon,
+            Holder<Attribute> attribute) {
+        double baseValue = player.getAttributeBaseValue(attribute);
+        final double[] acc = new double[3]; // ADD_VALUE, ADD_MULTIPLIED_BASE, ADD_MULTIPLIED_TOTAL
+        java.util.function.BiConsumer<Holder<Attribute>, AttributeModifier> collector = (attr, mod) -> {
+            if (attr.value() == attribute.value()) {
+                switch (mod.operation()) {
+                    case ADD_VALUE -> acc[0] += mod.amount();
+                    case ADD_MULTIPLIED_BASE -> acc[1] += mod.amount();
+                    case ADD_MULTIPLIED_TOTAL -> acc[2] += mod.amount();
+                }
+            }
+        };
+        if (!weapon.isEmpty())
+            weapon.getAttributeModifiers().forEach(EquipmentSlot.MAINHAND, collector);
+        for (MobEffectInstance effect : player.getActiveEffects())
+            effect.getEffect().value().createModifiers(effect.getAmplifier(), collector);
+        return (float) ((baseValue + acc[0]) * (1.0 + acc[1]) * (1.0 + acc[2]));
     }
 
     /**
@@ -2307,6 +2429,7 @@ public final class CMIParticleEngine {
             // the same fence covers the hit query, so its snapshot is fresh now
             int[] hit = this.gpu.readbackHit();
             this.hitKeySnapshot = hit[0];
+            this.crosshairHitKey = hit[0];
             this.hitHpBits = hit[1];
             this.hitMemberIdx = hit[2] == ParticleBuffers.HIT_MISS ? -1 : hit[2];
             // ...and the authority position readback dispatched last compute phase

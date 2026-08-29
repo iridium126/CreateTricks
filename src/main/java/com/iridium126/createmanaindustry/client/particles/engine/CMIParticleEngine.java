@@ -542,7 +542,7 @@ public final class CMIParticleEngine {
                 this.stormActive = true;
                 this.stormAnchor = anchor;
                 this.stormRadius = radius;
-                this.stormOmega = omega; // signed; 0 = ball mode
+                this.stormOmega = clampVortexOmega(omega, radius); // signed; 0 = ball mode
                 this.stormSeed = seed & AllayStormSpec.SEED_MASK_CLIENT;
                 this.stormCount = count;
                 this.stormAuthority = authority;
@@ -557,7 +557,7 @@ public final class CMIParticleEngine {
                     return;
                 this.stormAnchor = anchor;
                 this.stormRadius = radius;
-                this.stormOmega = omega;
+                this.stormOmega = clampVortexOmega(omega, radius);
                 this.stormAuthority = authority;
                 this.stormCorrectionHz = correctionHz;
                 if (this.stormHeaderWritten && this.stormEmitId >= 0) {
@@ -626,6 +626,24 @@ public final class CMIParticleEngine {
     /** Shared simulation clock from a game-time tick value (see {@link #timeSec}). */
     private static float clockSeconds(long gameTime) {
         return (gameTime & ((1 << 21) - 1)) / 20.0f;
+    }
+
+    /**
+     * Effective vortex angular velocity. Co-rotation needs the tangential
+     * speed {@code omega * homeR}, and member speed is hard-capped at
+     * {@link AllayStormSpec#MAX_SPEED}, so any |omega| beyond
+     * {@code MAX_SPEED / radius} would make the update.comp servo targets
+     * permanently unreachable — the members would chase a pattern they can
+     * never catch. Clamped by the STORM radius (an upper bound of every
+     * member's homeR), so the whole pattern stays rigidly co-rotating, and
+     * deterministically on every client: both operands are synced params.
+     * The sign survives (zero still selects ball mode).
+     */
+    private static float clampVortexOmega(float omega, double radius) {
+        if (omega == 0f)
+            return 0f;
+        float mag = (float) Math.min(Math.abs(omega), AllayStormSpec.MAX_SPEED / Math.max(radius, 2.0));
+        return Math.signum(omega) * mag;
     }
 
     /**
@@ -1994,7 +2012,7 @@ public final class CMIParticleEngine {
         if (mc.level == null || player == null || player.isSpectator())
             return false;
         int idx = key & ((1 << ParticleBuffers.HIT_KEY_INDEX_BITS) - 1);
-        float t = (key >>> ParticleBuffers.HIT_KEY_INDEX_BITS) / 256.0F;
+        float t = (key >>> ParticleBuffers.HIT_KEY_INDEX_BITS) / 32.0F;
         if (idx >= this.gpu.capacity())
             return false;
         // vanilla pick semantics: the eye ray is clipped by the first solid

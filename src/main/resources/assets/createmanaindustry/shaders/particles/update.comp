@@ -97,6 +97,12 @@ const float STORM_W_SEP      = 6.0;
 const float STORM_W_CONTAIN  = 3.0;
 const float STORM_PLAYER_R   = 3.0;
 const float STORM_PLAYER_W   = 14.0;
+// vortex home-point servo (see the vortex branch): stiffness 24 leaves a
+// steady-state centripetal tracking lag of omega^2*homeR/24 (~0.13 blocks at
+// the default parameters); damping 6 -> zeta ~ 0.61, and the semi-implicit
+// integrator stays non-amplifying clear up to the 0.25 s worst-case dt.
+const float STORM_VORTEX_K   = 24.0;
+const float STORM_VORTEX_C   = 6.0;
 // Per-particle cap on grid-chain NODE VISITS across the 27-cell sweep. Chain
 // length scales with swarm density (and hash collisions pull far particles in
 // too), so an unbounded walk degraded toward O(N^2) at the 131072-member stress
@@ -295,14 +301,15 @@ void main() {
 
     // ---- storm swarm steering ------------------------------------------------
     // Mode 1 (ball): boids neighbour forces + containment shell around G(t).
-    // Mode 2 (vortex): ROTATING-FRAME pseudo-force solution. Each tick the
-    // member's state is expressed in the frame spinning at signed uStormOmega
-    // about G(t); real forces there are the under-damped home-circle springs
-    // (radius + height), separation and player repulsion, while centrifugal
-    // (w^2 r) and Coriolis (-2 w x v_frame) fall out of the transform -- their
-    // interplay etches the persistent spiral arms. Only WORLD-frame
-    // acceleration leaves this block: the collision sweep below still owns
-    // the final position move.
+    // Mode 2 (vortex): world-frame SERVO onto each member's rotating home
+    // point (radius + deck from the seed, phase = omega*t + seed phase).
+    // Equilibrium == the analytic spawn state in emit.comp (on the home
+    // circle at phase a, velocity omega x r), so late joiners start settled
+    // and the pattern phase is a pure function of the shared clock --
+    // identical on every client. The engine clamps |omega| to
+    // MAX_SPEED / radius client-side, so servo targets always stay reachable
+    // by the speed-capped members. Only WORLD-frame acceleration leaves this
+    // block: the collision sweep below still owns the final position move.
     vec4 stormA = emitters.u[hb + 18u]; // x mode(0 none|1 ball|2 vortex), y radius, z wanderRadius, w maxSpeed
     if (!corpse && stormA.x > 0.5 && stormA.x < 1.5) {
         vec3 anchor = emitters.u[hb + 19u].xyz;
@@ -380,44 +387,26 @@ void main() {
             vel *= spMax / spd;
     }
     else if (!corpse && stormA.x > 1.5) {
-        // ----- vortex: integrate in the co-rotating frame ---------------------
+        // ----- vortex: world-frame servo to the ROTATING home point ----------
         vec3 anchor = emitters.u[hb + 19u].xyz;
         vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
         float omega = uStormOmega;
-        float th = omega * uTimeSec;
-        float cth = cos(th);
-        float sth = sin(th);
-        // R_y(-th) into the frame (helper keeps both directions consistent)
-        #define CMIST_ROT(v, c, s) vec3((c) * (v).x + (s) * (v).z, (v).y, -(s) * (v).x + (c) * (v).z)
-
-        vec3 rel = pos - G;
-        vec3 pF = CMIST_ROT(rel, cth, -sth);
-        // frame velocity: rotate world velocity in, subtract the FRAME drag
-        // velocity w x pF (rotation-covariant, so the axis-cross uses pF, not
-        // the world offset -- mixing the two silently skews every spiral)
-        vec3 vF = CMIST_ROT(vel, cth, -sth) - vec3(omega * pF.z, 0.0, -omega * pF.x);
-
-        // per-particle home circle + deck height (stateless from seed)
         float ballR = max(stormA.y, 2.0);
+        // per-particle home circle + deck + phase (stateless from seed);
+        // the phase hash MUST mirror emit.comp's analytic spawn exactly --
+        // the spawn state IS this servo's equilibrium
         float homeR = mix(ballR * 0.35, ballR, cmiHash1(p3.z * 5.7));
         float homeY = (cmiHash1(p3.z * 9.1) * 2.0 - 1.0) * 1.2;
+        float a = omega * uTimeSec + cmiHash1(p3.z * 11.3) * 6.2831853;
+        float ca = cos(a);
+        float sa = sin(a);
+        vec3 target = G + vec3(ca * homeR, homeY, sa * homeR);
+        // target velocity = orbital term of d(target)/dt; the wander center's
+        // own ~0.4 b/s drift is left untracked (absorbed as sub-block lag)
+        vec3 vT = vec3(-sa, 0.0, ca) * (omega * homeR);
 
-        // under-damped springs toward the home circle/deck (frame coords)
-        vec2 pr = pF.xz;
-        float e = length(pr);
-        vec2 dirOut = e > 1e-3 ? pr / e : vec2(1.0, 0.0);
-        float vRad = dot(vF.xz, dirOut);
-        vec2 aRad = dirOut * (-(2.5) * (e - homeR) - (0.55) * vRad);
-        vec3 aF = vec3(aRad, -(2.0) * (pF.y - homeY) - (1.2) * vF.y);
-
-        // pseudo-forces of the rotating frame
-        aF.xz += omega * omega * pF.xz;                       // centrifugal
-        aF += vec3(-2.0 * omega * vF.z, 0.0, 2.0 * omega * vF.x); // Coriolis
-
-        // separation + player repulsion (rotation-invariant distances; the
-        // world-space vectors are rotated back out together with aF below)
-        // Same visit budget as the ball-mode sweep. The old idx-live guard was
-        // dead code: main() already returned past prevCounter.live.
+        // separation + player repulsion, world space exactly like ball mode.
+        // Same visit budget as the ball-mode sweep.
         vec3 sepW = vec3(0.0);
         int sepVisits = 0;
         bool sepBudgetGone = false;
@@ -457,9 +446,9 @@ void main() {
                 repW += (dp / dpL) * STORM_PLAYER_W * (STORM_PLAYER_R - dpL) / STORM_PLAYER_R;
         }
 
-        // back to world: rotate the frame-side acceleration out, add the
-        // already-world-space terms, hand ONE acceleration to the integrator
-        vec3 aW = CMIST_ROT(aF, cth, sth) + sepW + repW;
+        // servo onto the co-rotating home point, plus the world-space terms,
+        // hand ONE acceleration to the integrator (same contract as ball mode)
+        vec3 aW = (target - pos) * STORM_VORTEX_K + (vT - vel) * STORM_VORTEX_C + sepW + repW;
         vel += aW * uDt;
         float spMaxV = max(stormA.w, 0.5);
         float spdV = length(vel);

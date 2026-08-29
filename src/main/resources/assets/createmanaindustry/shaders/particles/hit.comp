@@ -12,9 +12,11 @@
 // bake volumes too).
 //
 // Result packing: key = (quantized ray distance << 22) | particle index.
-// The distance is quantized to 1/256 block (10 bits, clamped < 4.0 blocks --
-// the entity interaction range is at most 3.5), leaving 22 bits for the pool
-// index (capacity caps at 4M = 2^22). 0xFFFFFFFF = miss (reset.comp).
+// The distance is quantized to 1/32 block (10 bits, clamped < 32.0 blocks --
+// wide enough for modded reach such as Hexcasting's 32-block casting range),
+// leaving 22 bits for the pool index (capacity caps at 4M = 2^22). The
+// engine unpacks with the same step (CMIParticleEngine.handlePlayerAttack).
+// 0xFFFFFFFF = miss (reset.comp).
 // Hittable = MODEL material with hp > 0: corpses (hp <= 0) are excluded here
 // and can never be damaged. The engine only dispatches this pass when a
 // translucent particle may exist -- every MODEL particle is translucent, so a
@@ -78,6 +80,6 @@ void main() {
         return;
 
     float t = max(tEnter, 0.0); // eye inside the box hits at t = 0, like vanilla
-    uint k = (uint(min(t, 3.999) * 256.0) << 22u) | (idx & 0x3FFFFFu);
+    uint k = (uint(min(t, 31.99) * 32.0) << 22u) | (idx & 0x3FFFFFu);
     atomicMin(hitOut.pair.x, k);
 }

@@ -36,8 +36,9 @@ layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } 
 uniform uint uTotalSpawn;
 uniform uint uEmitCount;
 uniform uint uCapacity;
-// storm style 3: shared simulation clock (gameTime/20), instance seed as a
-// [0,1) float (24-bit), and the signed angular velocity
+// storm style 3: shared simulation clock (gameTime/20), the RAW 24-bit
+// instance seed (integer-valued float, NOT normalized to [0,1)), and the
+// signed angular velocity
 uniform float uTimeSec;
 uniform float uStormSeed;
 uniform float uStormOmega;
@@ -122,20 +123,42 @@ void main() {
         uint hbS = eid * VEC4_PER_EMITTER;
         vec4 stormA = emitters.u[hbS + 18u];
         vec3 anchor = emitters.u[hbS + 19u].xyz;
-        // seed = hash(stormSeed, memberIdx), hashed in two steps so the large
-        // integer index never eats the seed's mantissa precision — identical
-        // on every client (IEEE-determined ops only)
-        float mi = cmiHash1(float(memberIdx) * 0.6123 + 0.7);
-        float mseed = cmiHash1(mi + uStormSeed * 17.17);
+        // seed = hash(stormSeed, memberIdx). Two discipline rules, learned the
+        // hard way:
+        //  1. NO a*b+c anywhere below — an a*b+c may legally contract into an
+        //     FMA with driver-dependent rounding, and one ULP at this
+        //     magnitude (~8e4 -> ULP 0.0078) avalanches into a different
+        //     identity per GPU vendor. Every statement is a single mul/add.
+        //  2. The seed must enter the hash at a WIDE magnitude: cmiHash1's
+        //     step-1 fract(p*0.1031) only folds when p spans >= ~10, and its
+        //     output carries just ~13.7k effective buckets — a [0,1)-scale
+        //     input and/or a single pass cannot separate 131072 members. The
+        //     old mi + uStormSeed*17.17 did BOTH wrong: the product reached
+        //     ~2.9e8 where a float's ULP is 32, so the addition swallowed mi
+        //     entirely for ~94% of seeds — every member derived the SAME
+        //     identity, spawned stacked at one spot, and the d^2 > 1e-8
+        //     separation guard then locked the clump permanently.
+        float s0 = cmiHash1(uStormSeed + 31.7);  // [0,1), one value per storm
+        float shift = s0 * 97.0;
+        float t = float(memberIdx) * 0.6123;
+        float p = t + 0.7;
+        float q = p + shift;                     // spans ~[0.7, 80360] -> ~8285 folds
+        float hA = cmiHash1(q);
+        float q2 = q * 7.31;                     // second pass, decorrelated input
+        float hB = cmiHash1(q2);
+        float mA = hA * 0.618;
+        float mB = hB * 0.382;
+        float mseed = mA + mB;                   // [0,1); 2048 members: exact, 131072: ~95% distinct
         float ballR = max(stormA.y, 2.0);
         vec3 G = cmiStormCenter(anchor, stormA.z, mseed, uTimeSec);
         vec3 spos;
         vec3 svel;
         if (stormA.x > 1.5) {
             // vortex: ON the seed-derived home circle at the current phase.
-            // The derivation mirrors update.comp's steering EXACTLY (same
-            // hashes, same frame math) so the spawn sits on the orbit the
-            // springs will hold — no settling transient for late joiners.
+            // The derivation mirrors update.comp's home-point servo EXACTLY
+            // (same radius/deck/phase hashes, same omega) — the spawn state
+            // IS the servo's equilibrium, so late joiners start with no
+            // settling transient.
             float homeR = mix(ballR * 0.35, ballR, cmiHash1(mseed * 5.7));
             float homeY = (cmiHash1(mseed * 9.1) * 2.0 - 1.0) * 1.2;
             float phi = cmiHash1(mseed * 11.3) * 6.2831853;

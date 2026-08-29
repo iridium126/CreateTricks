@@ -18,6 +18,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.level.Level;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -284,6 +286,21 @@ public final class StormManager {
         int idx = packet.memberIdx();
         if (idx < 0 || idx >= data.count || data.dead.get(idx))
             return; // unknown or already dead member
+        // cheap plausibility: the reported hit spot must sit within melee
+        // reach of the attacker's SERVER-side position (the +8 covers the
+        // server view lagging a fast-moving client by ~1-2 blocks plus
+        // latency jitter). Kills the "hit any member from anywhere inside
+        // the activation range" corner of the documented trust surface, and
+        // is immune to anchor moves / radius shrinks (members fly there for
+        // seconds, but an attacker can only hit what they stand next to).
+        // Deliberately melee-shaped: a future ranged report path re-scopes
+        // or drops this check (one conditional).
+        double hitX = data.anchor.getX() + packet.relX();
+        double hitY = data.anchor.getY() + packet.relY();
+        double hitZ = data.anchor.getZ() + packet.relZ();
+        double reach = player.entityInteractionRange() + 8.0;
+        if (player.distanceToSqr(hitX, hitY, hitZ) > reach * reach)
+            return;
         if (!rateLimit(t))
             return;
         float hp = data.hpOf(idx) - packet.damage();
@@ -295,6 +312,16 @@ public final class StormManager {
             data.hp.put(idx, hp);
         }
         level.setData(CMIAttachments.STORM_DATA.get(), data);
+        // server-side hurt/death audio for everyone EXCEPT the attacker —
+        // the overload's nullable-player argument excludes exactly that
+        // player, who already played its local prediction on the click
+        // (vanilla parity: real entities play their hurt sounds server-side)
+        level.playSound(player,
+                data.anchor.getX() + packet.relX(),
+                data.anchor.getY() + packet.relY(),
+                data.anchor.getZ() + packet.relZ(),
+                died ? SoundEvents.ALLAY_DEATH : SoundEvents.ALLAY_HURT,
+                SoundSource.NEUTRAL, 1.0F, 1.0F);
         ClientboundStormDamagePacket out = new ClientboundStormDamagePacket(idx, packet.damage(),
                 packet.kbX(), packet.kbZ(), packet.light(), died,
                 packet.relX(), packet.relY(), packet.relZ());

@@ -3,7 +3,7 @@
 > 模组：CreateManaIndustry（机械动力：魔法工业）
 > 版本基线：1.21.1 / NeoForge 21.1.227 / Java 21
 > 前置阅读：`docs/particle-engine-dev.md`（GPU 粒子引擎本体）
-> 状态：**实现完成，编译通过，待进服实测**
+> 状态：**实现完成，编译通过，待进服实测**（2026-08 实测前修复轮：身份哈希塌缩、涡旋伺服重构、维度切换同步重置、协议解码上限、命中邻近校验 + 服务器音效——详见 §5.1 / §5.9 / §5.8 / §3 / §4.2 标注）
 
 ---
 
@@ -27,7 +27,7 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 | 成员位置/速度 | **各客户端 GPU** | 显存粒子池（64 B/成员） | 权威客户端 5 Hz 快照 → 服务器转发 → 软修正槽；**永不定时广播** |
 | 受伤/死亡/击退事件 | 服务器判定，客户端演出 | — | DAMAGE 广播（~14 B/次，含攻击者） |
 
-**为何伤害由客户端上报**：成员位置是客户端 GPU 状态，服务器没有 GPU 无法验证命中（与 Minecraft 反作弊对真实实体的验证同级——记录在案的信任面）。服务器做的是**廉价校验**：每秒 ≤12 次节流、伤害上限（线格式 63.75）、死成员/维度外玩家拒绝。
+**为何伤害由客户端上报**：成员位置是客户端 GPU 状态，服务器没有 GPU 无法验证命中（与 Minecraft 反作弊对真实实体的验证同级——记录在案的信任面）。服务器做的是**廉价校验**：死成员/索引、**攻击者邻近**（命中点距服务端位置 ≤ reach+8，见 §4.2）、每秒 ≤12 次节流、伤害上限（线格式 63.75）、维度外玩家拒绝。
 
 **为何客户端 HP 不是废数据**：它是 ① 尸体状态机的载体（0→-1 倒计时驱动死亡翻滚动画），② 命中资格门（`hit.comp` 的 `hp <= 0` 排除尸体），③ 致命一击音效预测（点击瞬间本地决定播放 hurt/death 音效，等不及服务器裁决）。数值允许跨端漂移，因为没有任何可观测行为依赖精确值——**死亡一律由服务器的死亡位强制**，不信本地算术。
 
@@ -44,7 +44,7 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 | DEACTIVATE | 无 | 2 B | 离开激活范围（服务器状态不动） |
 | STOP | 无 | 2 B | 风暴结束 |
 
-线格式：flags 字节（低 2 位动作 + 0x04 authority 位）、修正频率 varint×10、锚点 `BlockPos` VAR_LONG、count varint、radius 字节（×2 = 0.5 格步长）、mode varint、ω 有符号字节（÷16 rad/s）、seed varint、死亡位图 length-prefixed 裸字节（BitSet.toByteArray 小端序）。
+线格式：flags 字节（低 2 位动作 + 0x04 authority 位）、修正频率 varint×10、锚点 `BlockPos` VAR_LONG、count varint、radius 字节（×2 = 0.5 格步长）、mode varint、ω 有符号字节（÷16 rad/s）、seed varint、死亡位图 length-prefixed 裸字节（BitSet.toByteArray 小端序）。**解码防御**：位图长度 > `MAX_DEAD_BYTES`（16 KB = MAX_COUNT/8）即抛 `DecoderException` 断开连接——长度字段驱动数组分配，无上限时单个恶意包即可让对端 OOM。
 
 ### 3.2 `ServerboundStormHitPacket`（C→S，攻击者上报，~13 B）
 
@@ -65,7 +65,9 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 
 条目 stride = 8 浮点（`memberIdx, pad, pos.xyz, vel.xyz`——与 GPU 暂存布局一致，offset 1 是 pad 不上线）。每快照 ≤256 条 → **~3 KB；5 Hz ≈ 15 KB/s 权威上行 + 各激活客户端下行**（配置可调 0.5–20 Hz）。
 
-服务器转发前做粗检（每条 |相对坐标| ≤ 320 格，否则整包丢弃）——它无法验证算不出的东西，这是文档化的信任面。
+**解码防御**：两个方向都有 `MAX_ENTRIES = 256` 上限，count 为负或超界即 `DecoderException` 踢连接。上行方向尤其关键——count 驱动条目数组分配且**无速率限制**，无上限时任意客户端可单包打爆服务器（分配在转发校验之前发生，OOM 挡不住）。
+
+服务器转发前做粗检（每条 memberIdx ∈ [0, count) 且 |相对坐标 xyz| ≤ 320 格，否则整包丢弃——初版校验错位：查了恒零的 pad 槽和 x/y、漏了 z，已修正）——它无法验证算不出的东西，这是文档化的信任面。memberIdx 上界取当前种群数量：刚缩编的世代残留快照会在此被拒，软修正层按设计自愈。
 
 ## 4. 服务器侧组件（纯 Java，零 GL 类引用）
 
@@ -77,15 +79,16 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 ```
 
 - **canonical 量化**：创建时一次性量化（`quantizeRadius`/`quantizeOmega`），持久化、线格式、客户端三方永远一致，无重量化漂移。
+- **读侧重重量化**：序列化读入时 radius/omega 再跑一遍量化（omega 先取模再补符号——`quantizeOmega` 是纯模长函数，其 0.05 下限钳制会把负号吞成 +0.05，直接调用会把所有负向漩涡读成正转）。写入侧恒为 canonical 形式，读侧防手改存档/未来格式泄露越界值到线格式（radius 线格式字节的无符号回绕同样依赖 0.5 步长钳制兜底）。
 - **旋向符号**：由 seed 最低位决定（涡旋模式），重启后不变，零额外状态。
 - **稀疏 HP**：只存受损未亡成员；`defaultReturnValue(MAX_HP)` 使缺省键读作满血。存档格式：`Dead` 变长 int 数组 + `HpIdx`/`HpBits` 平行数组（float 位型）。
 - 停止后（active=false 且无死亡无受损）序列化返回 null，存档零残留。
 
 ### 4.2 `storm/StormManager`（静态管理器，`LevelTickEvent.Post` 驱动）
 
-- **激活门控**（性能主杠杆）：每 20 tick 扫描，玩家距锚点 ≤ **196 格**激活（默认客户端 fade 终点 96+24 + 风暴最大伸展 76；fade 是客户端配置服务器读不到，故为服务器常量），**+64 格滞回**防边界抖动。ACTIVATE 包同时服务进距/登录/切维度三种场景——协议没有独立的 login-resync 路径。玩家切维度/登出：跨维度补发 DEACTIVATE 后清除 track。
+- **激活门控**（性能主杠杆）：每 20 tick 扫描，玩家距锚点 ≤ **196 格**激活（默认客户端 fade 终点 96+24 + 风暴最大伸展 76；fade 是客户端配置服务器读不到，故为服务器常量），**+64 格滞回**防边界抖动。ACTIVATE 包同时服务进距/登录/切维度三种场景——协议没有独立的 login-resync 路径。玩家切维度/登出：track 清理条件 = 玩家离线 **或** `player.serverLevel() != 本维度`——`getPlayerList().getPlayer` 是**跨维度全局查找**，只查离线会留下永不清理的 stale active track（霸占 authority 位，旧维度修正流断供，且切走者收不到 DEACTIVATE、客户端羊群成幽灵）——跨维度者补发 DEACTIVATE 后清除 track。
 - **权威选举**：激活顺序最早且仍激活的客户端。交接（断线/出范围）时向新权威发 UPDATE 翻 authority 位；新权威的本地状态成为新基准，其余客户端经同一软修正层平滑跟随（无瞬移）。
-- **命中处理**：节流 → 死成员/索引校验 → 扣血 → 死亡判定（只在这里发生）→ 广播（含攻击者，纯服务器回路）。
+- **命中处理**：死成员/索引校验 → **攻击者邻近校验**（上报命中点距攻击者**服务端位置** ≤ `entityInteractionRange() + 8`，+8 覆盖服务端视角滞后快速移动客户端 ~1-2 格 + 延迟抖动——封堵激活圈内隔空点杀任意成员；对锚点迁移/半径收缩天然免疫：成员飞往新锚点需数秒，但攻击者只能打够得着的目标；刻意近战形，未来远程报告路径一行圈定或删除）→ 节流（垃圾包在校验阶段被拒，不消耗节流预算）→ 扣血 → 死亡判定（只在这里发生）→ **服务器音效**（`playSound(攻击者, 命中点, died ? ALLAY_DEATH : ALLAY_HURT, ...)`——该重载语义 = 广播给附近所有人但**排除**指定玩家；攻击者已在点击瞬间本地预测播放，其余激活玩家听到与 DAMAGE 包同 tick、与受击闪白对齐的声音，vanilla 对齐）→ 广播（含攻击者，纯服务器回路）。
 - **HP 再生**：原版 2 HP/s（每 10 tick +1），只迭代稀疏受损表——13 万满血成员的成本为零；变更即 `setData` 标脏（NeoForge 附件脏标即存档时机）。
 - **快照转发**：仅权威客户端的包被接受（authority 位校验），粗检后原样转发给其余激活客户端。
 
@@ -104,9 +107,11 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 
 ### 5.1 成员身份（跨端一致的基石）
 
-- 成员 i 的种子 = **两步哈希** `hash(hash(i·0.6123+0.7) + stormSeed·17.17)`（大整数索引不侵蚀 seed 尾数精度；全 IEEE 确定性运算，任何客户端逐位相同）。
+- 成员 i 的种子 = **宽跨度双通道组合**：`s0 = hash(seed + 31.7)`；`q = i·0.6123 + 0.7 + s0·97`（跨度 ~8 万，`hash` 首步 `fract(p·0.1031)` 折叠 ~8285 次）；`mseed = hash(q)·0.618 + hash(q·7.31)·0.382`。
+  - **教训（实测前修复）**：初版 `hash(hash(i·0.6123+0.7) + stormSeed·17.17)` 有两处灾难——① `stormSeed·17.17` 最大 ~2.9e8，float 该量级 ULP = 32，加法直接吞掉 [0,1) 的成员哈希：**94% 的种子下全体成员同一身份 → 单点堆叠**，且分离力的 `d² > 1e-8` 守卫让重合成员受力恒等（位置对称的力场永不破缺），堆叠自锁；② `cmiHash1` 输出仅 ~13.7K 有效桶（[0,1) 级输入首步不折叠、雪崩不足），单次哈希撑不起 131072 成员。修复经严格 IEEE 模拟量化验证：2048 成员全种子全离散，131072 时 ~95%（残余两两成对，视觉不可辨）。
+  - **FMA 纪律**：派生链每条语句都是单次乘/加，无任何 `a*b+c` 形式——`a*b+c` 可被合法收缩为 FMA，跨厂商舍入差 1 ULP 经哈希雪崩放大成不同身份（~8e4 量级 1 ULP = 0.0078）。`cmiHash1` 本体（`p *= p + 33.33` 是 `a*(b+c)` 形式）天然安全。
 - 身份编码进 **p0.w**（= memberIdx + 1，0 不可能出现）：MODEL 粒子该槽位原为恒 1.0 的尺寸乘数，风暴成员征用后，**全部尺寸消费点**改由 emitter 头的风暴槽 `18.x > 0.5` 判定常量 1.0 乘数——共 5 处：`keygen.comp`、`model.vsh`、`hit.comp`、`update.comp`（死亡 poof 的 poof 尺寸）、`ShaderPackProgramCompiler`（光影包合并路径顶点源）。
-- 身份不受池压缩影响（池索引每帧 `atomicAdd` 重排，身份不重排）。
+  - 身份不受池压缩影响（池索引每帧 `atomicAdd` 重排，身份不重排）。
 
 ### 5.2 共享时钟
 
@@ -116,7 +121,7 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 
 `emit.comp` 新增 spawnStyle 3（风暴成员，头槽 `17.y=3`）：
 
-- 涡旋成员直接出生在**当前时刻的种子轨道上**（homeR/homeY/相位 φ 全部由 mseed 决定，轨道角 = ωt + φ），初速度 = 匹配的轨道切向速度——与 update.comp 弹簧的稳态解一致，晚加入者无需集结过程；
+- 涡旋成员直接出生在**当前时刻的种子轨道上**（homeR/homeY/相位 φ 全部由 mseed 决定，轨道角 = ωt + φ），初速度 = 匹配的轨道切向速度——与 update.comp 伺服的**平衡态严格一致**（§5.9），晚加入者无需集结过程；
 - 命令字 c.y 携带成员索引基址，GPU 侧 `memberIdx = base + inner` 派生身份与种子；
 - 发射调度（`runCompute` 风暴滴入块）按服务器死亡位图**分割 run**——批次绕过死成员，成员编号与服务器严格对齐；~60 帧滴入节奏保留。
 
@@ -137,7 +142,7 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 ### 5.7 权威端读回与命中双索引
 
 - `stormpos.comp`（新 pass，仅 authority + 活跃风暴时调度）：每线程对新鲜池测与 ≤16 玩家的距离（4 格 = 近战可达全覆盖），达标者原子紧凑追加 `{memberIdx, pad, posRelToAnchor.xyz, vel.xyz}`，上限 256 条；稳态成本 = 距离测试本身。
-- `hitSSBO` 从 8 B 扩到 16 B（uvec4）：`{打包距离+池索引, HP 位, 成员身份, unused}`——池索引用于战斗粒子的 originRef 追踪，**成员身份用于服务器上报**。`capture.comp` 发布 z 字（p0.w ≥ 1.5 ⇒ 身份，否则 HIT_MISS = 非风暴走遗留路径）。
+- `hitSSBO` 从 8 B 扩到 16 B（uvec4）：`{打包距离+池索引, HP 位, 成员身份, unused}`——池索引用于战斗粒子的 originRef 追踪，**成员身份用于服务器上报**。`capture.comp` 发布 z 字（p0.w ≥ 1.5 ⇒ 身份，否则 HIT_MISS = 非风暴走遗留路径）。命中键的距离位：**1/32 格步长 × 10 位（上限 31.99 格）**——覆盖 Hexcasting 32 格施法范围等模组 reach（旧 1/256 步长上限 3.999，超界命中全部折叠成同键、最近目标退化为池序号最小者）；引擎解包（`handlePlayerAttack`）与打包同一步长，`capture.comp` 不消费距离位。
 - 读回节奏：快照间隔由 `stormCorrectionHz` 决定，fence 零停（与计数读回同一 fence、同一轮询点）。
 - `syntheticAttack` 分流：风暴成员 → **只上报**（`ServerboundStormHitPacket`，含命中点相对锚点坐标），本地不落伤；非风暴 MODEL → 遗留本地队列。战斗粒子/音效本地照常（攻击者即时反馈，与原版一致）。
 
@@ -146,8 +151,22 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 - **ACTIVATE**：kill 现存世代（uKillEmit 路径，下一帧 update 先压缩旧员、emit 再补新员，容量天然腾出）→ 重建死员位图 → 滴入活员 → 命中快照作废（身份重排）。
 - **UPDATE**：仅参数 + authority + 频率；若头已写过则重打包（锚点/半径/ω/模式即时重定向），身份/HP/死亡不动。
 - **DEACTIVATE / STOP**：本地驱散（kill 路径），服务器状态非本侧业务。
+- **维度切换 / 登录登出的同步重置**：`LevelEvent.Unload/Load`（客户端自己的 ClientLevel；NeoForge 在 `Minecraft.setLevel` 内、**加载画面之前**同步触发）直接调 `onLevelChanged()` = `dropAll()` + `CollisionBake.reset()`（后者清烘焙槽位——旧维度的占用体积 presence 旗标跨维度会幽灵碰撞、并赖住 8 槽中的 4 个）。必须**同步**于事件内：旧实现走排队的 `clear()`（新维度首个计算帧才消费），而加载画面期间 enqueueWork 先行处理了新维度的 ACTIVATE——风暴先生效再被清空，服务器不重发（track 已 active），风暴就此隐身。同维度死亡重生两事件都不触发，Boss 战重生不清场。
 
 接线：`client/particles/storm/StormClientHandler`（payload 处理在渲染线程 enqueueWork，直接调引擎公开方法）。
+
+### 5.9 涡旋转向：世界系伺服（替换参考系伪力）
+
+初版在旋转参考系内取真实力（家圆弹簧 + 分离 + 斥力）并加入离心/科氏伪力，再把结果**当作世界系加速度**加到世界速度上——参考系换算没有闭合（该格式下伪力恰应相互抵消，属双重计入）。后果：径向平衡外移 ~15-40%（随 ω 增长）；实际转速 0.4~0.78ω（切向无净力 → 世界系角动量守恒，转速由出生动量决定，**ω 参数形同装饰**）。现改为**世界系伺服到旋转家点**：
+
+- 目标点 = `G + R(ωt)·(homeR·cosφᵢ, homeY, homeR·sinφᵢ)`，相位哈希（`cmiHash1(p3.z·11.3)·2π`）逐字镜像 emit.comp 出生——**平衡态 = 解析出生态**，晚加入零瞬态；
+- `a = 24·(target − pos) + 6·(vT − vel) + 分离 + 玩家斥力`（半隐式积分器在 0.25 s 极端 dt 下谱半径恰 1、不放大；稳态向心滞后 ω²·homeR/24 ≈ 0.13 格 @默认参数）；
+- **ω 的客户端物理钳制**：`ω_eff = sign(ω)·min(|ω|, MAX_SPEED/radius)`（ACTIVATE/UPDATE 时钳，见 §5.8）——共转需切向速度 ω·homeR，成员限速 6 格/s，超出则伺服目标永久不可达；按**风暴半径**而非成员各自 homeR 钳，图案保持刚性，两端从同步参数确定性钳出同值，服务器定义不动；
+- **设计让步（记录在案）**：刚性共转没有差速剪切螺旋臂——旧代码同样没有（转速全员一致、无差速可剪），"伪力互作用蚀刻螺旋臂"的注释承诺从未兑现；未来可用结构化 φᵢ（按 3~4 臂量化）做视觉加强。
+
+### 5.10 涡旋 ω_eff 的边界行为
+
+radius=8、ω=0.625（默认）→ 5 ≤ 6 不触发；radius=8 + ω=3 → ω_eff = 0.75；radius=64 → ω_eff ≤ 0.094（大风暴庄重慢转——这是 6 格/s 成员限速下的诚实行为，旧实现同受此限只是表现为漂移）。emit.comp 出生侧的 6 格/s 速度钳制在 ω_eff 生效后成为死代码（无害保留）。
 
 ## 6. 关键一致性场景推演
 
@@ -171,12 +190,14 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 
 ## 8. 明确不做 / 已知限制（记录在案）
 
-1. **信任面**：命中上报与权威位置流均不可服务器验证（与原版反作弊同级）；恶意权威客户端可摆布他人看到的近距 Boss 位置。
-2. **ball 模式**：boids 混沌 + 访问预算截断 → 个体位置跨端仅宏观看齐（测试用途，非 Boss 关键路径；vortex 保留分离力故同理有个体级漂移，由修正层收敛到亚格级）。
+1. **信任面**：命中上报与权威位置流均不可服务器完全验证（与原版反作弊同级）。命中上报已加**攻击者邻近校验**（服务端位置 ± reach+8，见 §4.2）——残余：高延迟玩家的合法命中可能落在余量外被误拒（有 12 次/秒节流兜底，代价个位数次挥空）；恶意权威客户端仍可摆布他人看到的远场成员位置（近场由修正流收敛）。
+2. **ball 模式**：boids 混沌 + 访问预算截断 → 个体位置跨端仅宏观看齐（测试用途，非 Boss 关键路径）。**vortex 已改刚性共转伺服**（§5.9）：图案相位 = 共享时钟纯函数，跨端宏观一致性优于 ball；个体级漂移仍由修正层收敛到亚格级。
 3. **`/cmip allaystorm` 在客户端配置 `particleEnabled=false` 的客户端上**：包被静默忽略（引擎 available 检查），该玩家看不到风暴；中途切换配置是已记录的边缘场景。
 4. **clock 回绕**：29 h 一次的轨道相位跳变；修正槽时间戳在回绕帧被 `cage >= 0` 守卫跳过一次。
 5. **数量变化 = 整场重启**（身份空间重塑，HP/死亡清零）——测试阶段语义，Boss 阶段若需"增援不改身份"再扩展协议。
 6. 模拟距离剔除：未做（战斗中命中率≈0；将来若需要走 **LOD 分级**——fade 外跳过 27 格扫描与碰撞子步、保留弹簧——纯 shader 改动，与本协议正交）。
+7. **游走中心 G 的跨厂商哈希差异（故意保留）**：`cmiStormCenter` 的相位哈希输入是 `a*b+c` 形式（可被 FMA 收缩，跨厂商差 1 ULP 经雪崩放大，成员 G 相位跨厂商可差数格）——已决策：G 未来由服务端权威生物 AI 驱动（§9 预留接缝），届时客户端哈希相位被网络状态取代，现在不做 `precise`/拆行投入。死亡 poof / combat 粒子的哈希偏置同理跳过（纯本地装饰，无跨端一致性预期）。
+8. **131072 成员身份离散度 ~95%**：`cmiHash1` 输出有效桶 ~13.7K，宽跨度双通道组合后 13 万成员仍有 ~5% 两两成对同身份（伺服目标重合两支，视觉不可辨）；2048 默认规模全种子全离散。彻底消除需 CPU 每成员种子上传（~512 KB/次激活），按需再做。
 
 ## 9. 未来 Boss 技能的地基（本设计预留的接缝）
 
@@ -184,6 +205,7 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 - **成员身份全端稳定**：弱点标记、锁定仇恨、按索引分组演出的技能（"奇数环成员俯冲"）可直接以 memberIdx 寻址。
 - **风暴参数热更新**（UPDATE 保留身份）：Boss 阶段切换（半径收缩、ω 加速、锚点迁移）零重启。
 - **死亡位图**即 Boss 血量账本：`aliveCount()` 就是"打掉多少 allay 才伤核心"类机制的数据源。
+- **游走中心服务端权威化**（本轮决策预留）：G(t) 未来由服务器生物 AI 驱动（跟随玩家、走位型技能）并随事件包广播——客户端哈希相位退役，跨厂商哈希差异（§8.7）随之消除。伺服/渲染管线已按"目标点"组织（§5.9），替换成本 = 一条同步流 + 客户端读包，转向/迁移零重构。
 
 ## 10. 文件清单
 
@@ -200,10 +222,12 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 | `client/particles/storm/StormClientHandler.java` | 新增 — 客户端包接收端 |
 | `shaders/particles/stormpos.comp` | 新增 — 权威读回 pass |
 | `CMIAttachments.java` / `CreateManaIndustry.java` / `ServerConfig.java` | 修改 — 注册/配置 |
-| `client/particles/engine/CMIParticleEngine.java` | 修改 — 状态 API/时钟/调度/双键伤害/双索引命中/修正层/权威读回 |
+| `client/particles/engine/CMIParticleEngine.java` | 修改 — 状态 API/时钟/调度/双键伤害/双索引命中/修正层/权威读回/ω_eff 钳制/onLevelChanged 同步重置 |
 | `client/particles/engine/ParticleBuffers.java` | 修改 — 3 新 SSBO + 16 B hit + 上传/读回 |
+| `client/particles/engine/CollisionBake.java` | 修改 — `reset()`（维度切换清烘焙槽位与在途构建） |
 | `client/particles/engine/ParticlePrograms.java` | 修改 — stormpos 程序 + prelude 常量 |
 | `client/particles/allaystorm/AllayStormSpec.java` | 修改 — spawnStyle 3 + seed 掩码 |
 | `client/particles/command/CMIParticleCommand.java` | 修改 — allaystorm 子树迁出 |
 | `client/particles/shaderpack/ShaderPackProgramCompiler.java` | 修改 — 风暴尺寸守卫 |
-| `shaders/particles/{reset,emit,update,keygen,hit,capture}.comp`、`model.vsh` | 修改 — 身份/双键/排斥/修正/解析出生/uvec4 |
+| `CreateManaIndustryClient.java` | 修改 — LevelEvent.Unload/Load 同步接 `onLevelChanged()`（旧为排队 clear，存在 ACTIVATE 抹除竞态） |
+| `shaders/particles/{reset,emit,update,keygen,hit,capture}.comp`、`model.vsh` | 修改 — 身份/双键/排斥/修正/解析出生/uvec4/伺服/1-32 量化 |

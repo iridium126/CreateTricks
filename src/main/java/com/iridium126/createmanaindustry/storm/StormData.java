@@ -108,9 +108,16 @@ public final class StormData {
             d.active = tag.getBoolean("Active");
             d.anchor = BlockPos.of(tag.getLong("Anchor"));
             d.count = Math.max(0, Math.min(MAX_COUNT, tag.getInt("Count")));
-            d.radius = tag.getFloat("Radius");
+            // re-quantize defensively: the write side always persists the
+            // canonical form, but hand-edited or future-format saves must
+            // never leak out-of-range values to clients (the radius wire
+            // byte's unsigned round-trip relies on the 0.5-step clamp too)
+            d.radius = quantizeRadius(tag.getFloat("Radius"));
             d.mode = tag.getInt("Mode") == 2 ? 2 : 1;
-            d.omega = tag.getFloat("Omega");
+            // quantizeOmega operates on MAGNITUDE (its 0.05 floor clamp would
+            // destroy a negative sign), so re-apply the sign afterwards
+            float w = tag.getFloat("Omega");
+            d.omega = w == 0f ? 0f : Math.signum(w) * quantizeOmega(Math.abs(w));
             d.stormSeed = tag.getInt("Seed") & SEED_MASK;
             int[] deadIdx = tag.getIntArray("Dead");
             for (int i : deadIdx)

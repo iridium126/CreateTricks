@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.storm;
+package com.iridium126.createmanaindustry.content.allaystorm;
 
 import java.util.BitSet;
 
@@ -26,9 +26,9 @@ import net.neoforged.neoforge.attachment.IAttachmentSerializer;
  * every client agree without re-quantization drift. The sparse HP map holds
  * only damaged-alive members (everything else is the 20 HP vanilla Allay
  * maximum); dead members are the {@link #dead} bit set and never re-enter the
- * HP map. Vanilla regen (2 HP/s) runs in {@link StormManager}.
+ * HP map. Vanilla regen (2 HP/s) runs in {@link AllayStormManager}.
  */
-public final class StormData {
+public final class AllayStormData {
 
     /** Stress-test ceiling (2^17); mirrors AllayStormSpec.MAX_COUNT. */
     public static final int MAX_COUNT = 131072;
@@ -75,8 +75,8 @@ public final class StormData {
      * Quantizes raw command input into the canonical form. Handedness comes
      * from the seed's low bit so it survives restarts with zero extra state.
      */
-    public static StormData create(BlockPos anchor, int count, double radius, int mode, double omegaMagnitude, int seed) {
-        StormData d = new StormData();
+    public static AllayStormData create(BlockPos anchor, int count, double radius, int mode, double omegaMagnitude, int seed) {
+        AllayStormData d = new AllayStormData();
         d.active = true;
         d.anchor = anchor.immutable();
         d.count = Math.max(1, Math.min(MAX_COUNT, count));
@@ -101,10 +101,10 @@ public final class StormData {
      * kills thousands of 131k, never the whole bitmap), HP as parallel
      * index/float-bits int arrays.
      */
-    public static final class Serializer implements IAttachmentSerializer<CompoundTag, StormData> {
+    public static final class Serializer implements IAttachmentSerializer<CompoundTag, AllayStormData> {
         @Override
-        public StormData read(IAttachmentHolder holder, CompoundTag tag, HolderLookup.Provider provider) {
-            StormData d = new StormData();
+        public AllayStormData read(IAttachmentHolder holder, CompoundTag tag, HolderLookup.Provider provider) {
+            AllayStormData d = new AllayStormData();
             d.active = tag.getBoolean("Active");
             d.anchor = BlockPos.of(tag.getLong("Anchor"));
             d.count = Math.max(0, Math.min(MAX_COUNT, tag.getInt("Count")));
@@ -133,7 +133,7 @@ public final class StormData {
         }
 
         @Override
-        public CompoundTag write(StormData d, HolderLookup.Provider provider) {
+        public CompoundTag write(AllayStormData d, HolderLookup.Provider provider) {
             if (!d.active && d.dead.isEmpty() && d.hp.isEmpty())
                 return null; // nothing worth persisting
             CompoundTag tag = new CompoundTag();

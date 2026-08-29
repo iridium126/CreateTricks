@@ -1,8 +1,8 @@
 package com.iridium126.createmanaindustry;
 
+import com.iridium126.createmanaindustry.content.allaystorm.AllayStormData;
 import com.iridium126.createmanaindustry.content.fluids.mist.MistFieldStore.MistFieldData;
 import com.iridium126.createmanaindustry.content.kinetics.temporarykinetics.TemporaryKineticsStore;
-import com.iridium126.createmanaindustry.storm.StormData;
 
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.attachment.AttachmentType;
@@ -45,10 +45,10 @@ public final class CMIAttachments {
      * member death set and sparse HP table, serialized with the level save so
      * the storm survives restarts with consistent member counts.
      */
-    public static final DeferredHolder<AttachmentType<?>, AttachmentType<StormData>> STORM_DATA =
+    public static final DeferredHolder<AttachmentType<?>, AttachmentType<AllayStormData>> STORM_DATA =
             REGISTER.register("storm_data",
-                    () -> AttachmentType.builder(StormData::new)
-                            .serialize(new StormData.Serializer())
+                    () -> AttachmentType.builder(AllayStormData::new)
+                            .serialize(new AllayStormData.Serializer())
                             .build());
 
     private CMIAttachments() {}

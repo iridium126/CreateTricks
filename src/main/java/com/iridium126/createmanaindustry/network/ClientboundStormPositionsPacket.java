@@ -83,6 +83,6 @@ public record ClientboundStormPositionsPacket(long gameTime, float[] entries) im
 
     /** Called on the client; body only executes client-side (see MistSyncPacket). */
     public static void handle(ClientboundStormPositionsPacket packet, IPayloadContext ctx) {
-        ctx.enqueueWork(() -> com.iridium126.createmanaindustry.client.particles.storm.StormClientHandler.onPositions(packet));
+        ctx.enqueueWork(() -> com.iridium126.createmanaindustry.client.particles.allaystorm.AllayStormClientHandler.onPositions(packet));
     }
 }

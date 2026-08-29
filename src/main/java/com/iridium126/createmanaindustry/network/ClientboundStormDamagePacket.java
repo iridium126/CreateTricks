@@ -67,6 +67,6 @@ public record ClientboundStormDamagePacket(
 
     /** Called on the client; body only executes client-side (see MistSyncPacket). */
     public static void handle(ClientboundStormDamagePacket packet, IPayloadContext ctx) {
-        ctx.enqueueWork(() -> com.iridium126.createmanaindustry.client.particles.storm.StormClientHandler.onDamage(packet));
+        ctx.enqueueWork(() -> com.iridium126.createmanaindustry.client.particles.allaystorm.AllayStormClientHandler.onDamage(packet));
     }
 }

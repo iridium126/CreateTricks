@@ -67,6 +67,6 @@ public record ServerboundStormHitPacket(
 
     /** Called on the server. */
     public static void handle(ServerboundStormHitPacket packet, IPayloadContext ctx) {
-        ctx.enqueueWork(() -> com.iridium126.createmanaindustry.storm.StormManager.handleHit(packet, ctx));
+        ctx.enqueueWork(() -> com.iridium126.createmanaindustry.content.allaystorm.AllayStormManager.handleHit(packet, ctx));
     }
 }

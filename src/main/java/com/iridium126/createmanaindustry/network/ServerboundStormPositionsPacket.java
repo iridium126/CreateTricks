@@ -97,6 +97,6 @@ public record ServerboundStormPositionsPacket(long gameTime, float[] entries) im
 
     /** Called on the server. */
     public static void handle(ServerboundStormPositionsPacket packet, IPayloadContext ctx) {
-        ctx.enqueueWork(() -> com.iridium126.createmanaindustry.storm.StormManager.relayPositions(packet, ctx));
+        ctx.enqueueWork(() -> com.iridium126.createmanaindustry.content.allaystorm.AllayStormManager.relayPositions(packet, ctx));
     }
 }

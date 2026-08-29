@@ -1,7 +1,7 @@
 package com.iridium126.createmanaindustry.network;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.storm.StormData;
+import com.iridium126.createmanaindustry.content.allaystorm.AllayStormData;
 
 import io.netty.handler.codec.DecoderException;
 
@@ -56,7 +56,7 @@ public record ClientboundStormStatePacket(
      * {@link DecoderException} and the network layer drops the connection
      * instead of allocating an attacker-sized array.
      */
-    public static final int MAX_DEAD_BYTES = (StormData.MAX_COUNT + 7) / 8;
+    public static final int MAX_DEAD_BYTES = (AllayStormData.MAX_COUNT + 7) / 8;
 
     public static final ClientboundStormStatePacket ACTIVATE(BlockPos anchor, int count, float radius,
             int mode, float omega, int stormSeed, boolean authority, double hz, byte[] deadBitmap) {
@@ -140,6 +140,6 @@ public record ClientboundStormStatePacket(
 
     /** Called on the client; body only executes client-side (see MistSyncPacket). */
     public static void handle(ClientboundStormStatePacket packet, IPayloadContext ctx) {
-        ctx.enqueueWork(() -> com.iridium126.createmanaindustry.client.particles.storm.StormClientHandler.onState(packet));
+        ctx.enqueueWork(() -> com.iridium126.createmanaindustry.client.particles.allaystorm.AllayStormClientHandler.onState(packet));
     }
 }

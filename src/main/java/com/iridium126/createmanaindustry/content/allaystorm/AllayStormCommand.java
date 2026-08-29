@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.storm;
+package com.iridium126.createmanaindustry.content.allaystorm;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.FloatArgumentType;
@@ -27,12 +27,12 @@ import net.neoforged.neoforge.event.RegisterCommandsEvent;
  * </pre>
  */
 @EventBusSubscriber(modid = com.iridium126.createmanaindustry.CreateManaIndustry.MODID)
-public final class StormCommand {
+public final class AllayStormCommand {
 
     private static final SuggestionProvider<CommandSourceStack> MODES = (ctx, builder) ->
             SharedSuggestionProvider.suggest(new String[] { "ball", "vortex" }, builder);
 
-    private StormCommand() {
+    private AllayStormCommand() {
     }
 
     @SubscribeEvent
@@ -43,7 +43,7 @@ public final class StormCommand {
                                 .requires(src -> src.hasPermission(2))
                                 .executes(ctx -> allayStorm(ctx, "ball", 2048, 8.0f, 0.6f))
                                 .then(Commands.literal("stop")
-                                        .executes(StormCommand::allayStormStop))
+                                        .executes(AllayStormCommand::allayStormStop))
                                 .then(Commands.literal("ball")
                                         .executes(ctx -> allayStorm(ctx, "ball", 2048, 8.0f, 0.6f))
                                         .then(Commands.argument("count", IntegerArgumentType.integer(1, 131072))
@@ -86,7 +86,7 @@ public final class StormCommand {
             int count, float radius, float omega) {
         CommandSourceStack src = ctx.getSource();
         ServerLevel level = src.getLevel();
-        StormManager.setStorm(level,
+        AllayStormManager.setStorm(level,
                 net.minecraft.core.BlockPos.containing(src.getPosition().add(0.0, 1.0, 0.0)),
                 count, radius, "vortex".equals(mode) ? 2 : 1, omega);
         src.sendSuccess(() -> Component.literal(
@@ -97,7 +97,7 @@ public final class StormCommand {
     }
 
     private static int allayStormStop(CommandContext<CommandSourceStack> ctx) {
-        StormManager.stopStorm(ctx.getSource().getLevel());
+        AllayStormManager.stopStorm(ctx.getSource().getLevel());
         ctx.getSource().sendSuccess(() -> Component.literal("Allay Storm dispersed."), false);
         return Command.SINGLE_SUCCESS;
     }

@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.storm;
+package com.iridium126.createmanaindustry.content.allaystorm;
 
 import java.util.ArrayDeque;
 import java.util.HashMap;
@@ -66,7 +66,7 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  * </ul>
  */
 @EventBusSubscriber(modid = CreateManaIndustry.MODID)
-public final class StormManager {
+public final class AllayStormManager {
 
     /**
      * Activation radius in blocks: default client fade end (96 + 24 ramp =
@@ -105,7 +105,7 @@ public final class StormManager {
         final ArrayDeque<Long> hitTimes = new ArrayDeque<>();
     }
 
-    private StormManager() {
+    private AllayStormManager() {
     }
 
     // ---- events ------------------------------------------------------------
@@ -132,7 +132,7 @@ public final class StormManager {
     // ---- tick ----------------------------------------------------------------
 
     private static void tick(ServerLevel level) {
-        StormData data = level.getData(CMIAttachments.STORM_DATA.get());
+        AllayStormData data = level.getData(CMIAttachments.STORM_DATA.get());
         Runtime rt = runtime(level);
         if (!data.active) {
             if (rt.tracks.values().stream().anyMatch(t -> t.active))
@@ -147,7 +147,7 @@ public final class StormManager {
     }
 
     /** Vanilla Allay regen: heal(1.0) per 10 ticks = 2 HP/s, only damaged members. */
-    private static void regen(ServerLevel level, StormData data) {
+    private static void regen(ServerLevel level, AllayStormData data) {
         if (data.hp.isEmpty())
             return;
         boolean changed = false;
@@ -155,7 +155,7 @@ public final class StormManager {
         while (it.hasNext()) {
             var e = it.next();
             float hp = e.getFloatValue() + 0.1f;
-            if (hp >= StormData.MAX_HP) {
+            if (hp >= AllayStormData.MAX_HP) {
                 it.remove();
                 changed = true;
             } else if (e.getFloatValue() != hp) {
@@ -168,7 +168,7 @@ public final class StormManager {
     }
 
     /** Re-evaluates every player's activation state and the authority assignment. */
-    private static void scan(ServerLevel level, Runtime rt, StormData data) {
+    private static void scan(ServerLevel level, Runtime rt, AllayStormData data) {
         // players that left the level (dimension change, logout) drop their
         // track. The player lookup is GLOBAL across dimensions, so "still
         // online" is NOT enough: a cross-dimension player must be detected
@@ -212,7 +212,7 @@ public final class StormManager {
         recomputeAuthority(rt, data);
     }
 
-    private static void activate(ServerLevel level, Runtime rt, StormData data, ServerPlayer player) {
+    private static void activate(ServerLevel level, Runtime rt, AllayStormData data, ServerPlayer player) {
         Track t = rt.tracks.computeIfAbsent(player.getUUID(), k -> new Track());
         t.active = true;
         t.order = rt.orderCounter++;
@@ -221,7 +221,7 @@ public final class StormManager {
                 t.authority, ServerConfig.stormCorrectionHz, data.dead.toByteArray()));
     }
 
-    private static void deactivate(ServerLevel level, Runtime rt, StormData data, ServerPlayer player) {
+    private static void deactivate(ServerLevel level, Runtime rt, AllayStormData data, ServerPlayer player) {
         Track t = rt.tracks.get(player.getUUID());
         if (t == null || !t.active)
             return;
@@ -244,7 +244,7 @@ public final class StormManager {
     }
 
     /** Authority = earliest-activated still-active client; UPDATE packets flip the bit on change. */
-    private static void recomputeAuthority(Runtime rt, StormData data) {
+    private static void recomputeAuthority(Runtime rt, AllayStormData data) {
         UUID earliest = null;
         long best = Long.MAX_VALUE;
         for (var entry : rt.tracks.entrySet()) {
@@ -281,7 +281,7 @@ public final class StormManager {
         ServerLevel level = player.serverLevel();
         if (!level.hasData(CMIAttachments.STORM_DATA.get()))
             return;
-        StormData data = level.getData(CMIAttachments.STORM_DATA.get());
+        AllayStormData data = level.getData(CMIAttachments.STORM_DATA.get());
         if (!data.active)
             return;
         Runtime rt = runtime(level);
@@ -380,7 +380,7 @@ public final class StormManager {
         ServerLevel level = player.serverLevel();
         if (!level.hasData(CMIAttachments.STORM_DATA.get()))
             return;
-        StormData data = level.getData(CMIAttachments.STORM_DATA.get());
+        AllayStormData data = level.getData(CMIAttachments.STORM_DATA.get());
         if (!data.active)
             return;
         Runtime rt = runtime(level);
@@ -432,18 +432,18 @@ public final class StormManager {
      * identity space reshapes).
      */
     public static void setStorm(ServerLevel level, BlockPos anchor, int count, double radius, int mode, double omega) {
-        StormData data = level.getData(CMIAttachments.STORM_DATA.get());
-        boolean samePopulation = data.active && data.count == Math.max(1, Math.min(StormData.MAX_COUNT, count));
+        AllayStormData data = level.getData(CMIAttachments.STORM_DATA.get());
+        boolean samePopulation = data.active && data.count == Math.max(1, Math.min(AllayStormData.MAX_COUNT, count));
         if (samePopulation) {
             data.anchor = anchor.immutable();
-            data.radius = StormData.quantizeRadius(radius);
+            data.radius = AllayStormData.quantizeRadius(radius);
             data.mode = mode == 2 ? 2 : 1;
-            float mag = StormData.quantizeOmega(omega);
+            float mag = AllayStormData.quantizeOmega(omega);
             data.omega = data.mode == 2 ? (((data.stormSeed & 1) == 0) ? mag : -mag) : 0f;
             level.setData(CMIAttachments.STORM_DATA.get(), data);
             broadcast(level, data, true);
         } else {
-            StormData fresh = StormData.create(anchor, count, radius, mode, omega,
+            AllayStormData fresh = AllayStormData.create(anchor, count, radius, mode, omega,
                     level.random.nextInt(1 << 24));
             copyInto(fresh, data);
             level.setData(CMIAttachments.STORM_DATA.get(), data);
@@ -458,7 +458,7 @@ public final class StormManager {
 
     /** Ends the storm: clients disperse and forget; persisted state clears. */
     public static void stopStorm(ServerLevel level) {
-        StormData data = level.getData(CMIAttachments.STORM_DATA.get());
+        AllayStormData data = level.getData(CMIAttachments.STORM_DATA.get());
         if (data.active || !data.dead.isEmpty() || !data.hp.isEmpty()) {
             data.active = false;
             data.dead.clear();
@@ -478,7 +478,7 @@ public final class StormManager {
         }
     }
 
-    private static void broadcast(ServerLevel level, StormData data, boolean updateOnly) {
+    private static void broadcast(ServerLevel level, AllayStormData data, boolean updateOnly) {
         Runtime rt = runtime(level);
         for (var entry : rt.tracks.entrySet()) {
             Track t = entry.getValue();
@@ -499,7 +499,7 @@ public final class StormManager {
         }
     }
 
-    private static void copyInto(StormData src, StormData dst) {
+    private static void copyInto(AllayStormData src, AllayStormData dst) {
         dst.active = src.active;
         dst.anchor = src.anchor;
         dst.count = src.count;

@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.client.particles.storm;
+package com.iridium126.createmanaindustry.client.particles.allaystorm;
 
 import com.iridium126.createmanaindustry.client.particles.engine.CMIParticleEngine;
 import com.iridium126.createmanaindustry.network.ClientboundStormDamagePacket;
@@ -18,9 +18,9 @@ import net.minecraft.world.phys.Vec3;
  * forwards. It also decodes the dead-member bitmap into the engine's mirror
  * on ACTIVATE (identity/counts are then a pure client-side derivation).
  */
-public final class StormClientHandler {
+public final class AllayStormClientHandler {
 
-    private StormClientHandler() {
+    private AllayStormClientHandler() {
     }
 
     /** {@link ClientboundStormStatePacket}: lifecycle + authority flips. */

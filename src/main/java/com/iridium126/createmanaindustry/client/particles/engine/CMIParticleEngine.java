@@ -489,10 +489,10 @@ public final class CMIParticleEngine {
      * live on {@link AllayStormRuntime#applyStormState}.
      */
     public void applyStormState(int action, boolean authority, double correctionHz,
-            Vec3 anchor, int count, float radius, int mode, int seed,
+            Vec3 anchor, int count, int seed,
             float creationRadius, float finalRadius, float growthPerSecond, long createdAt,
             byte[] deadBitmap) {
-        this.storm.applyStormState(action, authority, correctionHz, anchor, count, radius, mode, seed,
+        this.storm.applyStormState(action, authority, correctionHz, anchor, count, seed,
                 creationRadius, finalRadius, growthPerSecond, createdAt, deadBitmap);
     }
 
@@ -519,7 +519,7 @@ public final class CMIParticleEngine {
         this.storm.applyStormDamage(memberIdx, damage, kbX, kbZ, light, died, relToAnchor, gameTime);
     }
 
-    /** Shared simulation clock (storm wander/burst + allay pose paths). */
+    /** Shared simulation clock (storm phases/dance bursts + allay pose paths). */
     public float timeSec() {
         return this.storm.timeSec();
     }
@@ -849,8 +849,8 @@ public final class CMIParticleEngine {
 
         float dt = clampDelta(deltaTracker);
         // Shared clock: (gameTime mod 2^21)/20 — identical on every client (see
-        // AllayStormRuntime's clock doc); drives wander centres, vortex phases
-        // and correction timestamps without any clock sync.
+        // AllayStormRuntime's clock doc); drives the vortex phases and the
+        // correction timestamps without any clock sync.
         Minecraft mcClock = Minecraft.getInstance();
         if (mcClock.level != null)
             this.storm.tickClock(mcClock.level.getGameTime());
@@ -1181,10 +1181,9 @@ public final class CMIParticleEngine {
                 setUIntUniform(this.programs.emit(), "uTotalSpawn", totalSpawn);
                 setUIntUniform(this.programs.emit(), "uEmitCount", entryCount);
                 setUIntUniform(this.programs.emit(), "uCapacity", cap);
-                // storm style 3 (analytic spawn): shared clock + instance seed
-                // + the growth-law phases (the spawn state IS the servo's
+                // storm style 3 (analytic spawn): instance seed + the
+                // growth-law phases (the spawn state IS the servo's
                 // equilibrium at the current phase — see AllayStormRuntime)
-                setFloatUniform(this.programs.emit(), "uTimeSec", this.timeSec());
                 setFloatUniform(this.programs.emit(), "uStormSeed", this.storm.seed());
                 setFloatUniform(this.programs.emit(), "uStormOmegaNow", this.storm.omegaNow());
                 setFloatUniform(this.programs.emit(), "uStormRotPhase", this.storm.rotPhase());

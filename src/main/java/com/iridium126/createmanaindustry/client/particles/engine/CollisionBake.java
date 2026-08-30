@@ -135,8 +135,8 @@ public final class CollisionBake {
      * the origin itself, so the seamless 96 x 96 XZ footprint is always
      * CENTRED on it — coverage extends exactly one tile (48 blocks) on every
      * side, regardless of where the origin falls relative to any world
-     * lattice. Allay Storm swarms use this because their wander + radius
-     * reach past a single centred volume. Tiles abut rather than overlap —
+     * lattice. Allay Storm swarms use this because their radius (up to
+     * 64 · 1.15 fringe ≈ 74 blocks) reaches past a single centred volume. Tiles abut rather than overlap —
      * containment bounds are exclusive, so a particle crossing a seam lands
      * in exactly one neighbour and the coverage stays watertight. Each tile
      * allocates independently; full-pool LRU eviction applies per tile as in

@@ -83,9 +83,9 @@ public final class AllayStormManager {
 
     /**
      * Activation radius in blocks: default client fade end (96 + 24 ramp =
-     * 120) plus the maximum storm extent (radius 64 + wander 12). Deliberately
-     * a server constant — the fade distance is a CLIENT config the server
-     * cannot read.
+     * 120) plus the maximum storm extent (radius 64 · 1.15 fringe ≈ 74).
+     * Deliberately a server constant — the fade distance is a CLIENT config
+     * the server cannot read.
      */
     public static final double ACTIVATE_RANGE = 196.0;
     /** Hysteresis margin past {@link #ACTIVATE_RANGE} before deactivating. */
@@ -186,9 +186,8 @@ public final class AllayStormManager {
      * storm's total lifetime budget is exactly the config ceiling. New
      * indices reach clients through the 1 Hz center packet; clients spawn
      * them on the spawn ring and fly them to their storm positions. A rate
-     * of 0 disables growth. The vortex radius tracks the population here so
-     * the persisted definition, the state packets and the center stream all
-     * carry the same canonical value.
+     * of 0 disables growth. The radius is not server state — every client
+     * derives it from the synced population ({@link AllayStormData#vortexRadius}).
      */
     private static void grow(ServerLevel level, Runtime rt, AllayStormData data) {
         double rate = data.growthPerSecond;
@@ -201,8 +200,6 @@ public final class AllayStormManager {
             return;
         rt.growthAcc -= n;
         data.count = Math.min(max, data.count + n);
-        if (data.mode == 2)
-            data.radius = AllayStormData.vortexRadius(data.count);
         level.setData(CMIAttachments.STORM_DATA.get(), data);
     }
 
@@ -348,7 +345,7 @@ public final class AllayStormManager {
         t.active = true;
         t.order = rt.orderCounter++;
         PacketDistributor.sendToPlayer(player, ClientboundStormStatePacket.ACTIVATE(
-                data.anchor, data.count, data.radius, data.mode, data.stormSeed,
+                data.anchor, data.count, data.stormSeed,
                 t.authority, ServerConfig.stormCorrectionHz, data.dead.toByteArray(),
                 data.creationRadius, data.finalRadius, (float) data.growthPerSecond,
                 data.createdAtGameTime));
@@ -403,7 +400,7 @@ public final class AllayStormManager {
                 ServerPlayer player = rt.level.getServer().getPlayerList().getPlayer(entry.getKey());
                 if (player != null)
                     PacketDistributor.sendToPlayer(player, ClientboundStormStatePacket.UPDATE(
-                            data.anchor, data.count, data.radius, data.mode, data.stormSeed,
+                            data.anchor, data.count, data.stormSeed,
                             should, ServerConfig.stormCorrectionHz,
                             data.creationRadius, data.finalRadius, (float) data.growthPerSecond,
                             data.createdAtGameTime));
@@ -576,29 +573,23 @@ public final class AllayStormManager {
      * Creates or updates the storm. The count argument is the INITIAL
      * population of a NEW storm (clamped by {@code ServerConfig.stormMaxCount});
      * the storm then grows on the tick clock toward that ceiling. Re-running
-     * the command on an ACTIVE storm is a parameter-only update (anchor/mode/
-     * radius retarget — clients ease over): generated progress, seed, HP and
-     * deaths are preserved, because the population is a growing quantity and
-     * can no longer define a "population change" restart. {@code stop} +
-     * re-create resets everything. Vortex mode ignores the passed radius and
-     * derives it from the generated population ({@link AllayStormData#vortexRadius});
-     * the angular velocity is never server state — clients derive it from
-     * the radius and the seed's low bit.
+     * the command on an ACTIVE storm is an anchor-only retarget (clients ease
+     * over): generated progress, seed, HP and deaths are preserved, because
+     * the population is a growing quantity and can no longer define a
+     * "population change" restart. {@code stop} + re-create resets everything.
+     * The radius derives from the population ({@link AllayStormData#vortexRadius});
+     * the angular velocity is never server state — clients derive it from the
+     * radius and the seed's low bit.
      */
-    public static void setStorm(ServerLevel level, BlockPos anchor, int count, double radius, int mode) {
+    public static void setStorm(ServerLevel level, BlockPos anchor, int count) {
         AllayStormData data = level.getData(CMIAttachments.STORM_DATA.get());
         if (data.active) {
             data.anchor = anchor.atY(AllayStormData.CHASE_Y);
-            data.mode = mode == 2 ? 2 : 1;
-            // a mode flip ball<->vortex must retarget the radius too: the
-            // vortex shape is population-derived, not user-set
-            data.radius = data.mode == 2 ? AllayStormData.vortexRadius(data.count)
-                    : AllayStormData.quantizeRadius(radius);
             level.setData(CMIAttachments.STORM_DATA.get(), data);
             broadcast(level, data, true);
         } else {
             int initial = Math.max(1, Math.min(ServerConfig.stormMaxCount, count));
-            AllayStormData fresh = AllayStormData.create(anchor, initial, radius, mode,
+            AllayStormData fresh = AllayStormData.create(anchor, initial,
                     level.getGameTime(), level.random.nextInt(1 << 24));
             copyInto(fresh, data);
             level.setData(CMIAttachments.STORM_DATA.get(), data);
@@ -651,13 +642,13 @@ public final class AllayStormManager {
                 continue;
             if (updateOnly) {
                 PacketDistributor.sendToPlayer(player, ClientboundStormStatePacket.UPDATE(
-                        data.anchor, data.count, data.radius, data.mode, data.stormSeed,
+                        data.anchor, data.count, data.stormSeed,
                         t.authority, ServerConfig.stormCorrectionHz,
                         data.creationRadius, data.finalRadius, (float) data.growthPerSecond,
                         data.createdAtGameTime));
             } else {
                 PacketDistributor.sendToPlayer(player, ClientboundStormStatePacket.ACTIVATE(
-                        data.anchor, data.count, data.radius, data.mode, data.stormSeed,
+                        data.anchor, data.count, data.stormSeed,
                         t.authority, ServerConfig.stormCorrectionHz, data.dead.toByteArray(),
                         data.creationRadius, data.finalRadius, (float) data.growthPerSecond,
                         data.createdAtGameTime));
@@ -669,8 +660,6 @@ public final class AllayStormManager {
         dst.active = src.active;
         dst.anchor = src.anchor;
         dst.count = src.count;
-        dst.radius = src.radius;
-        dst.mode = src.mode;
         dst.stormSeed = src.stormSeed;
         dst.creationRadius = src.creationRadius;
         dst.finalRadius = src.finalRadius;

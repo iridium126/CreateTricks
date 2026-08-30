@@ -49,10 +49,9 @@ layout(std430, binding = BIND_MEMBERMAP) readonly buffer MemberMapBuf { float m[
 uniform uint uTotalSpawn;
 uniform uint uEmitCount;
 uniform uint uCapacity;
-// storm style 3: shared simulation clock (gameTime/20), the RAW 24-bit
-// instance seed (integer-valued float, NOT normalized to [0,1)), and the
-// signed angular velocity
-uniform float uTimeSec;
+// storm style 3: the RAW 24-bit instance seed (integer-valued float, NOT
+// normalized to [0,1)), the signed angular velocity, and the CPU-side
+// growth-law phase integrals
 uniform float uStormSeed;
 uniform float uStormOmegaNow; // SIGNED spin rate omega = SPIN_K/R_now (vortex; 0 = n/a)
 uniform float uStormRotPhase;  // rotation phase (radians) — CPU growth-law integral
@@ -170,7 +169,17 @@ void main() {
         float mA = hA * 0.618;
         float mB = hB * 0.382;
         float mseed = mA + mB;                   // [0,1); 2048 members: exact, 131072: ~95% distinct
-        float ballR = max(stormA.y, 2.0);
+        float stormR = max(stormA.y, 2.0);
+        float spMax = max(stormA.w, 0.5);
+        // Home point: cmiTyphoonHome is the SAME function update.comp's
+        // servo targets with (single source in chunks/allay_pose.glsl) —
+        // the spawn state IS the servo's equilibrium, so late joiners
+        // start settled with no transient. The center is the server-chased
+        // anchor; there is no per-member wander.
+        vec3 home;
+        vec3 homeVel;
+        cmiTyphoonHome(mseed, stormR, uStormOmegaNow, uStormRotPhase,
+                uStormConvPhase, uStormConvRate, spMax, anchor, home, homeVel);
         vec3 spos;
         vec3 svel;
         // c.w = ring-spawn flag: GROWTH members (center-packet deltas) are
@@ -186,40 +195,19 @@ void main() {
             // client/GPU. Angle = memberIdx * golden angle (2.399963 rad):
             // consecutive growth members rotate around the circle, a perfectly
             // uniform birth distribution with no hash-quality risk. Velocity
-            // points at the member's OWN storm position (the home point the
-            // analytic spawn would have used) at the speed cap; the servo
-            // takes over from there. The ring is HORIZONTAL at the storm's
-            // altitude (anchor.y).
+            // points at the member's OWN home point at the speed cap; the
+            // servo takes over from there. The ring is HORIZONTAL at the
+            // storm's altitude (anchor.y).
             float ringA = float(memberIdx) * 2.399963;
-            float ringR = 120.0 + ballR;
+            float ringR = 120.0 + stormR;
             spos = anchor + vec3(cos(ringA) * ringR, 0.0, sin(ringA) * ringR);
-            float spMax = max(stormA.w, 0.5);
-            vec3 home;
-            vec3 homeVel;
-            if (stormA.x > 1.5) {
-                cmiTyphoonHome(mseed, ballR, uStormOmegaNow, uStormRotPhase,
-                        uStormConvPhase, uStormConvRate, spMax, anchor, home, homeVel);
-            } else {
-                home = cmiStormCenter(anchor, stormA.z, mseed, uTimeSec);
-            }
             vec3 toHome = home - spos;
             float dHome = length(toHome);
             svel = dHome > 1e-3 ? toHome * (spMax / dHome) : vec3(0.0);
-        } else if (stormA.x > 1.5) {
-            // typhoon: on the circulating spiral-arm home point at the spawn
-            // instant. cmiTyphoonHome is the SAME function update.comp's
-            // servo targets with (single source in chunks/allay_pose.glsl) —
-            // the spawn state IS the servo's equilibrium, so late joiners
-            // start settled with no transient. The center is the
-            // server-chased anchor; there is no per-member wander.
-            cmiTyphoonHome(mseed, ballR, uStormOmegaNow, uStormRotPhase,
-                    uStormConvPhase, uStormConvRate, max(stormA.w, 0.5), anchor, spos, svel);
         } else {
-            // ball (test mode): deterministic point inside the wandering bait ball
-            vec3 G = cmiStormCenter(anchor, stormA.z, mseed, uTimeSec);
-            vec3 d = randomDir(mseed + 5.0);
-            spos = G + d * (ballR * 0.75 * pow(hash1(mseed + 6.0), 1.0 / 3.0));
-            svel = randomDir(mseed + 7.0) * 2.0;
+            // analytic: ON the home point at the spawn instant — settled.
+            spos = home;
+            svel = homeVel;
         }
         uint slot = atomicAdd(counter.writeSlot, 1u);
         if (slot >= uCapacity)

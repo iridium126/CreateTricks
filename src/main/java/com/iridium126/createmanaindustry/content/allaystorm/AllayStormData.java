@@ -16,17 +16,16 @@ import net.neoforged.neoforge.attachment.IAttachmentSerializer;
  * <p>
  * The storm is a BOSS made of up to {@link #MAX_COUNT} GPU particles: the
  * server owns only what must be durable and consistent — the definition
- * (anchor/count/radius/mode/seed), the member DEATH set (alive-member
- * consistency across clients and restarts) and a sparse HP table for
- * damaged-but-alive members. Member POSITIONS never live here: they are
- * client-side GPU state, deterministically re-derived from
- * {@code seed = hash(stormSeed, memberIdx)} plus the shared game clock. The
- * vortex ANGULAR VELOCITY is not state at all: {@link #vortexOmega} derives
- * it client-side from the synced radius and the seed's low bit.
+ * (anchor/count/seed), the FROZEN GROWTH LAW (the vortex phase invariants),
+ * the member DEATH set (alive-member consistency across clients and
+ * restarts) and a sparse HP table for damaged-but-alive members. Member
+ * POSITIONS never live here: they are client-side GPU state, deterministically
+ * re-derived from {@code seed = hash(stormSeed, memberIdx)} plus the shared
+ * game clock. Neither the vortex RADIUS nor its ANGULAR VELOCITY is state:
+ * clients derive the radius from the synced population every frame
+ * ({@link #vortexRadius}) and ω follows ({@link #vortexOmega}).
  * <p>
- * All values are created in their CANONICAL QUANTIZED form (radius 0.5-block
- * steps — the wire byte's round-trip grid) so the persisted state, the wire
- * format and every client agree without re-quantization drift. The sparse HP
+ * The sparse HP
  * map holds only damaged-alive members (everything else is the 20 HP vanilla
  * Allay maximum); dead members are the {@link #dead} bit set and never re-enter
  * the HP map. Vanilla regen (2 HP/s) runs in {@link AllayStormManager}.
@@ -37,8 +36,6 @@ public final class AllayStormData {
     public static final int MAX_COUNT = 131072;
     /** Vanilla Allay MAX_HEALTH. */
     public static final float MAX_HP = 20.0f;
-    /** Canonical quantization step, applied once at creation. */
-    public static final float RADIUS_STEP = 0.5f;
     /** stormSeed is quantized to 24 bits so it survives a float round-trip in GLSL. */
     public static final int SEED_MASK = (1 << 24) - 1;
     /**
@@ -56,16 +53,15 @@ public final class AllayStormData {
      * initial count and GROWS on the server tick toward {@link #finalCount}
      * ({@link AllayStormManager} growth clock — kills never slow it, dead
      * indices never regenerate). New indices become members as this advances;
-     * persisted, so growth survives restarts.
+     * persisted, so growth survives restarts. The storm radius derives from
+     * it on every client ({@link #vortexRadius}) — the radius itself is
+     * never stored here.
      */
     public int count;
-    public float radius;
-    /** 1 = ball (test), 2 = vortex. */
-    public int mode;
     /** 24-bit instance seed; member i's seed = hash(stormSeed, i) on every client. */
     public int stormSeed;
 
-    // ---- frozen growth law (vortex phase invariants; zero for ball) --------
+    // ---- frozen growth law (the vortex phase invariants) -------------------
     /**
      * The typhoon's phase functions are INTEGRALS of rates that depend on the
      * radius. A naive {@code rate(R) * timeSec} re-derives the whole pattern
@@ -109,54 +105,36 @@ public final class AllayStormData {
     }
 
     /**
-     * Quantizes raw command input into the canonical form and FREEZES the
-     * growth law (ceiling/rate/creation time — the vortex phase invariants).
-     * Vortex mode ignores the passed radius — its radius DERIVES from the
-     * population ({@link #vortexRadius}), and the spin rate follows client-side
+     * Freezes the growth law (rate/ceiling/creation time — the vortex phase
+     * invariants) at creation. The radius derives from the population
+     * ({@link #vortexRadius}) and the spin rate follows client-side
      * ({@link #vortexOmega}); handedness comes from the seed's low bit so it
      * survives restarts with zero extra state.
      */
-    public static AllayStormData create(BlockPos anchor, int count, double radius, int mode,
+    public static AllayStormData create(BlockPos anchor, int count,
             long createdAtGameTime, int seed) {
         AllayStormData d = new AllayStormData();
         d.active = true;
         d.anchor = anchor.atY(CHASE_Y);
         d.count = Math.max(1, Math.min(MAX_COUNT, count));
-        d.mode = mode == 2 ? 2 : 1;
         d.stormSeed = seed & SEED_MASK;
         d.createdAtGameTime = createdAtGameTime;
-        if (d.mode == 2) {
-            d.growthPerSecond = Math.max(0.0, ServerConfig.stormGrowthPerSecond);
-            d.finalCount = (int) Math.min(MAX_COUNT, Math.max(d.count, ServerConfig.stormMaxCount));
-            d.creationRadius = vortexRadius(d.count);
-            // a zero rate means the storm never grows: the growth window is
-            // empty and the final radius IS the creation radius
-            d.finalRadius = d.growthPerSecond > 0.0 ? vortexRadius(d.finalCount) : d.creationRadius;
-            d.radius = d.creationRadius;
-        } else {
-            d.growthPerSecond = 0.0;
-            d.finalCount = d.count;
-            d.creationRadius = 0.0f;
-            d.finalRadius = 0.0f;
-            d.radius = quantizeRadius(radius);
-        }
+        d.growthPerSecond = Math.max(0.0, ServerConfig.stormGrowthPerSecond);
+        d.finalCount = (int) Math.min(MAX_COUNT, Math.max(d.count, ServerConfig.stormMaxCount));
+        d.creationRadius = vortexRadius(d.count);
+        // a zero rate means the storm never grows: the growth window is
+        // empty and the final radius IS the creation radius
+        d.finalRadius = d.growthPerSecond > 0.0 ? vortexRadius(d.finalCount) : d.creationRadius;
         return d;
     }
 
-    public static float quantizeRadius(double radius) {
-        return Math.max(2f, Math.min(64f, Math.round((float) radius / RADIUS_STEP) * RADIUS_STEP));
-    }
-
     /**
-     * Vortex-mode radius: derived from the generated population as
-     * {@code sqrt(count)/8}, clamped to the canonical [2, 64] range. NOT
-     * quantized to the 0.5 grid: the population GROWS continuously (the
-     * manager's growth clock), the client re-derives this radius every frame
-     * from its interpolated count, and a quantized value would make the
-     * expanding shell jump in 0.5-block steps. The server keeps this exact
-     * value in {@code #radius} (NBT + state packets — the state packet's
-     * byte rounding only touches the wire copy, clients derive their own);
-     * ball mode never calls this. The count is floored at 1 so a degenerate
+     * Storm radius: derived from the generated population as
+     * {@code sqrt(count)/8}, clamped to the [2, 64] range. NOT quantized to
+     * any grid: the population GROWS continuously (the manager's growth
+     * clock), every client re-derives this radius every frame from its
+     * interpolated count, and a quantized value would make the expanding
+     * shell jump in discrete steps. The count is floored at 1 so a degenerate
      * input still lands on the radius floor.
      */
     public static float vortexRadius(double count) {
@@ -199,32 +177,22 @@ public final class AllayStormData {
             d.active = tag.getBoolean("Active");
             d.anchor = BlockPos.of(tag.getLong("Anchor"));
             d.count = Math.max(0, Math.min(MAX_COUNT, tag.getInt("Count")));
-            d.mode = tag.getInt("Mode") == 2 ? 2 : 1;
-            // re-quantize defensively: the write side always persists the
-            // canonical form, but hand-edited or future-format saves must
-            // never leak out-of-range values to clients (the radius wire
-            // byte's unsigned round-trip relies on the 0.5-step clamp too).
-            // Vortex radius is DERIVED state (tracks the generated population,
-            // see vortexRadius) — re-derive from the loaded count instead of
-            // trusting the stored value.
-            d.radius = d.mode == 2 ? vortexRadius(d.count) : quantizeRadius(tag.getFloat("Radius"));
             d.stormSeed = tag.getInt("Seed") & SEED_MASK;
-            // frozen growth law. Legacy saves predate these tags: reconstruct
-            // a NO-GROWTH law anchored at the loaded size (g = 0 freezes the
-            // phase integrals at the current radius — finite and consistent),
-            // never zeros (a zero finalRadius would divide the post-growth
-            // phase terms into NaN).
             d.growthPerSecond = tag.getDouble("GrowthRate");
             d.finalCount = Math.max(d.count, Math.min(MAX_COUNT, tag.getInt("FinalCount")));
             d.createdAtGameTime = tag.getLong("CreatedAt");
-            if (d.mode == 2 && d.growthPerSecond > 0.0 && d.finalCount > d.count) {
-                d.creationRadius = vortexRadius(Math.max(1, (float) tag.getFloat("CreationRadius")));
+            if (d.growthPerSecond > 0.0 && d.finalCount > d.count) {
+                d.creationRadius = vortexRadius(tag.getFloat("CreationRadius"));
                 d.finalRadius = vortexRadius(d.finalCount);
             } else {
+                // zero-rate storm (growth disabled at creation): the growth
+                // window is empty and the law anchors at the loaded size — a
+                // zero finalRadius would divide the post-growth phase terms
+                // into NaN
                 d.growthPerSecond = 0.0;
                 d.finalCount = d.count;
-                d.creationRadius = d.radius;
-                d.finalRadius = d.radius;
+                d.creationRadius = vortexRadius(d.count);
+                d.finalRadius = d.creationRadius;
             }
             int[] deadIdx = tag.getIntArray("Dead");
             for (int i : deadIdx)
@@ -247,11 +215,8 @@ public final class AllayStormData {
             tag.putBoolean("Active", d.active);
             tag.putLong("Anchor", d.anchor.asLong());
             tag.putInt("Count", d.count);
-            tag.putFloat("Radius", d.radius);
-            tag.putInt("Mode", d.mode);
             tag.putInt("Seed", d.stormSeed);
             tag.putFloat("CreationRadius", d.creationRadius);
-            tag.putFloat("FinalRadius", d.finalRadius);
             tag.putInt("FinalCount", d.finalCount);
             tag.putDouble("GrowthRate", d.growthPerSecond);
             tag.putLong("CreatedAt", d.createdAtGameTime);

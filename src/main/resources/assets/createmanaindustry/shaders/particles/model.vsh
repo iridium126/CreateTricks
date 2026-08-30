@@ -28,7 +28,7 @@ uniform mat4 ModelViewMat;
 uniform mat4 ProjMat;
 uniform vec3 uCamPos;
 uniform float uFadeDist;
-uniform float uTimeSec; // engine-accumulated simulation time (storm wander/bursts)
+uniform float uTimeSec; // engine-accumulated simulation time (storm dance bursts)
 
 layout(std430, binding = BIND_POOL_WRITE) readonly buffer ParticleRead { vec4 data[]; } particles; // freshly written pool
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
@@ -94,18 +94,12 @@ void main() {
     float scale = (2.0 * size) / MODEL_ABOVE_FEET;
 
     int anim = int(emitters.u[hb + 17u].x);
-    // Storm members: slow individuals near the wandering centre periodically
+    // Storm members: inner-band members near the chased anchor periodically
     // run full vanilla dance cycles instead of plain flight.
     vec4 stormA = emitters.u[hb + 18u];
     if (stormA.x > 0.5) {
-        vec3 anchor = emitters.u[hb + 19u].xyz;
-        // typhoon members gate on the chased anchor (the eye center); ball
-        // members keep the per-member wandering attractor
-        vec3 G = stormA.x > 1.5
-                ? anchor
-                : cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
-        anim = cmiStormAnimOverride(int(stormA.x), anim, length(p1.xyz),
-                distance(p0.xyz, G), stormA.y, p3.z, uTimeSec);
+        anim = cmiStormAnimOverride(distance(p0.xyz, emitters.u[hb + 19u].xyz),
+                stormA.y, p3.z, uTimeSec);
     }
     // HP-death corpse: the animation id rides the per-EMITTER header, so a
     // single death needs this per-particle signal -- update.comp flips the HP

@@ -25,8 +25,9 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  * <p>
  * The packet also carries the storm's GROWTH state: the generated member
  * population (count, varint). The client keeps it in a double-snapshot
- * interpolation (same scheme as the center) and derives the vortex radius
- * ({@code sqrt(count)/8}) and angular velocity ({@code 6/radius}) from it
+ * interpolation (same scheme as the center) and derives the storm radius
+ * ({@code sqrt(count)/8}) and angular velocity ({@code SPIN_K/radius}, see
+ * {@code AllayStormData.vortexOmega}) from it
  * CONTINUOUSLY every frame — the radius rides no wire at all, so the
  * expanding shell never jumps at packet or quantization steps.
  * {@code ClientboundStormStatePacket} remains the lifecycle authority; this

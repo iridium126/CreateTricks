@@ -19,21 +19,24 @@ import net.minecraft.world.phys.Vec3;
  * never do (they stay position-free so one spec can serve many sites).
  * Slot layout (consumed by update.comp / allay_pose.glsl):
  * <pre>
- *  18: motion mode (1 ball | 2 vortex), storm radius, wander radius, max speed
+ *  18: storm-mode gate (2 = vortex; &gt; 0.5 marks a storm member everywhere),
+ *      storm radius, reserved (was the ball-mode wander radius), max speed
  *  19: anchor.xyz, 0
  * </pre>
  */
 public final class AllayStormSpec {
 
-    /** Motion modes carried in header vec4 #18.x. */
-    public static final int MODE_BALL = 1;
+    /**
+     * Storm-mode value packed into header vec4 #18.x — the only motion mode;
+     * the &gt; 0.5 test on this slot is THE storm-member gate in every shader
+     * (it disambiguates p0.w member identity from a non-storm MODEL size
+     * multiplier, which collide exactly at member 0).
+     */
     public static final int MODE_VORTEX = 2;
     /** Stress-test ceiling (user-set): 2^17 members. */
     public static final int MAX_COUNT = 131072;
     /** Client-side mirror of the server's 24-bit seed mask (StormData.SEED_MASK). */
     public static final int SEED_MASK_CLIENT = (1 << 24) - 1;
-    /** Wandering-centre radius packed into header #18.z (blocks). */
-    public static final float WANDER_RADIUS = 12.0f;
     /** Steering speed cap packed into header #18.w (blocks/s). */
     public static final float MAX_SPEED = 6.0f;
 
@@ -62,16 +65,17 @@ public final class AllayStormSpec {
     /**
      * Packs the storm's per-id header: the spec fields with the FLY animation
      * pinned, the member spawn style 3 (server-synced analytic orbit placement
-     * — see emit.comp), plus the motion parameters and anchor in the reserved
-     * slots 18/19. The motion mode is explicit (the spin rate is now a
-     * per-frame growth-law integral, not a header constant).
+     * — see emit.comp), plus the storm parameters and anchor in the reserved
+     * slots 18/19. The radius rides in from the caller's per-frame derivation
+     * ({@code vortexRadius(countInterp)}); the spin rate is a per-frame
+     * growth-law integral, not a header constant.
      */
-    public static float[] packedHeader(int mode, double radius, Vec3 anchor) {
+    public static float[] packedHeader(double radius, Vec3 anchor) {
         float[] h = SPEC.packedWithAnimation(EmitterSpec.Animation.FLY.index());
         h[17 * 4 + 1] = 3.0f; // spawnStyle 3: storm member (identity + analytic spawn)
-        h[18 * 4 + 0] = (float) mode;
+        h[18 * 4 + 0] = MODE_VORTEX;
         h[18 * 4 + 1] = (float) radius;
-        h[18 * 4 + 2] = WANDER_RADIUS;
+        h[18 * 4 + 2] = 0.0f; // reserved (was the ball-mode wander radius)
         h[18 * 4 + 3] = MAX_SPEED;
         h[19 * 4 + 0] = (float) anchor.x;
         h[19 * 4 + 1] = (float) anchor.y;

@@ -29,9 +29,9 @@ public final class AllayStormClientHandler {
         CMIParticleEngine e = CMIParticleEngine.INSTANCE;
         Vec3 anchor = new Vec3(packet.anchor().getX(), packet.anchor().getY(), packet.anchor().getZ());
         e.applyStormState(packet.action(), packet.authority(), packet.correctionHz(),
-                anchor, packet.count(), packet.radius(), packet.mode(),
-                packet.stormSeed(), packet.creationRadius(), packet.finalRadius(),
-                packet.growthPerSecond(), packet.createdAt(), packet.deadBitmap());
+                anchor, packet.count(), packet.stormSeed(), packet.creationRadius(),
+                packet.finalRadius(), packet.growthPerSecond(), packet.createdAt(),
+                packet.deadBitmap());
     }
 
     /** {@link ClientboundStormDamagePacket}: authoritative damage + hit correction. */

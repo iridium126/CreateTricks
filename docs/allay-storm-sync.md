@@ -3,7 +3,7 @@
 > 模组：CreateManaIndustry（机械动力：魔法工业）
 > 版本基线：1.21.1 / NeoForge 21.1.227 / Java 21
 > 前置阅读：`docs/particle-engine-dev.md`（GPU 粒子引擎本体）
-> 状态：**实现完成，编译通过，待进服实测**（2026-08 实测前修复轮：身份哈希塌缩、涡旋伺服重构、维度切换同步重置、协议解码上限、命中邻近校验 + 服务器音效——详见 §5.1 / §5.9 / §5.8 / §3 / §4.2 标注；**2026-08 第二轮（本轮）**：涡旋参数自动推导与 ω 全面退役、自动成长（成长时钟 + 环上出生）、半径连续化、聚团 bug 修复（成长律闭式积分）——详见 §5.12–§5.15）
+> 状态：**实现完成，编译通过，待进服实测**（2026-08 实测前修复轮：身份哈希塌缩、涡旋伺服重构、维度切换同步重置、协议解码上限、命中邻近校验 + 服务器音效——详见 §5.1 / §5.9 / §5.8 / §3 / §4.2 标注；**2026-08 第二轮**：涡旋参数自动推导与 ω 全面退役、自动成长（成长时钟 + 环上出生）、半径连续化、聚团 bug 修复（成长律闭式积分）——详见 §5.12–§5.15；**2026-08 第三轮**：ball 模式整体移除（wire/NBT 的 mode 与半径字段退役、命令精简、boids 路径删除）、命中-生成竞态修复、rotPhase 模 2π 精度修复——详见 §5.16）
 
 ---
 
@@ -21,7 +21,7 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 
 | 状态 | 权威方 | 存储位置 | 同步方式 |
 |---|---|---|---|
-| 风暴定义（锚点/数量/半径/模式/种子 + 冻结成长律） | 服务器 | `AllayStormData`（Level Attachment，随存档 NBT） | 事件包（ACTIVATE/UPDATE）；**ω 已退役为客户端派生值**（§5.12/§5.15） |
+| 风暴定义（锚点/数量/种子 + 冻结成长律） | 服务器 | `AllayStormData`（Level Attachment，随存档 NBT） | 事件包（ACTIVATE/UPDATE）；**半径/ω/模式均已退役为客户端派生值**（§5.12/§5.14/§5.16） |
 | 成员死亡集合 | 服务器 | 同上（BitSet） | ACTIVATE 携带位图；死亡由 DAMAGE 包的死亡位驱动 |
 | 成员 HP | 服务器 | 同上（稀疏 map，缺省 = 满血 20） | 客户端只持有镜像（快照驱动），不参与死亡判定 |
 | 成员位置/速度 | **各客户端 GPU** | 显存粒子池（64 B/成员） | 权威客户端 5 Hz 快照 → 服务器转发 → 软修正槽；**永不定时广播** |
@@ -44,7 +44,7 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 | DEACTIVATE | 无 | 2 B | 离开激活范围（服务器状态不动） |
 | STOP | 无 | 2 B | 风暴结束 |
 
-线格式：flags 字节（低 2 位动作 + 0x04 authority 位）、修正频率 varint×10、锚点 `BlockPos` VAR_LONG、count varint（**已生成种群**，见 §5.13）、radius 字节（×2 = 0.5 格步长，**仅 ball 模式消费**——涡旋半径是客户端派生值）、mode varint、seed varint、**冻结成长律**：creationRadius/finalRadius/growthPerSecond 3×float + createdAt long（涡旋相位积分的常量，见 §5.15）、死亡位图 length-prefixed 裸字节（BitSet.toByteArray 小端序）。**ω 不再上线**（原 ω 有符号字节 ÷16 已删除——涡旋角速度是客户端从 (mode, seed, radius) 派生的纯函数，§5.12）。**解码防御**：位图长度 > `MAX_DEAD_BYTES`（16 KB = MAX_COUNT/8）即抛 `DecoderException` 断开连接——长度字段驱动数组分配，无上限时单个恶意包即可让对端 OOM。
+线格式：flags 字节（低 2 位动作 + 0x04 authority 位）、修正频率 varint×10、锚点 `BlockPos` VAR_LONG、count varint（**已生成种群**，见 §5.13）、seed varint、**冻结成长律**：creationRadius/finalRadius/growthPerSecond 3×float + createdAt long（涡旋相位积分的常量，见 §5.15）、死亡位图 length-prefixed 裸字节（BitSet.toByteArray 小端序）。**半径/mode/ω 均不上线**（radius 字节与 mode varint 已随 §5.16 删除——半径是客户端从 count 每帧派生的纯函数 §5.14，ω 从 (seed, radius) 派生 §5.12）。**解码防御**：位图长度 > `MAX_DEAD_BYTES`（16 KB = MAX_COUNT/8）即抛 `DecoderException` 断开连接——长度字段驱动数组分配，无上限时单个恶意包即可让对端 OOM。
 
 ### 3.2 `ServerboundStormHitPacket`（C→S，攻击者上报，~13 B）
 
@@ -74,15 +74,14 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 ### 4.1 `allaystorm/AllayStormData`（Level Attachment，`CMIAttachments.STORM_DATA`）
 
 ```
-{ active, anchor(BlockPos), count(已生成种群——成长时钟，见 §5.13), radius(涡旋=√count/8 连续推导), mode(1|2),
+{ active, anchor(BlockPos), count(已生成种群——成长时钟，见 §5.13),
   stormSeed(24bit),
   creationRadius/finalRadius/finalCount/growthPerSecond/createdAtGameTime(冻结成长律，§5.15),
   dead(BitSet), hp(Int2FloatOpenHashMap) }
 ```
 
-- **canonical 量化**：创建时一次性量化（`quantizeRadius`），持久化、线格式、客户端三方永远一致，无重量化漂移。**涡旋半径与 ω 已退出量化/状态**（§5.12/§5.14）：涡旋半径 = `vortexRadius(count) = clamp(√count/8, 2, 64)` 纯派生值（去 0.5 网格——量化会让成长中的外壳 0.5 格一跳）；ω = `vortexOmega(radius, seed) = ±SPIN_K/R` 纯派生值，`quantizeOmega`/`OMEGA_STEP` 删除。
-- **冻结成长律**（§5.15 的相位积分常量）：`creationRadius`（R₀）、`finalRadius`（R_f）、`finalCount`（成长上限）、`growthPerSecond`（速率）、`createdAtGameTime`（age 时钟）创建时一次性写入，与种子同级的**代常量**——中途改配置不追溯已有风暴；旧存档缺字段时重建为无成长律（g=0 锚定当前尺寸，防零除 NaN）。
-- **读侧重重量化**：序列化读入时 radius 再跑一遍量化（写入侧恒为 canonical 形式，读侧防手改存档/未来格式泄露越界值到线格式——radius 线格式字节的无符号回绕依赖 0.5 步长钳制兜底；涡旋半径从 count 重推导，不信存档值）。
+- **半径/模式不是状态**：半径 = `vortexRadius(count) = clamp(√count/8, 2, 64)` 纯派生值（§5.14/§5.16：不存 NBT、不上线、不量化——量化会让成长中的外壳台阶跳变）；ω = `vortexOmega(radius, seed) = ±SPIN_K/R` 纯派生值（§5.12）；模式常量（vortex）只活在 emitter 头的风暴门槽位（§5.16）。`quantizeRadius`/`RADIUS_STEP` 已删除。
+- **冻结成长律**（§5.15 的相位积分常量）：`creationRadius`（R₀）、`finalRadius`（R_f）、`finalCount`（成长上限）、`growthPerSecond`（速率）、`createdAtGameTime`（age 时钟）创建时一次性写入，与种子同级的**代常量**——中途改配置不追溯已有风暴；读侧对零速率（g=0）风暴重建为锚定当前尺寸的无成长律（防零除 NaN）。
 - **旋向符号**：由 seed 最低位决定（涡旋模式），重启后不变，零额外状态。
 - **稀疏 HP**：只存受损未亡成员；`defaultReturnValue(MAX_HP)` 使缺省键读作满血。存档格式：`Dead` 变长 int 数组 + `HpIdx`/`HpBits` 平行数组（float 位型）。`count` 本身持久化即**成长进度持久化**。
 - 停止后（active=false 且无死亡无受损）序列化返回 null，存档零残留。
@@ -97,10 +96,10 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 
 ### 4.3 `allaystorm/AllayStormCommand`（服务器命令，权限 2）
 
-`/cmip allaystorm ball [count ≤131072] [radius 2..64]` / `vortex [count ≤131072]` / `stop`。**已从客户端命令迁移**（客户端 `CMIParticleCommand` 保留 spawn/stream/anim/bench/clear/stats/budget/shaderpack）。
+`/cmip allaystorm [count ≤131072]`（默认 2048）/ `stop`。**已从客户端命令迁移**（客户端 `CMIParticleCommand` 保留 spawn/stream/anim/bench/clear/stats/budget/shaderpack）。
 
-- **vortex 不接受 radius/omega**（§5.12：自动推导）；命令 count = **初始数量**（创建时立即存在，成长见 §5.13），被 `stormMaxCount` 硬钳制；
-- **活跃风暴重跑 = 仅参数更新**（锚点/模式/ball 半径重定向，身份/HP/死亡/成长进度保留——count 已是动态量，不再触发重启）；
+- **不接受 radius/mode 参数**（半径与 ω 自动推导，§5.12/§5.14/§5.16；模式常量 vortex，§5.16）；命令 count = **初始数量**（创建时立即存在，成长见 §5.13），被 `stormMaxCount` 硬钳制；
+- **活跃风暴重跑 = 仅锚点重定向**（身份/HP/死亡/成长进度保留——count 已是动态量，不再触发重启，count 参数此时被忽略）；
 - `stop` + 重建 = 整场重启（新 seed、清空 HP/死亡/成长进度）。
 
 ### 4.4 配置
@@ -131,7 +130,7 @@ Allay Storm 是未来的 **BOSS 本体**——风暴由最多 131072 只 allay �
 
 ### 5.4 玩家排斥：全体玩家
 
-新增 `PLAYERS_BB`(18) SSBO（≤16 个 vec4 玩家位置，每帧从 `mc.level.players()` 收集距锚点最近的 16 个上传）。update.comp 的 ball/vortex 两处排斥循环改为遍历该数组。**零新增网络包**（位置来自原版实体同步）；除"各自的本地玩家泡泡精确"外，力场全端一致。
+新增 `PLAYERS_BB`(18) SSBO（≤16 个 vec4 玩家位置，每帧从 `mc.level.players()` 收集距锚点最近的 16 个上传）。update.comp 的风暴排斥循环遍历该数组。**零新增网络包**（位置来自原版实体同步）；除"各自的本地玩家泡泡精确"外，力场全端一致。
 
 ### 5.5 修正层（软收敛，永不瞬移）
 
@@ -249,15 +248,15 @@ grilling 定案：涡旋的半径/角速度不再由命令或服务器状态承�
   - 角度 = **成员索引 × 黄金角**（2.399963 rad）：连续成长成员绕环旋转出生，完美均匀且零哈希质量风险；
   - 初速 = 指向该成员自己的 home 点（`cmiTyphoonHome` 同源函数）× 速度上限，到达后伺服接管；
   - emit 命令空闲字 **c.11 = 环上标志**（战斗/追踪/流路径显式置 false）。
-- `ball` 模式同样成长、同样环上出生（球心为飞入目标）。
+- `ball` 模式同样成长、同样环上出生（球心为飞入目标）。**（ball 分支已随 §5.16 移除——环上出生恒指向台风家点。）**
 
 ### 5.14 半径连续化（count 双快照插值，本轮）
 
 量化半径的两层突变——0.5 格 wire 台阶 + 1 Hz 包节奏——使成长中的外壳每 18~100 秒 0.5 格一跳（伺服一秒内荡过去，肉眼可见的"呼吸脉动"）。修复：
 
 - count（中心包 1 Hz 整数）经**追逐中心同款双快照插值**（prev/curr + 共享时钟 alpha、首包初始化不 leap）连续化——alpha 只依赖 timeSec 与包时间戳，跨端位级一致；
-- 涡旋半径 = `vortexRadius(countInterp)` **每帧推导、无量化**，经逐帧 header 重打包流入伺服；ω 随之；**中心包的 radius 字段移除**（count 是唯一原语，净减 wire）；状态包 radius 字节保留（ball 专用）；
-- `stormMode` 字段替代 `omega != 0` 模式代理（每帧推导需要显式模式门，ball 半径不被覆盖）；
+- 涡旋半径 = `vortexRadius(countInterp)` **每帧推导、无量化**，经逐帧 header 重打包流入伺服；ω 随之；**中心包的 radius 字段移除**（count 是唯一原语，净减 wire）；~~状态包 radius 字节保留（ball 专用）~~ **radius 字节已随 §5.16 删除**；
+- ~~`stormMode` 字段替代 `omega != 0` 模式代理（每帧推导需要显式模式门，ball 半径不被覆盖）~~ **`stormMode` 已随 §5.16 删除**（唯一模式，涡旋推导不再需要模式门）；
 - ACTIVATE 首帧即精确：countInterp 未插值时回退包内整数，半径推导无需等待第一张中心包。
 
 ### 5.15 聚团 bug：成长律闭式积分（相位不变性，本轮）
@@ -283,6 +282,19 @@ convPhase = (rate_i/a_i)·(64·(min(R,Rf) − R₀)/g + postSec/(2Rf))      post
 - **几何纯比例缩放**：去掉 `max(2,·)` 绝对地板（rEye = 0.1R、fringe = 0.15R·h）——span ∝ R 使螺旋系数 `spiral = π/log(reach/rEye)` 成为成员常量、相位积分无分支，且 **ω = SPIN_K/R（= 0.85·6/1.15/R）的可达性余量在任意尺寸恒定**：外缘 reach = 1.15R → 切向速度恒 0.85×6 = 5.1 b/s < 6 上限。顺带修复独立发现的**外缘毛边可达性饱和**（旧 ω=6/R 假设所有 home 点 ≤ R，但毛边 reach 最高 1.15~1.36R 使外缘目标速度 6.9 > 6，饱和成员坍缩到共转半径 r = 6/ω = R——早期风暴 ~30% 成员聚壳的第二聚团源）。
 - **代价（记录在案）**：地板移除后小尺寸风暴的眼墙/毛边按比例缩小（微型台风自相似）；成长律冻结 = 创建后改配置的 g/上限不影响已有风暴（相位律稳定性优先）。
 
+### 5.16 ball 模式移除 + 协议/state 再瘦身 + 两处修复（2026-08 第三轮）
+
+grilling 定案：涡旋已是唯一模式（§5.9 的伺服自 §5.12 起就是 Boss 关键路径，ball 的 boids 混沌从未用于正式玩法），ball 及其全部冗余管线一次性拔除，顺带修复审查发现的一处竞态与一处精度退化。**开发期模组，不做旧存档迁移**（旧 ball 风暴/旧 NBT 字段直接被忽略）。
+
+- **命令面**：`/cmip allaystorm [count]`（默认 2048）+ `stop`——`ball`/`vortex` 字面分支、通用 mode 词分支、radius 参数全部删除（§4.3）。
+- **wire 瘦身**：状态包删除 mode varint 与 radius 字节（半径是 count 的派生值 §5.14，模式常量只活在 emitter 头）——ACTIVATE/UPDATE 各减 ~3 B。
+- **服务器 state 瘦身**：`AllayStormData` 删 `radius`/`mode` 字段、`quantizeRadius()`/`RADIUS_STEP`；NBT 删 `Mode`/`Radius`/`FinalRadius` 标签（`FinalRadius` 读侧本就由 `FinalCount` 重推导）。法则重建只保留两个活语义分支：g>0 且上限未到 → 从标签重建；零速率 → 无成长律锚定当前尺寸。
+- **客户端**：`stormMode` 字段、`MODE_BALL`/`WANDER_RADIUS` 删除；`packedHeader(mode, radius, anchor)` → `packedHeader(radius, anchor)`（18.x 恒写 MODE_VORTEX=2，仍作全 shader 的风暴成员门——member 0 的 p0.w 歧义靠它，不是靠数值）；header 18.z 保留为 0（历史游走半径槽位）。
+- **shader**：update.comp 删 ball boids 分支与 `STORM_W_COHESION/ALIGN/CONTAIN` 三常量（分离/斥力/伺服常量保留），风暴分支坍缩为单涡旋伺服；emit.comp 双出生模式统一先算 `cmiTyphoonHome`（环上出生 = 指向家点、解析出生 = 直接落位），ball 生成分支与 `cmiStormCenter` 调用删除（**`uTimeSec` 自此退出 emit.comp**——引擎上传行同步删除）；`allay_pose.glsl` 删除 `cmiStormCenter()` 本体，`cmiStormAnimOverride` 去 mode/baseAnim 死参数（风暴 spec 恒 FLY，baseAnim 门是死代码）；model.vsh 与 **ShaderPackProgramCompiler 注入片段**（pack 路径镜像）的舞蹈门同步改新签名。
+- **BUG 修复（命中-生成竞态）**：成员在 trickle-in/成长窗口内被击杀时，伤害队列（单帧生命周期）扫描不到尚未生成的目标条目即空转——生成游标随后照常物化该索引，成为服务器已判死的**满血不死幽灵**（对它的上报被服务器死亡位永久拒绝）。修复：`applyStormDamage` 收到死亡位时同步写 `stormDead`（幂等），`scheduleSpawnRuns` 的跳过循环每帧重读该位图，自动跳过。
+- **BUG 修复（rotPhase 精度）**：旋转相位 post-growth 以 `SPIN_K/Rf` 每秒无界增长，float32 数周后 ULP 超过每帧增量、旋转以整数 ULP 步进卡顿。修复：CPU 侧 double 累积后 **mod 2π 再存 float**——精确等价变换（全部消费点经 cos/sin、系数恒 1），Java `%` 是全规范 IEEE fmod，跨端逐位一致不变。**convPhase 不可同修**（shader 端每成员乘 hash 派生的 rate/aI，任何模数都是全员相位传送）——其漂移增速低一个量级且效果二阶（慢速位置抖动），文档化为接受项（`stormConvPhase` 字段 javadoc），需要时再上 rate 量化分桶/fp64。
+- **BUG-1（模式翻转相位法则退化）随移除消亡**：ball→vortex 翻转是 `creationRadius=0/finalRadius=0` 进入涡旋相位积分的唯一路径，路径不存在即 bug 不存在（服务器产出的法则恒满足 `grown ≥ 0`，不加防御钳制）。
+
 
 
 - **新玩家中途加入**：≤1 s 内扫描激活 → ACTIVATE（参数+seed+死员位图）→ 解析出生点直接落在当前时刻的轨道位置上 → 与所有老客户端同构开局。
@@ -306,7 +318,7 @@ convPhase = (rate_i/a_i)·(64·(min(R,Rf) − R₀)/g + postSec/(2Rf))      post
 ## 8. 明确不做 / 已知限制（记录在案）
 
 1. **信任面**：命中上报与权威位置流均不可服务器完全验证（与原版反作弊同级）。命中上报已加**攻击者邻近校验**（服务端位置 ± reach+8，见 §4.2）——残余：高延迟玩家的合法命中可能落在余量外被误拒（有 12 次/秒节流兜底，代价个位数次挥空）；恶意权威客户端仍可摆布他人看到的远场成员位置（近场由修正流收敛）。
-2. **ball 模式**：boids 混沌 + 访问预算截断 → 个体位置跨端仅宏观看齐（测试用途，非 Boss 关键路径）。**vortex 已改刚性共转伺服**（§5.9）：图案相位 = 共享时钟纯函数，跨端宏观一致性优于 ball；个体级漂移仍由修正层收敛到亚格级。
+2. **模式**：ball 模式已整体移除（§5.16），涡旋刚性共转伺服是唯一模式（§5.9）：图案相位 = 共享时钟纯函数，跨端宏观一致；个体级漂移由修正层收敛到亚格级。
 3. **`/cmip allaystorm` 在客户端配置 `particleEnabled=false` 的客户端上**：包被静默忽略（引擎 available 检查），该玩家看不到风暴；中途切换配置是已记录的边缘场景。
 4. **clock 回绕**：29 h 一次的轨道相位跳变；修正槽时间戳在回绕帧被 `cage >= 0` 守卫跳过一次。
 5. ~~数量变化 = 整场重启~~ **已被自动成长取代**（§5.13）：count 是成长时钟，命令 count = 初始数量，活跃风暴重跑只更新参数不重置成长；身份空间仍只在 `stop` + 重建时重塑。
@@ -342,7 +354,7 @@ convPhase = (rate_i/a_i)·(64·(min(R,Rf) − R₀)/g + postSec/(2Rf))      post
 | `client/particles/engine/ParticleBuffers.java` | 修改 — 4 新 SSBO（含 MEMBERMAP_BB）+ 16 B hit + 上传/读回/映射清零 |
 | `client/particles/engine/CollisionBake.java` | 修改 — `reset()`（维度切换清烘焙槽位与在途构建） |
 | `client/particles/engine/ParticlePrograms.java` | 修改 — stormpos 程序 + prelude 常量 |
-| `client/particles/allaystorm/AllayStormSpec.java` | 修改 — spawnStyle 3 + seed 掩码 + packedHeader(mode) 显式模式（§5.12） |
+| `client/particles/allaystorm/AllayStormSpec.java` | 修改 — spawnStyle 3 + seed 掩码 + packedHeader(radius)（§5.12/§5.16） |
 | `client/particles/allaystorm/AllayStormRuntime.java` | 新增 — 引擎主类的全部可变风暴运行时状态（同步状态机/共享时钟/命中快照/玩家收集/权威读回派发/滴入调度，见 §5.8 运行时类拆分）；count 双快照插值 + 成长律相位标量（§5.14/§5.15）+ 环上出生调度（§5.13） |
 | `client/particles/command/CMIParticleCommand.java` | 修改 — allaystorm 子树迁出 |
 | `client/particles/shaderpack/ShaderPackProgramCompiler.java` | 修改 — 风暴尺寸守卫 |

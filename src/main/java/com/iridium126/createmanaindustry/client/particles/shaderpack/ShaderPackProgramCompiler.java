@@ -617,7 +617,7 @@ public final class ShaderPackProgramCompiler {
         sb.append("""
                 uniform vec3 cmi_CameraPos;
                 uniform float cmi_FadeDist;
-                uniform float uTimeSec; // engine simulation time (storm wander/bursts)
+                uniform float uTimeSec; // engine simulation time (storm dance bursts)
 
                 // Sort-buffer metadata tail slot (index == particle capacity,
                 // see ParticleBuffers allocation). capture.comp stores THIS
@@ -704,14 +704,13 @@ public final class ShaderPackProgramCompiler {
                     float scale = (2.0 * size) / MODEL_ABOVE_FEET;
 
                     int anim = int(texelFetch(cmi_Emitters, int(hb + 17u)).x);
-                    // Storm members: slow individuals near the wandering centre
+                    // Storm members: inner-band members near the chased anchor
                     // periodically run full vanilla dance cycles.
                     vec4 stormA = texelFetch(cmi_Emitters, int(hb + 18u));
                     if (stormA.x > 0.5 && !gone) {
-                        vec3 anchor = texelFetch(cmi_Emitters, int(hb + 19u)).xyz;
-                        vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
-                        anim = cmiStormAnimOverride(int(stormA.x), anim, length(p1.xyz),
-                                distance(p0.xyz, G), stormA.y, p3.z, uTimeSec);
+                        anim = cmiStormAnimOverride(
+                                distance(p0.xyz, texelFetch(cmi_Emitters, int(hb + 19u)).xyz),
+                                stormA.y, p3.z, uTimeSec);
                     }
                     // HP-death corpse: per-particle death pose + roll timer
                     // (time since death; update.comp counts hp 0 -> -1 over the

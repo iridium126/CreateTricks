@@ -43,22 +43,21 @@ mat4 cmiPart(vec3 pivot, float xr, float yr, float zr) {
 }
 
 // ---- storm swarm shared helpers ------------------------------------------
-// Smooth wandering centre for Allay Storm swarms, shared by update.comp (the
-// boids attractor) and both MODEL vertex paths (dance-burst proximity).
-// Deterministic in (anchor, seed, time): every consumer in a frame agrees
-// without any GPU sync.
-vec3 cmiStormCenter(vec3 anchor, float wanderR, float seed, float timeSec) {
-    float t = timeSec * 0.05;
-    float h1 = cmiHash1(seed * 1.31 + 0.7) * 6.2831853;
-    float h2 = cmiHash1(seed * 2.17 + 4.7) * 6.2831853;
-    float h3 = cmiHash1(seed * 3.71 + 9.1) * 6.2831853;
-    return anchor + wanderR * 0.5 * vec3(
-        sin(t * 0.70 + h1) + 0.5 * sin(t * 1.70 + h2),
-        0.35 * sin(t * 0.90 + h3),
-        cos(t * 0.60 + h2) + 0.5 * cos(t * 1.30 + h1));
+// Procedural dance-burst arbitration for storm members: inner-band members
+// (inside 0.55 of the storm radius from the chased center) run full vanilla
+// dance cycles regardless of speed -- tangential velocity is constant on the
+// orbit, so a speed gate would never fire; dancers keep orbiting (the pose
+// change does not touch the motion). Everyone else keeps flying. Pure
+// function of its arguments -- no state.
+int cmiStormAnimOverride(float distCenter, float radius, float seed, float timeSec) {
+    if (distCenter >= radius * 0.55)
+        return 0;
+    // ~11 s dancing out of each 36 s cycle, phase-staggered per particle
+    float cyc = fract(timeSec / 36.0 + cmiHash1(seed * 7.3));
+    return cyc < 0.3 ? 1 : 0;
 }
 
-// ---- typhoon home-point (vortex mode 2) ------------------------------------
+// ---- typhoon home-point ----------------------------------------------------
 // Shared servo-target / analytic-spawn function for the typhoon shape rework.
 // Consumed by update.comp (the servo target + its velocity) and emit.comp (the
 // analytic spawn, whose state IS the servo's equilibrium — late joiners start
@@ -67,7 +66,7 @@ vec3 cmiStormCenter(vec3 anchor, float wanderR, float seed, float timeSec) {
 // growth-law phase integrals only, so every client derives the same targets by
 // construction; local separation / repulsion / collision drift is healed by
 // the soft correction layer. The center is the SERVER-CHASED anchor — there is
-// no per-member wander on this path (the ball mode keeps cmiStormCenter).
+// no per-member wander on this path.
 //
 // PHASE DISCIPLINE (the clump-bug contract): the rotation and conveyor phases
 // arrive as CPU-integrated scalars (rotPhase / convPhase / convRate — see
@@ -181,26 +180,6 @@ void cmiTyphoonHome(float ms, float radiusR, float omegaNow, float rotPhase, flo
     float spd = length(vel);
     if (spd > maxSpeed)
         vel = vel * (maxSpeed / spd);
-}
-
-// Procedural dance-burst arbitration for storm members, per motion mode.
-//   ball (mode 1): slow individuals near the wandering centre
-//   vortex (mode 2): inner-band members regardless of speed -- tangential
-//     velocity is constant on the orbit, so a speed gate would never fire;
-//     dancers keep orbiting (the pose change does not touch the motion)
-// Everyone else keeps flying. Pure function of its arguments -- no state.
-int cmiStormAnimOverride(int mode, int baseAnim, float speed, float distCenter,
-        float ballRadius, float seed, float timeSec) {
-    if (baseAnim != 0)
-        return baseAnim;
-    bool stage = (mode == 2)
-        ? distCenter < ballRadius * 0.55
-        : (speed <= 1.5 && distCenter <= ballRadius * 0.6);
-    if (!stage)
-        return 0;
-    // ~11 s dancing out of each 36 s cycle, phase-staggered per particle
-    float cyc = fract(timeSec / 36.0 + cmiHash1(seed * 7.3));
-    return cyc < 0.3 ? 1 : 0;
 }
 
 // Emitter colour keyframe interpolation over normalized life (headers hb+8..hb+15).

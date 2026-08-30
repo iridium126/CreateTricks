@@ -63,7 +63,7 @@ uniform uint uCapacity;
 uniform float uDt;
 uniform int  uCollisionOn; // 1 = collision texture/SSBO bound & valid
 
-// ---- storm swarm (boids) -------------------------------------------------
+// ---- storm swarm (separation spatial hash) --------------------------------
 // Spatial hash built by gridbuild.comp earlier THIS frame against the same
 // read pool / previous-frame counter slot this pass consumes.
 layout(std430, binding = BIND_GRID) buffer GridBuf {
@@ -101,10 +101,7 @@ uniform float uStormConvRate;  // d(convPhase)/dt — drives the target-velocity
 
 const float CELL_SIZE        = 2.5;  // == neighbour radius (one cell per axis)
 const float STORM_SEP_R      = 1.0;
-const float STORM_W_COHESION = 1.6;
-const float STORM_W_ALIGN    = 1.1;
 const float STORM_W_SEP      = 6.0;
-const float STORM_W_CONTAIN  = 3.0;
 const float STORM_PLAYER_R   = 3.0;
 const float STORM_PLAYER_W   = 14.0;
 // vortex home-point servo (see the typhoon branch): stiffness 24 leaves a
@@ -116,7 +113,7 @@ const float STORM_VORTEX_C   = 6.0;
 // Per-particle cap on grid-chain NODE VISITS across the 27-cell sweep. Chain
 // length scales with swarm density (and hash collisions pull far particles in
 // too), so an unbounded walk degraded toward O(N^2) at the 131072-member stress
-// cap (~25k node hops per particle inside a shrunken bait ball). The budget
+// cap (~25k node hops per particle inside a collapsed clump). The budget
 // bounds each thread's whole sweep at a worst case of ~34M hops fleet-wide
 // (parallel lanes, latency-cheap); under ordinary densities it never engages,
 // and above it steering samples an arrival-order (spatially arbitrary) prefix
@@ -243,11 +240,11 @@ void main() {
     uint hb = eid * VEC4_PER_EMITTER;
 
     // Header rows 18 and 7 are each read ONCE here. Row 18's storm gate is
-    // consulted three more times below (damage scan, ball/vortex steering,
+    // consulted three more times below (damage scan, storm steering,
     // correction block) and row 7's y/z (collide mode, flutter) much later —
     // hoisting the vec4 loads keeps every consumer on one SSBO read instead
     // of depending on the compiler to CSE across the early-return ladder.
-    vec4 stormA = emitters.u[hb + 18u]; // x mode(0 none|1 ball|2 vortex), y radius, z wanderRadius, w maxSpeed
+    vec4 stormA = emitters.u[hb + 18u]; // x storm gate (0 none | 2 vortex), y radius, z reserved (was wander), w maxSpeed
     vec4 matMotion = emitters.u[hb + 7u]; // x matId, y collide mode, z flutter
     // identity map write (see the buffer declaration). Header-flag gate
     // matches gridbuild/stormpos/hit (the storm spec dedupes to its own
@@ -371,8 +368,7 @@ void main() {
     }
 
     // ---- storm swarm steering ------------------------------------------------
-    // Mode 1 (ball): boids neighbour forces + containment shell around G(t).
-    // Mode 2 (typhoon): world-frame SERVO onto each member's circulating home
+    // Typhoon: world-frame SERVO onto each member's circulating home
     // point on one of 6 trailing log-spiral arms (shared cmiTyphoonHome:
     // eyewall ascent -> outflow deck -> edge sink -> inflow, rigid co-rotation,
     // funnel-shaped outflow deck). The center is the SERVER-CHASED
@@ -387,87 +383,7 @@ void main() {
     // the whole storm onto the center) whenever the radius moves.
     // Only WORLD-frame acceleration leaves this block: the collision sweep
     // below still owns the final position move.
-    if (!corpse && stormA.x > 0.5 && stormA.x < 1.5) {
-        vec3 anchor = emitters.u[hb + 19u].xyz;
-        vec3 G = cmiStormCenter(anchor, stormA.z, p3.z, uTimeSec);
-        vec3 acc = vec3(0.0);
-
-        {
-            vec3 centerSum = vec3(0.0);
-            vec3 velSum = vec3(0.0);
-            vec3 sepSum = vec3(0.0);
-            int nCount = 0;
-            int visits = 0;
-            bool budgetGone = false;
-            ivec3 pc = ivec3(floor(pos / CELL_SIZE));
-            for (int ox = -1; ox <= 1 && !budgetGone; ox++)
-            for (int oy = -1; oy <= 1 && !budgetGone; oy++)
-            for (int oz = -1; oz <= 1 && !budgetGone; oz++) {
-                ivec3 c = pc + ivec3(ox, oy, oz);
-                uint hcell = (uint(c.x) * 92837111u ^ uint(c.y) * 689287499u ^ uint(c.z) * 283923481u)
-                        & (GRID_TABLE - 1u);
-                int s = grid.heads[int(hcell)];
-                while (s != 0) {
-                    int j = s - 1;
-                    s = grid.next[j];
-                    if (++visits > STORM_MAX_VISITS) {
-                        budgetGone = true;
-                        break;
-                    }
-                    if (j == int(idx))
-                        continue;
-                    uint jb = uint(j) * 4u;
-                    vec3 op = readBuf.data[jb].xyz;
-                    vec3 d = op - pos;
-                    float d2 = dot(d, d);
-                    if (d2 < CELL_SIZE * CELL_SIZE && d2 > 1e-8) {
-                        centerSum += op;
-                        velSum += readBuf.data[jb + 1u].xyz;
-                        nCount++;
-                        if (d2 < STORM_SEP_R * STORM_SEP_R) {
-                            float dl = sqrt(d2);
-                            sepSum -= d * ((STORM_SEP_R - dl) / (dl * STORM_SEP_R));
-                        }
-                    }
-                }
-            }
-            if (nCount > 0) {
-                acc += ((centerSum / float(nCount)) - pos) * STORM_W_COHESION;
-                acc += (velSum / float(nCount) - vel) * STORM_W_ALIGN;
-            }
-            acc += sepSum * STORM_W_SEP;
-        }
-
-        // soft containment shell around the wandering centre
-        vec3 toG = G - pos;
-        float dG = length(toG);
-        float ballR = max(stormA.y, 1.0);
-        if (dG > ballR * 0.75)
-            acc += (toG / dG) * STORM_W_CONTAIN * (dG - ballR * 0.75);
-        else if (dG < ballR * 0.15 && dG > 1e-3)
-            acc -= (toG / dG) * STORM_W_CONTAIN * (ballR * 0.15 - dG);
-
-        // fish avoiding EVERY diver (all synced players — same force set on
-        // every client; see the PlayersBuf note above). Squared-distance gate
-        // first: only members actually inside player reach pay the sqrt and
-        // the normalize divides (length == sqrt(dot) per the GLSL spec, so
-        // the gate is the same test; 1e-6 is the squared 1e-3 guard).
-        for (int pi = 0; pi < uPlayerCount; pi++) {
-            vec3 dp = pos - players.pl[pi].xyz;
-            float dp2 = dot(dp, dp);
-            if (dp2 < STORM_PLAYER_R * STORM_PLAYER_R && dp2 > 1e-6) {
-                float dpL = sqrt(dp2);
-                acc += (dp / dpL) * STORM_PLAYER_W * (STORM_PLAYER_R - dpL) / STORM_PLAYER_R;
-            }
-        }
-
-        vel += acc * uDt;
-        float spMax = max(stormA.w, 0.5);
-        float spd = length(vel);
-        if (spd > spMax)
-            vel *= spMax / spd;
-    }
-    else if (!corpse && stormA.x > 1.5) {
+    if (!corpse && stormA.x > 0.5) {
         // ----- typhoon: world-frame servo onto the circulating arm home point
         vec3 anchor = emitters.u[hb + 19u].xyz;
         float spMaxV = max(stormA.w, 0.5);
@@ -482,8 +398,8 @@ void main() {
         cmiTyphoonHome(p3.z, max(stormA.y, 2.0), uStormOmegaNow, uStormRotPhase,
                 uStormConvPhase, uStormConvRate, spMaxV, anchor, target, vT);
 
-        // separation + player repulsion, world space exactly like ball mode.
-        // Same visit budget as the ball-mode sweep.
+        // separation + player repulsion, world space.
+        // Same visit budget as the boids sweep had.
         vec3 sepW = vec3(0.0);
         int sepVisits = 0;
         bool sepBudgetGone = false;
@@ -516,7 +432,7 @@ void main() {
         sepW *= STORM_W_SEP;
         vec3 repW = vec3(0.0);
         // every synced player repels (all-client-consistent force set).
-        // Squared-distance gate as in ball mode: the sqrt and the normalize
+        // Squared-distance gate: the sqrt and the normalize
         // divides run only for members actually inside player reach.
         for (int pi = 0; pi < uPlayerCount; pi++) {
             vec3 dp = pos - players.pl[pi].xyz;
@@ -528,7 +444,7 @@ void main() {
         }
 
         // servo onto the co-rotating home point, plus the world-space terms,
-        // hand ONE acceleration to the integrator (same contract as ball mode)
+        // hand ONE acceleration to the integrator
         vec3 aW = (target - pos) * STORM_VORTEX_K + (vT - vel) * STORM_VORTEX_C + sepW + repW;
         vel += aW * uDt;
         float spdV = length(vel);

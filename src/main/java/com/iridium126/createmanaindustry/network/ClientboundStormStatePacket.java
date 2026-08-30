@@ -20,10 +20,10 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  *       path): full parameters + stormSeed + the dead-member bitmap. The
  *       client spawns exactly the alive members with seed-derived identity,
  *       so member counts agree across clients and restarts by construction.
- *   <li><b>UPDATE</b>: parameter-only change (anchor/radius/mode); member
- *       identity, HP and deaths are preserved — springs retarget.
- *       A count change is never an UPDATE (the server restarts the storm
- *       with a fresh seed instead).
+     *   <li><b>UPDATE</b>: anchor-only retarget; member
+     *       identity, HP and deaths are preserved — springs retarget.
+     *       The command's count argument only sizes a NEW storm; an active
+     *       storm's population is a growing quantity and never restarts on it.
  *   <li><b>DEACTIVATE</b>: the player left the activation range — the client
  *       disperses its local swarm; server state is untouched.
  *   <li><b>STOP</b>: the storm is over — clients disperse and forget state.
@@ -32,19 +32,19 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  * (runs the position-snapshot readback at {@code correctionHz}); it flips
  * only via re-sent UPDATE packets on handoff.
  * <p>
- * Wire format (quantized once at creation server-side): anchor as
- * {@code BlockPos} VAR_LONG, count varint, radius byte (×2 = 0.5-block
- * steps), mode varint, seed varint, the FROZEN GROWTH LAW (creation radius,
+ * Wire format: anchor as {@code BlockPos} VAR_LONG, count varint (the
+ * GENERATED population), seed varint, the FROZEN GROWTH LAW (creation radius,
  * final radius, growth rate — floats — and the creation gameTime long; the
  * vortex phase integrals are closed-form functions of these four constants,
- * identical on every client), dead bitmap length-prefixed raw bytes
- * (worst case 16 KB once per activation). The vortex angular velocity rides
- * NO wire: the client derives it from the radius and the seed's low bit
+ * identical on every client), dead bitmap length-prefixed raw bytes (worst
+ * case 16 KB once per activation). The storm RADIUS and ANGULAR VELOCITY ride
+ * NO wire: the client derives the radius from the synced population every
+ * frame ({@code AllayStormData.vortexRadius}) and ω from the seed's low bit
  * ({@code AllayStormData.vortexOmega}).
  */
 public record ClientboundStormStatePacket(
         int action, boolean authority, double correctionHz,
-        BlockPos anchor, int count, float radius, int mode, int stormSeed,
+        BlockPos anchor, int count, int stormSeed,
         float creationRadius, float finalRadius, float growthPerSecond, long createdAt,
         byte[] deadBitmap) implements CustomPacketPayload {
 
@@ -64,29 +64,29 @@ public record ClientboundStormStatePacket(
      */
     public static final int MAX_DEAD_BYTES = (AllayStormData.MAX_COUNT + 7) / 8;
 
-    public static final ClientboundStormStatePacket ACTIVATE(BlockPos anchor, int count, float radius,
-            int mode, int stormSeed, boolean authority, double hz, byte[] deadBitmap,
+    public static final ClientboundStormStatePacket ACTIVATE(BlockPos anchor, int count,
+            int stormSeed, boolean authority, double hz, byte[] deadBitmap,
             float creationRadius, float finalRadius, float growthPerSecond, long createdAt) {
         return new ClientboundStormStatePacket(ACTION_ACTIVATE, authority, hz,
-                anchor, count, radius, mode, stormSeed,
+                anchor, count, stormSeed,
                 creationRadius, finalRadius, growthPerSecond, createdAt, deadBitmap);
     }
 
-    public static final ClientboundStormStatePacket UPDATE(BlockPos anchor, int count, float radius,
-            int mode, int stormSeed, boolean authority, double hz,
+    public static final ClientboundStormStatePacket UPDATE(BlockPos anchor, int count,
+            int stormSeed, boolean authority, double hz,
             float creationRadius, float finalRadius, float growthPerSecond, long createdAt) {
         return new ClientboundStormStatePacket(ACTION_UPDATE, authority, hz,
-                anchor, count, radius, mode, stormSeed,
+                anchor, count, stormSeed,
                 creationRadius, finalRadius, growthPerSecond, createdAt, null);
     }
 
     public static final ClientboundStormStatePacket DEACTIVATE() {
-        return new ClientboundStormStatePacket(ACTION_DEACTIVATE, false, 0, BlockPos.ZERO, 0, 0, 0, 0,
+        return new ClientboundStormStatePacket(ACTION_DEACTIVATE, false, 0, BlockPos.ZERO, 0, 0,
                 0, 0, 0, 0, null);
     }
 
     public static final ClientboundStormStatePacket STOP() {
-        return new ClientboundStormStatePacket(ACTION_STOP, false, 0, BlockPos.ZERO, 0, 0, 0, 0,
+        return new ClientboundStormStatePacket(ACTION_STOP, false, 0, BlockPos.ZERO, 0, 0,
                 0, 0, 0, 0, null);
     }
 
@@ -102,8 +102,6 @@ public record ClientboundStormStatePacket(
         if (p.action == ACTION_ACTIVATE || p.action == ACTION_UPDATE) {
             BlockPos.STREAM_CODEC.encode(buffer, p.anchor);
             ByteBufCodecs.VAR_INT.encode(buffer, p.count);
-            buffer.writeByte((int) Math.round(p.radius * 2));
-            ByteBufCodecs.VAR_INT.encode(buffer, p.mode);
             ByteBufCodecs.VAR_INT.encode(buffer, p.stormSeed);
             buffer.writeFloat(p.creationRadius);
             buffer.writeFloat(p.finalRadius);
@@ -124,8 +122,6 @@ public record ClientboundStormStatePacket(
         double hz = ByteBufCodecs.VAR_INT.decode(buffer) / 10.0;
         BlockPos anchor = BlockPos.ZERO;
         int count = 0;
-        float radius = 0;
-        int mode = 0;
         int seed = 0;
         float creationRadius = 0;
         float finalRadius = 0;
@@ -134,8 +130,6 @@ public record ClientboundStormStatePacket(
         if (action == ACTION_ACTIVATE || action == ACTION_UPDATE) {
             anchor = BlockPos.STREAM_CODEC.decode(buffer);
             count = ByteBufCodecs.VAR_INT.decode(buffer);
-            radius = (buffer.readByte() & 0xFF) * 0.5f;
-            mode = ByteBufCodecs.VAR_INT.decode(buffer);
             seed = ByteBufCodecs.VAR_INT.decode(buffer);
             creationRadius = buffer.readFloat();
             finalRadius = buffer.readFloat();
@@ -151,7 +145,7 @@ public record ClientboundStormStatePacket(
             buffer.readBytes(dead);
         }
         return new ClientboundStormStatePacket(action, authority, hz,
-                anchor, count, radius, mode, seed,
+                anchor, count, seed,
                 creationRadius, finalRadius, growthPerSecond, createdAt, dead);
     }
 

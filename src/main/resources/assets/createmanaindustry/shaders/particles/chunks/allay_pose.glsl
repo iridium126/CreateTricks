@@ -57,6 +57,36 @@ int cmiStormAnimOverride(float distCenter, float radius, float seed, float timeS
     return cyc < 0.3 ? 1 : 0;
 }
 
+// ---- storm wave squads (server-launched dive waves) ------------------------
+// Membership + launch-stagger rolls. SAME hash discipline as emit.comp's
+// identity chain: NAMED single-mul statements only — an inline a*b+c may
+// contract into an FMA and fork the selection between GPU vendors and the
+// server's Java re-derivation (AllayStormWaves, which validates contact
+// reports against the SAME chains). waveSeed is a 24-bit integer-valued
+// float (exact); mseed is the member's identity seed in [0,1) from p3.z.
+float cmiStormWaveRoll(float mseed, float waveSeed) {
+    float s0 = cmiHash1(waveSeed + 13.37);
+    float shift = s0 * 89.0;
+    float base = mseed * 47.29;
+    float q = base + shift;
+    return cmiHash1(q);
+}
+
+bool cmiStormWaveMember(float mseed, float waveSeed, float fraction) {
+    return cmiStormWaveRoll(mseed, waveSeed) < fraction;
+}
+
+// Personal launch-stagger roll in [0,1): staggers the squad's pursuit starts
+// across the window (a swarm trickling in, not one lump). GPU-only — the
+// server never phases individual members, it only brackets the window.
+float cmiStormWaveGo(float mseed, float waveSeed) {
+    float s0 = cmiHash1(waveSeed + 57.11);
+    float shift = s0 * 57.0;
+    float base = mseed * 13.77;
+    float q = base + shift;
+    return cmiHash1(q);
+}
+
 // ---- typhoon home-point ----------------------------------------------------
 // Shared servo-target / analytic-spawn function for the typhoon shape rework.
 // Consumed by update.comp (the servo target + its velocity) and emit.comp (the

@@ -99,6 +99,14 @@ uniform float uStormRotPhase;  // rotation phase (radians) — CPU growth-law in
 uniform float uStormConvPhase; // shared conveyor phase scalar (per-member scale rate/a)
 uniform float uStormConvRate;  // d(convPhase)/dt — drives the target-velocity conveyor term
 
+// Dive-wave squads (server brain, event-driven — docs/allay-storm-ai.md).
+// 4 concurrent slots; membership/steering are pure functions of these
+// uniforms + the member's stored identity seed (p3.z), so every client
+// steers the same attack from the same packet with zero per-tick sync.
+uniform vec4 uWave[4];       // x waveSeed, y fraction, z assembleSec, w diveUntilSec (shared-clock seconds)
+uniform vec4 uWaveTarget[4]; // xyz live target aim point (feet + 0.5), w waveId (0 = inactive slot)
+uniform vec4 uWavePath[24];  // 4 slots x 6 smoothed corridor waypoints {xyz, valid > 0.5}
+
 const float CELL_SIZE        = 2.5;  // == neighbour radius (one cell per axis)
 const float STORM_SEP_R      = 1.0;
 const float STORM_W_SEP      = 6.0;
@@ -110,6 +118,12 @@ const float STORM_PLAYER_W   = 14.0;
 // integrator stays non-amplifying clear up to the 0.25 s worst-case dt.
 const float STORM_VORTEX_K   = 24.0;
 const float STORM_VORTEX_C   = 6.0;
+// wave squads: contact radius (member feet vs target aim point), pure-pursuit
+// lookahead along the corridor, and the launch-stagger span (squads trickle
+// in over this many seconds instead of converging as one lump)
+const float STORM_WAVE_CONTACT_R = 1.6;
+const float STORM_WAVE_LOOKAHEAD = 8.0;
+const float STORM_WAVE_STAGGER   = 8.0;
 // Per-particle cap on grid-chain NODE VISITS across the 27-cell sweep. Chain
 // length scales with swarm density (and hash collisions pull far particles in
 // too), so an unbounded walk degraded toward O(N^2) at the 131072-member stress
@@ -175,6 +189,115 @@ vec2 cmiGauss2(float s) {
     return vec2(r * cos(6.2831853 * u2), r * sin(6.2831853 * u2));
 }
 
+// Pure-pursuit follower for one wave corridor: projects the member onto the
+// smoothed polyline, then aims LOOKAHEAD further along it — the servo turns
+// the corner cuts into continuous arcs (no right angles anywhere). Past the
+// polyline end the LIVE target position takes over: the final descent through
+// the open-sky column into the shaft's real collision data. The desired
+// velocity is a critically-damped approach shape (dist-scaled, capped).
+void cmiStormWavePursuit(uint slot, vec3 pos, vec3 liveTarget, float cap,
+        out vec3 target, out vec3 vel) {
+    uint b = slot * 6u;
+    // pass 1: nearest arc-length position on the polyline
+    float best = 1e30;
+    float bestS = 0.0;
+    float acc = 0.0;
+    float total = 0.0;
+    vec3 prev = uWavePath[b].xyz;
+    for (int i = 1; i < 6; i++) {
+        vec4 pw = uWavePath[b + uint(i)];
+        if (pw.w < 0.5)
+            break; // valid waypoints form a prefix
+        vec3 ab = pw.xyz - prev;
+        float len2 = max(dot(ab, ab), 1e-8);
+        float t = clamp(dot(pos - prev, ab) / len2, 0.0, 1.0);
+        vec3 c = prev + ab * t;
+        float d2 = dot(pos - c, pos - c);
+        float len = sqrt(len2);
+        if (d2 < best) {
+            best = d2;
+            bestS = acc + t * len;
+        }
+        acc += len;
+        prev = pw.xyz;
+    }
+    total = acc;
+    // pass 2: advance LOOKAHEAD along the polyline
+    float s = bestS + STORM_WAVE_LOOKAHEAD;
+    target = liveTarget;
+    if (s < total) {
+        acc = 0.0;
+        prev = uWavePath[b].xyz;
+        for (int i = 1; i < 6; i++) {
+            vec4 pw = uWavePath[b + uint(i)];
+            if (pw.w < 0.5)
+                break;
+            vec3 ab = pw.xyz - prev;
+            float len = length(ab);
+            if (s <= acc + len) {
+                target = prev + ab * ((s - acc) / max(len, 1e-6));
+                break;
+            }
+            acc += len;
+            prev = pw.xyz;
+        }
+    }
+    vec3 toT = target - pos;
+    float dist = length(toT);
+    vel = dist > 1e-4 ? toT * (min(cap, dist * 4.0) / dist) : vec3(0.0);
+}
+
+// Whisker-cone obstacle avoidance for engaged divers: 13 short rays (forward
+// + 35/70/90-degree rings on both tangent axes) against the containing bake
+// slice, scored by free depth then direction agreement. Bends the steering
+// direction around player-placed obstacles instead of stalling: the plain
+// collision sweep only answers EMBEDDED particles, so a member pressed
+// against a freshly placed roof used to hover there forever with the servo
+// pinning it. All-blocked returns the direction unchanged — genuine embeds
+// fall through to the escape scan.
+vec3 cmiStormWhisker(vec3 pos, vec3 dir) {
+    int slice = -1;
+    vec3 mOrigin = vec3(0.0);
+    for (int i = 0; i < BAKE_SLICES; i++) {
+        vec4 meta = bakeMeta.m[i];
+        if (meta.w < 0.5)
+            continue;
+        vec3 rel = pos - meta.xyz;
+        ivec3 tc = ivec3(floor(rel + vec3(0.0001)));
+        if (tc.x >= 0 && tc.x < SX && tc.y >= 0 && tc.y < SY && tc.z >= 0 && tc.z < SZ) {
+            slice = i;
+            mOrigin = meta.xyz;
+            break;
+        }
+    }
+    if (slice < 0)
+        return dir; // no collision data here (open-sky column above the shaft)
+    if (escapeScan(pos, mOrigin, slice, dir, 2) > 0.0)
+        return dir; // ahead clear within 2 voxels: no avoidance needed
+    vec3 up = abs(dir.y) > 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    vec3 ta = normalize(cross(dir, up));
+    vec3 tb = normalize(cross(dir, ta));
+    vec3 bestDir = dir;
+    float bestScore = 0.0;
+    for (int r = 0; r < 12; r++) {
+        float c = (r < 4) ? 0.819 : ((r < 8) ? 0.342 : 0.0);
+        float s = (r < 4) ? 0.574 : ((r < 8) ? 0.940 : 1.0);
+        int sub = r & 3;
+        vec3 side = (sub < 2) ? ta : tb;
+        float sgn = ((sub & 1) == 0) ? 1.0 : -1.0;
+        vec3 rd = dir * c + side * (s * sgn);
+        float free = escapeScan(pos, mOrigin, slice, rd, 3);
+        if (free <= 0.0)
+            continue;
+        float score = free + 0.25 * dot(rd, dir);
+        if (score > bestScore) {
+            bestScore = score;
+            bestDir = rd;
+        }
+    }
+    return normalize(bestDir);
+}
+
 // Death chain: a MODEL particle whose corpse countdown just crossed the end of
 // the vanilla 20-tick death window (LivingEntity.tickDeath broadcasting event
 // 60) spawns its poof burst HERE -- the corpse position is GPU-only state, so
@@ -234,6 +357,10 @@ void main() {
     vec4 p2 = readBuf.data[base + 2u];
     vec4 p3 = readBuf.data[base + 3u];
 
+    // dive-wave pass latch: set by the storm steering block on the FIRST
+    // contact frame, folded into the compacted p0.w at the output write
+    bool waveContactLatched = false;
+
     uint eid = floatBitsToUint(p3.w);
     if (eid == uKillEmit)
         return; // storm stopped: drop out of the compacted output immediately
@@ -253,7 +380,7 @@ void main() {
     // return: even a corpse-expiring thread's entry stays factually correct
     // for this dispatch (the corpse IS in the input pool at this slot).
     if (stormA.x > 0.5) {
-        uint mi = uint(p0.w + 0.5) - 1u;
+        uint mi = (uint(p0.w + 0.5) & MEMBER_IDX_MASK) - 1u;
         if (mi < uCapacity)
             memberMap.m[mi] = uintBitsToFloat(idx + 1u);
     }
@@ -307,7 +434,7 @@ void main() {
                 // storm entry: match by MEMBER identity, immune to pool
                 // recompaction; a corpse consumes it idempotently (a second
                 // entry must never restart the death countdown)
-                if (!isStorm || hp <= 0.0 || key != uint(p0.w + 0.5) - 1u)
+                if (!isStorm || hp <= 0.0 || key != ((uint(p0.w + 0.5) & MEMBER_IDX_MASK) - 1u))
                     continue;
             } else {
                 if (isStorm || key != idx)
@@ -398,6 +525,45 @@ void main() {
         cmiTyphoonHome(p3.z, max(stormA.y, 2.0), uStormOmegaNow, uStormRotPhase,
                 uStormConvPhase, uStormConvRate, spMaxV, anchor, target, vT);
 
+        // ---- wave squad override (server brain, event-driven) --------------
+        // First matching slot claims the member (deterministic dedupe across
+        // clients and against the server's Java re-derivation). Engagement is
+        // STATELESS: the per-member roll staggers the launch inside the wave
+        // window, and the single pass ends on contact (position-derived) or
+        // the window deadline — after which the member simply falls back to
+        // its typhoon home point. One approach per member, never re-engaging.
+        bool waveEngaged = false;
+        // One approach per member per wave. The stateless contact test is
+        // REVERSIBLE — a member that turned home re-crosses the contact
+        // radius within a frame or two and the hash test re-engages it,
+        // ping-ponging between "pursue" and "home" on the shell until the
+        // window ends (the reported in-place jitter). The FIRST contact
+        // frame therefore latches MEMBER_LATCH_BIT into p0.w (survives pool
+        // compaction; cleared only by a new storm generation killing the
+        // pool), and a latched member never engages again.
+        if ((uint(p0.w + 0.5) & MEMBER_LATCH_BIT) == 0u) {
+        for (uint k = 0u; k < 4u && !waveEngaged; k++) {
+            vec4 wt = uWaveTarget[k];
+            if (wt.w < 0.5)
+                continue; // slot inactive (waveId 0)
+            vec4 w = uWave[k];
+            if (uTimeSec < w.z || uTimeSec > w.w)
+                continue; // outside the wave window
+            if (!cmiStormWaveMember(p3.z, w.x, w.y))
+                continue;
+            float go = w.z + cmiStormWaveGo(p3.z, w.x)
+                    * min(STORM_WAVE_STAGGER, (w.w - w.z) * 0.6);
+            if (uTimeSec < go)
+                continue; // not this member's turn yet
+            if (distance(pos, wt.xyz) < STORM_WAVE_CONTACT_R) {
+                waveContactLatched = true;
+                break; // contacted: latch the pass as done, stay home
+            }
+            waveEngaged = true;
+            cmiStormWavePursuit(k, pos, wt.xyz, spMaxV, target, vT);
+        }
+        }
+
         // separation + player repulsion, world space.
         // Same visit budget as the boids sweep had.
         vec3 sepW = vec3(0.0);
@@ -434,12 +600,27 @@ void main() {
         // every synced player repels (all-client-consistent force set).
         // Squared-distance gate: the sqrt and the normalize
         // divides run only for members actually inside player reach.
-        for (int pi = 0; pi < uPlayerCount; pi++) {
-            vec3 dp = pos - players.pl[pi].xyz;
-            float dp2 = dot(dp, dp);
-            if (dp2 < STORM_PLAYER_R * STORM_PLAYER_R && dp2 > 1e-6) {
-                float dpL = sqrt(dp2);
-                repW += (dp / dpL) * STORM_PLAYER_W * (STORM_PLAYER_R - dpL) / STORM_PLAYER_R;
+        // Engaged divers SKIP the repulsion entirely — they must reach their
+        // target (separation above still keeps the swarm off itself).
+        if (!waveEngaged) {
+            for (int pi = 0; pi < uPlayerCount; pi++) {
+                vec3 dp = pos - players.pl[pi].xyz;
+                float dp2 = dot(dp, dp);
+                if (dp2 < STORM_PLAYER_R * STORM_PLAYER_R && dp2 > 1e-6) {
+                    float dpL = sqrt(dp2);
+                    repW += (dp / dpL) * STORM_PLAYER_W * (STORM_PLAYER_R - dpL) / STORM_PLAYER_R;
+                }
+            }
+        }
+        // whisker cone bends the engaged steering around obstacles (player
+        // roofs/walls) instead of stalling against them
+        if (waveEngaged && uCollisionOn == 1) {
+            vec3 toT = target - pos;
+            float dT = length(toT);
+            if (dT > 1e-4) {
+                vec3 adj = cmiStormWhisker(pos, toT / dT);
+                target = pos + adj * dT;
+                vT = adj * min(spMaxV, dT * 4.0);
             }
         }
 
@@ -465,7 +646,7 @@ void main() {
     // HEADER storm slot gate (see the damage-queue isStorm note): member 0's
     // p0.w (1.0) is indistinguishable from a non-storm MODEL multiplier
     if (!corpse && stormA.x > 0.5) {
-        uint memberIdx = uint(p0.w + 0.5) - 1u;
+        uint memberIdx = (uint(p0.w + 0.5) & MEMBER_IDX_MASK) - 1u;
         // correction slots are sized by the POOL capacity (2 vec4 per member);
         // an identity beyond it can never have a slot, so skip instead of
         // addressing outside the buffer
@@ -704,7 +885,9 @@ void main() {
         return;
 
     uint wb = slot * 4u;
-    writeBuf.data[wb + 0u] = vec4(pos, p0.w);
+    writeBuf.data[wb + 0u] = vec4(pos, waveContactLatched
+            ? p0.w + float(MEMBER_LATCH_BIT)
+            : p0.w);
     writeBuf.data[wb + 1u] = vec4(vel, roll);
     writeBuf.data[wb + 2u] = vec4(p2.rgb, hurt);
     writeBuf.data[wb + 3u] = vec4(age, hp, p3.z, p3.w);

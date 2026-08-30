@@ -8,8 +8,11 @@ import com.iridium126.createmanaindustry.content.allaystorm.AllayStormData;
 import com.iridium126.createmanaindustry.content.allaystorm.AllayStormManager;
 import com.iridium126.createmanaindustry.network.ClientboundStormStatePacket;
 import com.iridium126.createmanaindustry.network.ServerboundStormPositionsPacket;
+import com.iridium126.createmanaindustry.network.ServerboundStormWaveContactPacket;
 
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import net.minecraft.client.Minecraft;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.network.PacketDistributor;
 
@@ -490,6 +493,7 @@ public final class AllayStormRuntime {
                 this.pendingStormSpawns = Math.max(0, count - this.stormDead.cardinality());
                 this.stormHeaderWritten = false;
                 dropHitKeys(); // identities reshuffle
+                clearWaveState(); // new generation: live waves are void (server aborts too)
             }
             case ClientboundStormStatePacket.ACTION_UPDATE -> {
                 if (!this.stormActive)
@@ -531,6 +535,7 @@ public final class AllayStormRuntime {
                 this.stormConvRate = 0f;
                 this.stormOmegaNow = 0f;
                 dropHitKeys();
+                clearWaveState(); // members disperse; no wave exists to steer them
             }
             default -> {
             }
@@ -629,6 +634,7 @@ public final class AllayStormRuntime {
         this.stormConvPhase = 0f;
         this.stormConvRate = 0f;
         this.stormOmegaNow = 0f;
+        clearWaveState();
     }
 
     // ---- runCompute skeleton hooks (single reads, never inside loops) --------
@@ -979,5 +985,309 @@ public final class AllayStormRuntime {
         float[] h = AllayStormSpec.packedHeader(this.stormRadius, this.center);
         h[16 * 4 + 0] = engine.ensurePoofEmitter();
         engine.gpu().setEmitterHeader(this.stormEmitId, h);
+    }
+
+    // ---- dive waves (client mirror of the server's wave events) ---------------
+    // The wave state is a thin EVENT STAGING layer: everything that defines an
+    // attack (seed, fraction, corridor, schedule, target id) arrives in one
+    // packet and rides into the GPU as uniforms; per-member engagement is
+    // stateless inside the shaders (hash membership + roll-staggered launch +
+    // position-derived contact), so there is no per-member client state to
+    // sync or heal. The only mutable client-side state is the slot table below
+    // (<= 4 live waves), each wave's reported-contact dedupe set, and the
+    // shaft's pinned bake anchor with its re-pin hysteresis.
+
+    /** Concurrent wave ceiling (mirrors AllayStormManager.MAX_WAVES). */
+    public static final int MAX_WAVES = 4;
+    /** Corridor waypoints per wave shipped in the packet (GPU uniform budget). */
+    public static final int MAX_WAVE_PATH = 6;
+
+    private static final class WaveClient {
+        boolean alive;
+        int slotIdx = -1;
+        int waveId;
+        int waveSeed;
+        float fraction;
+        float assembleSec;
+        float diveUntilSec;
+        int targetEntityId;
+        /** Smoothed corridor waypoints, flat WORLD xyz (decoded from anchor-relative shorts). */
+        final double[] path = new double[MAX_WAVE_PATH * 3];
+        int pathCount;
+        /** Server-confirmed contact dedupe: one report per member per wave. */
+        final IntOpenHashSet reported = new IntOpenHashSet();
+        // pinned shaft anchor + re-pin hysteresis (see refreshWaves)
+        int shaftAx = Integer.MIN_VALUE;
+        int shaftAy;
+        int shaftAz;
+    }
+
+    private final WaveClient[] waveSlots = new WaveClient[MAX_WAVES];
+    /** Set by the compute phase's wave-contact dispatch; consumed at fence poll. */
+    private boolean waveContactPending = false;
+
+    // uniform staging, rebuilt every refreshWaves (uploaded with the update dispatch)
+    private final float[] waveUniform = new float[MAX_WAVES * 4]; // {seed, fraction, assemble, diveUntil}
+    private final float[] waveTargetUniform = new float[MAX_WAVES * 4]; // {pos.xyz, waveId}
+    private final float[] wavePathUniform = new float[MAX_WAVES * MAX_WAVE_PATH * 4]; // {xyz, valid}
+
+    public float[] waveUniform() {
+        return this.waveUniform;
+    }
+
+    public float[] waveTargetUniform() {
+        return this.waveTargetUniform;
+    }
+
+    public float[] wavePathUniform() {
+        return this.wavePathUniform;
+    }
+
+    /** True while at least one live wave exists (engine gates the contact dispatch). */
+    public boolean anyWaveActive() {
+        for (WaveClient w : this.waveSlots)
+            if (w != null && w.alive)
+                return true;
+        return false;
+    }
+
+    /**
+     * True when a live wave targets THIS client's local player — the only case
+     * where the wave-contact dispatch has anything to detect (the shader tests
+     * proximity to the local player's aim point only).
+     */
+    public boolean anyWaveTargetingLocalPlayer() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null)
+            return false;
+        int me = mc.player.getId();
+        for (WaveClient w : this.waveSlots)
+            if (w != null && w.alive && w.targetEntityId == me)
+                return true;
+        return false;
+    }
+
+    /**
+     * Applies one {@code ClientboundStormWavePacket} (render thread — packet
+     * handlers enqueueWork there). Launch: claims a free slot and decodes the
+     * corridor from anchor-relative 1/16-block shorts against the RAW block
+     * anchor (the same reconstruction frame the server packed with; anchor
+     * skew across clients is sub-2-block and cosmetically absorbed by the
+     * servo). Abort: frees the slot — members fall back to their typhoon home
+     * points through the same servo, so no explicit dispersal exists.
+     */
+    public void applyWave(int waveId, boolean abort, int waveSeed, float fraction,
+            int targetEntityId, float[] pathRel, float assembleSec, float diveUntilSec) {
+        WaveClient w = findWaveById(waveId);
+        if (abort) {
+            if (w != null)
+                freeWaveSlot(w);
+            return;
+        }
+        if (!this.stormActive)
+            return; // a wave for a storm this client never activated
+        if (w == null) {
+            w = acquireWaveSlot();
+            if (w == null)
+                return; // > MAX_WAVES concurrent: protocol violation, drop
+        }
+        w.alive = true;
+        w.waveId = waveId;
+        w.waveSeed = waveSeed & AllayStormSpec.SEED_MASK_CLIENT;
+        w.fraction = fraction;
+        w.assembleSec = assembleSec;
+        w.diveUntilSec = diveUntilSec;
+        w.targetEntityId = targetEntityId;
+        w.pathCount = Math.min(pathRel == null ? 0 : pathRel.length / 3, MAX_WAVE_PATH);
+        for (int i = 0; i < w.pathCount; i++) {
+            w.path[i * 3] = this.stormAnchor.x + pathRel[i * 3];
+            w.path[i * 3 + 1] = this.stormAnchor.y + pathRel[i * 3 + 1];
+            w.path[i * 3 + 2] = this.stormAnchor.z + pathRel[i * 3 + 2];
+        }
+        w.reported.clear();
+        w.shaftAx = Integer.MIN_VALUE; // re-pin the shaft for the new wave
+    }
+
+    private WaveClient findWaveById(int waveId) {
+        for (WaveClient w : this.waveSlots)
+            if (w != null && w.alive && w.waveId == waveId)
+                return w;
+        return null;
+    }
+
+    private WaveClient acquireWaveSlot() {
+        for (int i = 0; i < this.waveSlots.length; i++) {
+            WaveClient w = this.waveSlots[i];
+            if (w == null) {
+                w = new WaveClient();
+                w.slotIdx = i;
+                this.waveSlots[i] = w;
+                return w;
+            }
+            if (!w.alive)
+                return w;
+        }
+        return null;
+    }
+
+    private void freeWaveSlot(WaveClient w) {
+        w.alive = false;
+        w.reported.clear();
+    }
+
+    /** Full wave teardown (generation restart / range exit / storm over / engine reset). */
+    public void clearWaveState() {
+        for (int i = 0; i < this.waveSlots.length; i++)
+            this.waveSlots[i] = null;
+        this.waveContactPending = false;
+    }
+
+    /**
+     * Per-frame wave upkeep (render thread, before the update dispatch):
+     * expires deadline-passed waves and targets that left the client's world
+     * (the server aborts them independently — this is self-healing), keeps
+     * each wave's collision SHAFT baked with its re-pin hysteresis, and
+     * rebuilds the three uniform arrays the update/wavecontact programs
+     * consume. Cheap no-op on stormless frames.
+     */
+    public void refreshWaves() {
+        if (!this.stormActive) {
+            clearWaveState();
+            return;
+        }
+        java.util.Arrays.fill(this.waveUniform, 0f);
+        java.util.Arrays.fill(this.waveTargetUniform, 0f);
+        java.util.Arrays.fill(this.wavePathUniform, 0f);
+        Minecraft mc = Minecraft.getInstance();
+        for (WaveClient w : this.waveSlots) {
+            if (w == null || !w.alive)
+                continue;
+            if (this.timeSec > w.diveUntilSec) {
+                freeWaveSlot(w);
+                continue;
+            }
+            Entity target = mc.level == null ? null : mc.level.getEntity(w.targetEntityId);
+            if (target == null) {
+                freeWaveSlot(w); // server aborts independently; members ease home
+                continue;
+            }
+            double px = target.getX();
+            double py = target.getY();
+            double pz = target.getZ();
+            // Shaft: one bake slice whose XZ center is the target and whose Y
+            // band starts at its feet (docs/allay-storm-ai.md §6). Re-pinning
+            // the anchor allocates a new slot build, so it only happens when
+            // the player leaves the inner 16x16 (or climbs out of the band);
+            // every other frame the pinned anchor cell is just touched for LRU
+            // recency. Anchor Y rides floor(feetY) — the band must not detach
+            // from the player downward.
+            int ax = floorInt(px) - 24;
+            int ay = floorInt(py);
+            int az = floorInt(pz) - 24;
+            if (w.shaftAx == Integer.MIN_VALUE
+                    || Math.abs(px - (w.shaftAx + 24)) > 8.0
+                    || Math.abs(pz - (w.shaftAz + 24)) > 8.0
+                    || py < w.shaftAy + 0.5 || py > w.shaftAy + 8.0) {
+                engine.collisionBake().ensureColumn(px, py, pz);
+                w.shaftAx = ax;
+                w.shaftAy = ay;
+                w.shaftAz = az;
+            } else {
+                engine.collisionBake().ensureAnchorCell(w.shaftAx, w.shaftAy, w.shaftAz);
+            }
+            // uniform staging (slot 4-vec4 groups; path 6-vec4 groups)
+            int s = w.slotIdx * 4;
+            this.waveUniform[s] = (float) w.waveSeed;
+            this.waveUniform[s + 1] = w.fraction;
+            this.waveUniform[s + 2] = w.assembleSec;
+            this.waveUniform[s + 3] = w.diveUntilSec;
+            this.waveTargetUniform[s] = (float) px;
+            this.waveTargetUniform[s + 1] = (float) (py + 0.5);
+            this.waveTargetUniform[s + 2] = (float) pz;
+            this.waveTargetUniform[s + 3] = (float) w.waveId;
+            int pb = w.slotIdx * MAX_WAVE_PATH * 4;
+            for (int i = 0; i < MAX_WAVE_PATH; i++) {
+                int o = pb + i * 4;
+                if (i < w.pathCount) {
+                    this.wavePathUniform[o] = (float) w.path[i * 3];
+                    this.wavePathUniform[o + 1] = (float) w.path[i * 3 + 1];
+                    this.wavePathUniform[o + 2] = (float) w.path[i * 3 + 2];
+                    this.wavePathUniform[o + 3] = 1f;
+                } else {
+                    this.wavePathUniform[o + 3] = 0f;
+                }
+            }
+        }
+    }
+
+    private static int floorInt(double v) {
+        int i = (int) v;
+        return v < i ? i - 1 : i;
+    }
+
+    /**
+     * Wave-contact detection dispatch (render thread, after the stormpos
+     * readback — the same freshly written pool + counter slot): runs ONLY when
+     * a live wave targets the local player; the tiny staging buffer rides the
+     * frame fence back and {@link #pollWaveContact} ships the reports.
+     */
+    public void dispatchWaveContactReadback(int slot, int upper) {
+        if (this.waveContactPending || !this.stormActive || !anyWaveTargetingLocalPlayer())
+            return;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || mc.player == null)
+            return;
+        int wc = engine.programs().waveContact();
+        if (wc == 0)
+            return;
+        engine.gpu().clearWaveContactCount();
+        org.lwjgl.opengl.GL20.glUseProgram(wc);
+        engine.gpu().bindParticleWrite(ParticleBuffers.PARTICLE_BB_WRITE);
+        engine.gpu().bindCounter(3, slot);
+        engine.gpu().bindEmitters(5);
+        engine.gpu().bindWaveContact();
+        Vec3 aim = mc.player.position().add(0.0, 0.5, 0.0);
+        CMIParticleEngine.setFloatUniform(wc, "uLocalPlayerPos",
+                (float) aim.x, (float) aim.y, (float) aim.z);
+        CMIParticleEngine.setFloatUniform(wc, "uTimeSec", this.timeSec);
+        CMIParticleEngine.setVec4ArrayUniform(wc, "uWave", this.waveUniform);
+        CMIParticleEngine.setVec4ArrayUniform(wc, "uWaveTarget", this.waveTargetUniform);
+        org.lwjgl.opengl.GL43.glDispatchCompute(Math.max(1, (upper + 63) / 64), 1, 1);
+        org.lwjgl.opengl.GL42.glMemoryBarrier(
+                org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BARRIER_BIT
+                        | org.lwjgl.opengl.GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
+        this.waveContactPending = true;
+    }
+
+    /**
+     * Consumes a pending wave-contact readback at the fence poll: dedupes per
+     * member per wave and ships one ServerboundStormWaveContactPacket per new
+     * contact. The contact point rides rel-to-the-interpolated-center, the
+     * same frame the melee hit reports use (the server's +8 reach margin
+     * absorbs the sub-2-block anchor skew).
+     */
+    public void pollWaveContact() {
+        if (!this.waveContactPending)
+            return;
+        this.waveContactPending = false;
+        float[] entries = engine.gpu().readbackWaveContact();
+        if (entries == null)
+            return;
+        Vec3 c = this.center;
+        for (int o = 0; o + 4 < entries.length; o += 5) {
+            int memberIdx = Math.round(entries[o]);
+            int waveId = Math.round(entries[o + 1]);
+            WaveClient w = findWaveById(waveId);
+            if (w == null || !w.reported.add(memberIdx))
+                continue;
+            PacketDistributor.sendToServer(new ServerboundStormWaveContactPacket(waveId, memberIdx,
+                    (float) (entries[o + 2] - c.x), (float) (entries[o + 3] - c.y),
+                    (float) (entries[o + 4] - c.z)));
+        }
+    }
+
+    /** Drops a pending wave-contact readback (fence WAIT_FAILED; a fresh one is scheduled anyway). */
+    public void dropWaveContact() {
+        this.waveContactPending = false;
     }
 }

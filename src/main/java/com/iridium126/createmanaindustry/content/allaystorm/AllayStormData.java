@@ -38,13 +38,10 @@ public final class AllayStormData {
     public static final float MAX_HP = 20.0f;
     /** stormSeed is quantized to 24 bits so it survives a float round-trip in GLSL. */
     public static final int SEED_MASK = (1 << 24) - 1;
-    /**
-     * Fixed storm altitude: the typhoon is a SKY storm — the chased anchor
-     * lives at this Y forever (command input Y is overridden). At this height
-     * the collision bake volumes are all air, members never touch terrain,
-     * and melee combat is only contestable by flight.
-     */
-    public static final int CHASE_Y = 128;
+
+    // (the fixed storm altitude moved to ServerConfig.stormChaseY — it rides
+    // the center packet's Y every snapshot, so it stays live-read, never a
+    // frozen per-storm constant)
 
     public boolean active;
     public BlockPos anchor = BlockPos.ZERO;
@@ -115,7 +112,7 @@ public final class AllayStormData {
             long createdAtGameTime, int seed) {
         AllayStormData d = new AllayStormData();
         d.active = true;
-        d.anchor = anchor.atY(CHASE_Y);
+        d.anchor = anchor.atY(ServerConfig.stormChaseY);
         d.count = Math.max(1, Math.min(MAX_COUNT, count));
         d.stormSeed = seed & SEED_MASK;
         d.createdAtGameTime = createdAtGameTime;

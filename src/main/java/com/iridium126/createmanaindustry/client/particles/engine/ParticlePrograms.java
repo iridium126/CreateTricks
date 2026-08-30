@@ -99,6 +99,12 @@ public final class ParticlePrograms {
         sb.append("#define BIND_PLAYERS ").append(ParticleBuffers.PLAYERS_BB).append('\n');
         sb.append("#define BIND_CORRECTION ").append(ParticleBuffers.CORRECTION_BB).append('\n');
         sb.append("#define BIND_STORMPOS ").append(ParticleBuffers.STORMPOS_BB).append('\n');
+        // dive-wave contact self-report staging
+        sb.append("#define BIND_WAVECONTACT ").append(ParticleBuffers.WAVECONTACT_BB).append('\n');
+        sb.append("#define WAVECONTACT_CAP ").append(ParticleBuffers.WAVECONTACT_CAP).append("u\n");
+        // storm identity packing: bits 0..17 memberIdx+1, bit 18 the wave latch
+        sb.append("#define MEMBER_IDX_MASK ").append(ParticleBuffers.MEMBER_IDX_MASK).append("u\n");
+        sb.append("#define MEMBER_LATCH_BIT ").append(ParticleBuffers.MEMBER_LATCH_BIT).append("u\n");
         // storm member identity -> pool-slot map (combat origin resolution)
         sb.append("#define BIND_MEMBERMAP ").append(ParticleBuffers.MEMBERMAP_BB).append('\n');
         sb.append("#define MAX_STORM_PLAYERS ").append(ParticleBuffers.MAX_STORM_PLAYERS).append("u\n");
@@ -121,6 +127,7 @@ public final class ParticlePrograms {
     private int grid;           // boids spatial-hash build (storm swarms)
     private int hit;            // per-frame crosshair hit query (melee targeting)
     private int stormPos;       // authority readback: near-player members (storm sync)
+    private int waveContact;    // dive-wave contact self-report detection (storm waves)
     private int render;          // additive billboards (soft circle)
     private int texturedRender;  // textured sprite billboards: uMode 0 blended / 1 OPAQUE cutout
     private int modelRender;     // instanced allay models via one merged multi-draw
@@ -151,24 +158,25 @@ public final class ParticlePrograms {
         this.grid = compileCompute(GLSL_DIR + "gridbuild.comp");
         this.hit = compileCompute(GLSL_DIR + "hit.comp");
         this.stormPos = compileCompute(GLSL_DIR + "stormpos.comp");
+        this.waveContact = compileCompute(GLSL_DIR + "wavecontact.comp");
         this.render = link(GLSL_DIR + "additive.vsh", GLSL_DIR + "additive.fsh");
         this.texturedRender = link(GLSL_DIR + "textured.vsh", GLSL_DIR + "textured.fsh");
         this.modelRender = link(GLSL_DIR + "model.vsh", GLSL_DIR + "model.fsh");
         if (!this.ready()) {
             CreateManaIndustry.LOGGER.error("[CMI particles] program rebuild FAILED: "
                     + "reset={} update={} emit={} keygen={} hist={} scan={} scatter={} capture={} grid={} hit={} "
-                    + "stormpos={} render={} textured={} model={}",
+                    + "stormpos={} wavecontact={} render={} textured={} model={}",
                     this.reset, this.update, this.emit, this.keygen,
                     this.radixHist, this.radixScan, this.radixScatter, this.capture, this.grid, this.hit,
-                    this.stormPos, this.render, this.texturedRender, this.modelRender);
+                    this.stormPos, this.waveContact, this.render, this.texturedRender, this.modelRender);
         } else {
             CreateManaIndustry.LOGGER
                     .info("[CMI particles] programs compiled: reset={} update={} emit={} keygen={} "
-                            + "hist={} scan={} scatter={} capture={} grid={} hit={} stormpos={} "
+                            + "hist={} scan={} scatter={} capture={} grid={} hit={} stormpos={} wavecontact={} "
                             + "render={} textured={} model={}",
                             this.reset, this.update, this.emit, this.keygen,
                             this.radixHist, this.radixScan, this.radixScatter, this.capture, this.grid, this.hit,
-                            this.stormPos, this.render, this.texturedRender, this.modelRender);
+                            this.stormPos, this.waveContact, this.render, this.texturedRender, this.modelRender);
         }
     }
 
@@ -177,7 +185,7 @@ public final class ParticlePrograms {
                 && this.texturedRender != 0 && this.modelRender != 0
                 && this.keygen != 0 && this.radixHist != 0 && this.radixScan != 0
                 && this.radixScatter != 0 && this.capture != 0 && this.grid != 0
-                && this.hit != 0 && this.stormPos != 0;
+                && this.hit != 0 && this.stormPos != 0 && this.waveContact != 0;
     }
 
     public int reset() {
@@ -222,6 +230,10 @@ public final class ParticlePrograms {
 
     public int stormPos() {
         return this.stormPos;
+    }
+
+    public int waveContact() {
+        return this.waveContact;
     }
 
     public int render() {
@@ -378,13 +390,14 @@ public final class ParticlePrograms {
         for (int p : new int[] {
                 this.reset, this.update, this.emit, this.keygen,
                 this.radixHist, this.radixScan, this.radixScatter, this.capture,
-                this.grid, this.hit, this.stormPos, this.render, this.texturedRender, this.modelRender }) {
+                this.grid, this.hit, this.stormPos, this.waveContact,
+                this.render, this.texturedRender, this.modelRender }) {
             if (p != 0)
                 GL20.glDeleteProgram(p);
         }
         this.reset = this.update = this.emit = this.keygen = 0;
         this.radixHist = this.radixScan = this.radixScatter = this.capture = 0;
-        this.grid = this.hit = this.stormPos = 0;
+        this.grid = this.hit = this.stormPos = this.waveContact = 0;
         this.render = this.texturedRender = this.modelRender = 0;
     }
 }

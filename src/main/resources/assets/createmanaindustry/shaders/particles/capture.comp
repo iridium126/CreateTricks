@@ -45,6 +45,9 @@ void main() {
         vec4 wp3 = pool.data[idx * 4u + 3u];
         hitOut.pair.y = floatBitsToUint(wp3.y);
         uint web = floatBitsToUint(wp3.w) * VEC4_PER_EMITTER;
-        hitOut.pair.z = emitters.u[web + 18u].x > 0.5 ? uint(wp0.w + 0.5) - 1u : 0xFFFFFFFFu;
+        hitOut.pair.z = emitters.u[web + 18u].x > 0.5
+                // mask the identity packing: bits 0..17 memberIdx+1, bit 18 the wave latch
+                ? (uint(wp0.w + 0.5) & MEMBER_IDX_MASK) - 1u
+                : 0xFFFFFFFFu;
     }
 }

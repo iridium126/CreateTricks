@@ -161,6 +161,33 @@ public final class CollisionBake {
     }
 
     /**
+     * Wave-target collision shaft: one slice whose XZ center is the target
+     * player and whose Y band STARTS at the player's feet (docs/allay-storm-ai.md
+     * §6 — the 32-texel budget goes where the contact happens, not the empty
+     * sky column). Distinct from {@link #ensure}'s centered anchoring, which
+     * would waste half the band below the feet and center on the block
+     * lattice anyway.
+     */
+    public int ensureColumn(double px, double feetY, double pz) {
+        if (textureId < 0 && !createTexture())
+            return 0;
+        return ensureAnchor(floor(px - CENTER_XZ), floor(feetY), floor(pz - CENTER_XZ));
+    }
+
+    /**
+     * Touch (LRU recency) or allocate the slice pinned to an explicit anchor
+     * cell — the wave runtime re-ensures its pinned shaft anchor every frame
+     * and re-pins through {@link #ensureColumn} only when its hysteresis
+     * trips, so the per-frame call must NOT re-derive the anchor from the
+     * (sub-cell) player position.
+     */
+    public int ensureAnchorCell(int ax, int ay, int az) {
+        if (textureId < 0 && !createTexture())
+            return 0;
+        return ensureAnchor(ax, ay, az);
+    }
+
+    /**
      * Allocates or touches the slot pinned to one anchor grid cell (LRU
      * recency rides the map lookup); returns the 1-based slice index.
      */

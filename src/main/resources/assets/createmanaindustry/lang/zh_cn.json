@@ -247,5 +247,8 @@
   "createmanaindustry.ponder.allay_burner/capture.text_4": "将燃烧室放置在工作盆下方，即可处理需要悦灵加热的配方",
   "createmanaindustry.ponder.allay_burner/mist.header": "悦灵燃烧室的雾",
   "createmanaindustry.ponder.allay_burner/mist.text_1": "燃烧时，悦灵燃烧室会排放液态灵魂雾场",
-  "createmanaindustry.ponder.allay_burner/mist.text_2": "雾可被冷凝管回收，也是雾化配方所需的条件"
+  "createmanaindustry.ponder.allay_burner/mist.text_2": "雾可被冷凝管回收，也是雾化配方所需的条件",
+
+  "death.attack.storm_peck": "%1$s被悦灵风暴啄成了碎片",
+  "death.attack.storm_peck.player": "%1$s在试图逃离%2$s时被悦灵风暴啄成了碎片"
 }

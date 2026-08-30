@@ -58,7 +58,8 @@ void main() {
     if (slot >= STORMPOS_CAP)
         return; // snapshot cap: the next frame's sweep covers the rest
     uint o = slot * 8u;
-    result.entries[o + 0u] = p0.w - 1.0; // memberIdx (exact below 2^24)
+    // mask the identity packing: bits 0..17 memberIdx+1, bit 18 the wave latch
+    result.entries[o + 0u] = float(uint(p0.w + 0.5) & MEMBER_IDX_MASK) - 1.0;
     result.entries[o + 1u] = 0.0;
     result.entries[o + 2u] = p0.x - uAnchor.x;
     result.entries[o + 3u] = p0.y - uAnchor.y;

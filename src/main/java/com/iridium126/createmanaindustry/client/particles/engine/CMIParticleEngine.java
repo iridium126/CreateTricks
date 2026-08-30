@@ -519,6 +519,16 @@ public final class CMIParticleEngine {
         this.storm.applyStormDamage(memberIdx, damage, kbX, kbZ, light, died, relToAnchor, gameTime);
     }
 
+    /**
+     * Applies one dive-wave event (launch or abort) — semantics on
+     * {@link AllayStormRuntime#applyWave}.
+     */
+    public void applyWave(int waveId, boolean abort, int waveSeed, float fraction,
+            int targetEntityId, float[] path, float assembleSec, float diveUntilSec) {
+        this.storm.applyWave(waveId, abort, waveSeed, fraction, targetEntityId, path,
+                assembleSec, diveUntilSec);
+    }
+
     /** Shared simulation clock (storm phases/dance bursts + allay pose paths). */
     public float timeSec() {
         return this.storm.timeSec();
@@ -869,6 +879,9 @@ public final class CMIParticleEngine {
         // continuous chased center: rewrite the storm header's anchor slot from
         // the interpolated center every frame (1 Hz snapshots, frame-rate motion)
         this.storm.refreshCenterHeader();
+        // dive waves: expire dead slots, keep the target shafts baked (with
+        // hysteresis), rebuild the wave uniform staging for both consumers
+        this.storm.refreshWaves();
         int entryCount = schedule.entryCount;
         int totalSpawn = schedule.totalSpawn;
 
@@ -1161,6 +1174,10 @@ public final class CMIParticleEngine {
             setFloatUniform(this.programs.update(), "uStormRotPhase", this.storm.rotPhase());
             setFloatUniform(this.programs.update(), "uStormConvPhase", this.storm.convPhase());
             setFloatUniform(this.programs.update(), "uStormConvRate", this.storm.convRate());
+            // dive-wave squads (staging rebuilt by refreshWaves above)
+            setVec4ArrayUniform(this.programs.update(), "uWave", this.storm.waveUniform());
+            setVec4ArrayUniform(this.programs.update(), "uWaveTarget", this.storm.waveTargetUniform());
+            setVec4ArrayUniform(this.programs.update(), "uWavePath", this.storm.wavePathUniform());
             GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
             // uKillEmit is retired at the SUCCESS TAIL (after the pool swap), not
@@ -1295,6 +1312,9 @@ public final class CMIParticleEngine {
             // bookkeeping stays on the skeleton side of the seam.
             int stormUpper = Math.min(cap, Math.max(0, this.aliveKnown + this.spawnDelta + 64));
             this.storm.dispatchStormPosReadback(slot, cap, stormUpper);
+            // 6d. Wave-contact detection: only while a wave targets the LOCAL
+            // player; the staging buffer rides the same frame fence back.
+            this.storm.dispatchWaveContactReadback(slot, stormUpper);
 
             // 7. Census capture + commit markers. NO DRAW SUBMISSION happens in
             //    this phase any more — the old "Draw" section moved to runDraws
@@ -2106,6 +2126,7 @@ public final class CMIParticleEngine {
                 CreateManaIndustry.LOGGER.warn("[CMI particles] counter fence wait failed; keeping stale snapshot");
             }
             this.storm.dropPositionSnapshot(); // a fresh snapshot is scheduled anyway
+            this.storm.dropWaveContact();
         } else {
             int[] counts = this.gpu.readbackCounts(this.pendingSlot);
             int alive = counts[0];
@@ -2125,6 +2146,8 @@ public final class CMIParticleEngine {
             this.storm.onHitReadback(hit[0], hit[1], hit[2]);
             // ...and the authority position readback dispatched last compute phase
             this.storm.pollPositionSnapshot();
+            // ...and the wave-contact readback (local-player-targeted waves)
+            this.storm.pollWaveContact();
         }
         GL32.glDeleteSync(this.pendingFence);
         this.pendingFence = 0;
@@ -2339,6 +2362,13 @@ public final class CMIParticleEngine {
         int l = loc(prog, name);
         if (l >= 0)
             GL20.glUniform3f(l, x, y, z);
+    }
+
+    /** Uploads a vec4 uniform array ({@code values.length} must be a multiple of 4). */
+    public static void setVec4ArrayUniform(int prog, String name, float[] values) {
+        int l = loc(prog, name);
+        if (l >= 0 && values.length >= 4)
+            GL20.glUniform4fv(l, values);
     }
 
     private static void setMat4Uniform(int prog, String name, Matrix4fc matrix) {

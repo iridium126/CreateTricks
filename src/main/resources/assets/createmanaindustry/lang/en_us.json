@@ -232,5 +232,8 @@
   "createmanaindustry.ponder.allay_burner/capture.text_4": "Place the burner below a Basin to process recipes requiring Allay Heat",
   "createmanaindustry.ponder.allay_burner/mist.header": "Allay Burner Mist",
   "createmanaindustry.ponder.allay_burner/mist.text_1": "While burning, the Allay Burner emits a field of Liquid Soul mist",
-  "createmanaindustry.ponder.allay_burner/mist.text_2": "The mist can be reclaimed with a Condenser and is required for mist-based recipes"
+  "createmanaindustry.ponder.allay_burner/mist.text_2": "The mist can be reclaimed with a Condenser and is required for mist-based recipes",
+
+  "death.attack.storm_peck": "%1$s was pecked apart by an allay storm",
+  "death.attack.storm_peck.player": "%1$s was pecked apart by an allay storm while trying to escape %2$s"
 }

@@ -53,6 +53,14 @@ public final class AllayStormClientHandler {
                 packet.velX(), packet.velZ(), packet.count(), packet.gameTime());
     }
 
+    /** {@link ClientboundStormWavePacket}: dive-wave launch / abort event. */
+    public static void onWave(
+            com.iridium126.createmanaindustry.network.ClientboundStormWavePacket packet) {
+        CMIParticleEngine.INSTANCE.applyWave(packet.waveId(), packet.abort(), packet.waveSeed(),
+                packet.fraction(), packet.targetEntityId(), packet.path(),
+                packet.assembleSec(), packet.diveUntilSec());
+    }
+
     /** The client's shared simulation clock (game ticks; the engine mod-masks). */
     private static long gameClock() {
         var mc = net.minecraft.client.Minecraft.getInstance();

@@ -1,7 +1,10 @@
 package com.iridium126.createmanaindustry.content.allaystorm;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -12,9 +15,12 @@ import com.iridium126.createmanaindustry.network.ClientboundStormCenterPacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormDamagePacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormPositionsPacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormStatePacket;
+import com.iridium126.createmanaindustry.network.ClientboundStormWavePacket;
 import com.iridium126.createmanaindustry.network.ServerboundStormHitPacket;
 import com.iridium126.createmanaindustry.network.ServerboundStormPositionsPacket;
+import com.iridium126.createmanaindustry.network.ServerboundStormWaveContactPacket;
 
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
@@ -23,10 +29,12 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.stats.Stats;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.animal.allay.Allay;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.level.LevelEvent;
@@ -66,7 +74,7 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  *       (iterating only damaged members; a full-HP boss costs nothing).</li>
  *   <li><b>Chase</b>: the anchor is not static — the center pursues the
  *       nearest player (horizontal distance) at {@link #CHASE_SPEED}, altitude
- *       pinned to {@link AllayStormData#CHASE_Y} (a sky storm). The center
+ *       pinned to {@code ServerConfig.stormChaseY} (a sky storm). The center
  *       integrates as DOUBLES in the per-level runtime (no block staircase);
  *       {@code data.anchor} stays in sync as its containing block for
  *       persistence, activation scanning and the hit reach check. Clients see
@@ -102,6 +110,47 @@ public final class AllayStormManager {
     /** Coarse sanity bound for relayed velocities (b/s — the wire's byte envelope). */
     private static final float RELAY_VEL_BOUND = 8.0f;
 
+    // ---- dive waves (the storm's offense; see docs/allay-storm-ai.md) --------
+
+    /** Concurrent wave ceiling (the GPU wave-uniform array is sized to this). */
+    public static final int MAX_WAVES = 4;
+    /** Shared-clock seconds between launch and the squad's first pursuit frame. */
+    private static final float WAVE_ASSEMBLE_SECONDS = 2.0f;
+    /** Shared-clock seconds the whole wave stays live (hard stop for every diver). */
+    private static final float WAVE_WINDOW_SECONDS = 24.0f;
+    /** Corridor end height above the target player's feet (inside the shaft band). */
+    private static final double WAVE_END_ABOVE_FEET = 10.0;
+
+    /**
+     * One launched dive wave. Everything on it is wire state (identical on
+     * every client); the only server-only field is {@code reported} — the
+     * per-member contact dedupe (a member lands its shot exactly once per
+     * wave). Positions of the DIVERS never live here: the corridor defines
+     * where they steer, the clients' GPU pools hold where they are.
+     */
+    private static final class Wave {
+        final int id;
+        final int seed;
+        final float fraction;
+        final UUID target;
+        /** Smoothed corridor waypoints, flat world xyz (>= 2 points). */
+        final double[] path;
+        final float assembleSec;
+        final float diveUntilSec;
+        final IntOpenHashSet reported = new IntOpenHashSet();
+
+        Wave(int id, int seed, float fraction, UUID target, double[] path,
+                float assembleSec, float diveUntilSec) {
+            this.id = id;
+            this.seed = seed;
+            this.fraction = fraction;
+            this.target = target;
+            this.path = path;
+            this.assembleSec = assembleSec;
+            this.diveUntilSec = diveUntilSec;
+        }
+    }
+
     // ---- per-level runtime ---------------------------------------------------
 
     private static final Map<ResourceKey<Level>, Runtime> RUNTIMES = new HashMap<>();
@@ -120,6 +169,10 @@ public final class AllayStormManager {
         /** Fractional member accumulator of the growth clock (rate/20 per tick). */
         double growthAcc;
         final Map<UUID, Track> tracks = new HashMap<>();
+        /** Live dive waves (<= MAX_WAVES, one per target). */
+        final List<Wave> waves = new ArrayList<>();
+        final Map<UUID, Wave> waveByTarget = new HashMap<>();
+        int waveIdCounter;
 
         Runtime(ServerLevel level) {
             this.level = level;
@@ -130,6 +183,7 @@ public final class AllayStormManager {
         boolean active;
         boolean authority;
         long order;
+        long lastWaveLaunchGameTime = Long.MIN_VALUE;
         final ArrayDeque<Long> hitTimes = new ArrayDeque<>();
     }
 
@@ -170,9 +224,132 @@ public final class AllayStormManager {
         regen(level, data);
         chase(level, data);
         grow(level, rt, data);
+        tickWaves(level, rt, data);
         if (++rt.scanCounter >= SCAN_INTERVAL_TICKS) {
             rt.scanCounter = 0;
             scan(level, rt, data);
+        }
+    }
+
+    /** Shared-clock seconds — the SAME domain every client derives: (gameTime mod 2^21)/20. */
+    private static float clockSeconds(long gameTime) {
+        return (gameTime & ((1 << 21) - 1)) / 20.0f;
+    }
+
+    /**
+     * Dive-wave brain: expires and aborts dead waves, then launches new ones
+     * at per-player cooldowns. Eligibility: active track, no wave running for
+     * the target, a wave slot free, within {@code stormWaveRange} of the
+     * chased center (horizontal — the storm is pinned to chase altitude) and
+     * UNDER OPEN SKY. Open sky is the structural guarantee that the corridor's
+     * final vertical descent is unobstructed (and the counterplay: a roof is
+     * shelter). The check runs at cooldown-fire time only — one heightmap
+     * query per player per opportunity, never per tick.
+     */
+    private static void tickWaves(ServerLevel level, Runtime rt, AllayStormData data) {
+        if (rt.waves.isEmpty() && !data.active)
+            return;
+        long now = level.getGameTime();
+        float nowSec = clockSeconds(now);
+
+        // expire (deterministic on clients too — no packet needed) / abort (target gone)
+        Iterator<Wave> it = rt.waves.iterator();
+        while (it.hasNext()) {
+            Wave w = it.next();
+            ServerPlayer tp = level.getServer().getPlayerList().getPlayer(w.target);
+            Track tt = rt.tracks.get(w.target);
+            boolean invalid = tp == null || tp.serverLevel() != level
+                    || tt == null || !tt.active || !tp.isAlive();
+            if (nowSec > w.diveUntilSec) {
+                it.remove();
+                rt.waveByTarget.remove(w.target);
+            } else if (invalid || !data.active) {
+                broadcastWave(level, rt, new ClientboundStormWavePacket(w.id, true, 0, 0, 0, null, 0, 0));
+                it.remove();
+                rt.waveByTarget.remove(w.target);
+            }
+        }
+
+        if (!data.active)
+            return;
+        // launch pass: cheap gates before the (rare) corridor build
+        double rangeSq = ServerConfig.stormWaveRange * ServerConfig.stormWaveRange;
+        for (var entry : rt.tracks.entrySet()) {
+            if (rt.waves.size() >= MAX_WAVES)
+                break;
+            Track t = entry.getValue();
+            if (!t.active || rt.waveByTarget.containsKey(entry.getKey()))
+                continue;
+            long cooldownTicks = (long) (ServerConfig.stormWaveInterval * 20.0);
+            if (t.lastWaveLaunchGameTime != Long.MIN_VALUE
+                    && now - t.lastWaveLaunchGameTime < cooldownTicks)
+                continue;
+            ServerPlayer p = level.getServer().getPlayerList().getPlayer(entry.getKey());
+            if (p == null || !p.isAlive())
+                continue;
+            double dx = p.getX() - rt.chaseX;
+            double dz = p.getZ() - rt.chaseZ;
+            if (dx * dx + dz * dz > rangeSq)
+                continue;
+            if (!level.canSeeSky(p.blockPosition()))
+                continue;
+            int alive = data.aliveCount();
+            if (alive <= 0)
+                continue;
+            launchWave(level, rt, data, p, now, alive);
+            if (rt.waves.size() >= MAX_WAVES)
+                break;
+        }
+    }
+
+    /**
+     * Launches one dive wave at {@code target}: freezes the squad fraction
+     * (population-scaled, capped — population attrition visibly weakens the
+     * offense, the boss's health bar made legible), computes the corridor
+     * once, and broadcasts the event to every active client. The schedule is
+     * stamped in shared-clock seconds so every client's GPU phases the wave
+     * identically with zero extra sync.
+     */
+    private static void launchWave(ServerLevel level, Runtime rt, AllayStormData data,
+            ServerPlayer target, long now, int alive) {
+        Track t = rt.tracks.get(target.getUUID());
+        if (t == null)
+            return;
+        t.lastWaveLaunchGameTime = now;
+        int id = ++rt.waveIdCounter;
+        int seed = level.random.nextInt(1 << 24);
+        float fraction = Math.min((float) ServerConfig.stormWaveFraction,
+                (float) ServerConfig.stormWaveMaxSize / Math.max(1, alive));
+        Vec3 start = new Vec3(rt.chaseX, ServerConfig.stormChaseY, rt.chaseZ);
+        Vec3 end = new Vec3(target.getX(),
+                Math.min(target.getY() + WAVE_END_ABOVE_FEET, ServerConfig.stormChaseY - 2.0),
+                target.getZ());
+        double[] corridor = AllayStormWaves.buildCorridor(level, start, end);
+        // waypoints ride rel-to-anchor (the hit/contact reconstruction frame)
+        Vec3 anchor = new Vec3(data.anchor.getX(), data.anchor.getY(), data.anchor.getZ());
+        float[] rel = new float[corridor.length];
+        for (int i = 0; i < corridor.length; i += 3) {
+            rel[i] = (float) (corridor[i] - anchor.x);
+            rel[i + 1] = (float) (corridor[i + 1] - anchor.y);
+            rel[i + 2] = (float) (corridor[i + 2] - anchor.z);
+        }
+        float assemble = clockSeconds(now) + WAVE_ASSEMBLE_SECONDS;
+        Wave w = new Wave(id, seed, fraction, target.getUUID(), corridor, assemble,
+                assemble + WAVE_WINDOW_SECONDS);
+        rt.waves.add(w);
+        rt.waveByTarget.put(target.getUUID(), w);
+        broadcastWave(level, rt, new ClientboundStormWavePacket(id, false, seed, fraction,
+                target.getId(), rel, assemble, w.diveUntilSec));
+    }
+
+    /** Broadcasts a wave event to every active-track player (all must render the same attack). */
+    private static void broadcastWave(ServerLevel level, Runtime rt, ClientboundStormWavePacket packet) {
+        for (var entry : rt.tracks.entrySet()) {
+            if (!entry.getValue().active)
+                continue;
+            ServerPlayer p = rt.level.getServer().getPlayerList().getPlayer(entry.getKey());
+            if (p != null)
+                PacketDistributor.sendToPlayer(p, packet);
         }
     }
 
@@ -243,14 +420,19 @@ public final class AllayStormManager {
         }
         rt.chaseVX = vx;
         rt.chaseVZ = vz;
+        // the anchor follows as the CONTAINING BLOCK of the chased center, at
+        // the CONFIGURED altitude — synced every tick, not only while moving,
+        // so a mid-flight config change to stormChaseY self-heals the anchor
+        // Y (the hit/contact reach checks reconstruct against this anchor; a
+        // stale Y would reject every report until the storm happened to move)
+        BlockPos containing = BlockPos.containing(rt.chaseX, ServerConfig.stormChaseY, rt.chaseZ);
+        if (!containing.equals(data.anchor)) {
+            data.anchor = containing;
+            level.setData(CMIAttachments.STORM_DATA.get(), data);
+        }
         if (vx != 0.0 || vz != 0.0) {
             rt.chaseX += vx / 20.0;
             rt.chaseZ += vz / 20.0;
-            BlockPos containing = BlockPos.containing(rt.chaseX, AllayStormData.CHASE_Y, rt.chaseZ);
-            if (!containing.equals(data.anchor)) {
-                data.anchor = containing;
-                level.setData(CMIAttachments.STORM_DATA.get(), data);
-            }
         }
         if (++rt.centerTimer >= CENTER_INTERVAL_TICKS) {
             rt.centerTimer = 0;
@@ -262,7 +444,7 @@ public final class AllayStormManager {
     private static void sendCenter(ServerLevel level, Runtime rt) {
         AllayStormData data = rt.level.getData(CMIAttachments.STORM_DATA.get());
         ClientboundStormCenterPacket packet = new ClientboundStormCenterPacket(
-                (float) rt.chaseX, AllayStormData.CHASE_Y, (float) rt.chaseZ,
+                (float) rt.chaseX, ServerConfig.stormChaseY, (float) rt.chaseZ,
                 (float) rt.chaseVX, (float) rt.chaseVZ, data.count,
                 rt.level.getGameTime());
         for (var entry : rt.tracks.entrySet()) {
@@ -344,6 +526,9 @@ public final class AllayStormManager {
         Track t = rt.tracks.computeIfAbsent(player.getUUID(), k -> new Track());
         t.active = true;
         t.order = rt.orderCounter++;
+        // the wave cooldown counts from activation: a freshly joined player
+        // gets one assemble window before the storm's first strike at them
+        t.lastWaveLaunchGameTime = level.getGameTime();
         PacketDistributor.sendToPlayer(player, ClientboundStormStatePacket.ACTIVATE(
                 data.anchor, data.count, data.stormSeed,
                 t.authority, ServerConfig.stormCorrectionHz, data.dead.toByteArray(),
@@ -567,6 +752,69 @@ public final class AllayStormManager {
         return true;
     }
 
+    // ---- dive-wave contact reports ---------------------------------------------
+
+    /**
+     * Consumes {@link ServerboundStormWaveContactPacket}: the target player's
+     * client self-reports a diving member's contact; the server decides the
+     * damage. Validation chain (docs/allay-storm-ai.md §7): storm and wave
+     * live, the sender IS the wave's target, the report sits inside the wave
+     * window (shared-clock seconds, same domain the client phased its GPU
+     * with), the member index is a plausible live member, the SQUAD
+     * MEMBERSHIP re-derives from the float-exact shared hash chains (the GPU
+     * selection and this test cannot disagree — no state was ever synced for
+     * it), the per-member-per-wave dedupe (one shot per diver), and a
+     * plausibility reach check (the same +8 margin as the melee reports,
+     * absorbing the chased-center-vs-anchor skew). Damage routes through
+     * {@code player.hurt} with the data-driven {@code storm_peck} type, so
+     * vanilla i-frames/armor/absorption/totems and the hurt sound all apply
+     * with zero extra code — concurrent divers cannot burst the i-frame gate.
+     */
+    public static void handleWaveContact(ServerboundStormWaveContactPacket packet, IPayloadContext ctx) {
+        if (!(ctx.player() instanceof ServerPlayer player))
+            return;
+        ServerLevel level = player.serverLevel();
+        if (!level.hasData(CMIAttachments.STORM_DATA.get()))
+            return;
+        AllayStormData data = level.getData(CMIAttachments.STORM_DATA.get());
+        if (!data.active)
+            return;
+        Runtime rt = runtime(level);
+        Track t = rt.tracks.get(player.getUUID());
+        if (t == null || !t.active)
+            return;
+        Wave w = null;
+        for (Wave cand : rt.waves)
+            if (cand.id == packet.waveId()) {
+                w = cand;
+                break;
+            }
+        if (w == null || !player.getUUID().equals(w.target))
+            return;
+        float nowSec = clockSeconds(level.getGameTime());
+        if (nowSec < w.assembleSec || nowSec > w.diveUntilSec)
+            return;
+        int idx = packet.memberIdx();
+        if (idx < 0 || idx >= data.count || data.dead.get(idx))
+            return;
+        if (!AllayStormWaves.isWaveMember(data.stormSeed, idx, w.seed, w.fraction))
+            return;
+        if (!w.reported.add(idx))
+            return; // one shot per diver per wave
+        Vec3 anchor = new Vec3(data.anchor.getX(), data.anchor.getY(), data.anchor.getZ());
+        Vec3 contact = anchor.add(packet.relX(), packet.relY(), packet.relZ());
+        double reach = player.entityInteractionRange() + 8.0;
+        if (player.distanceToSqr(contact) > reach * reach)
+            return;
+
+        DamageSource source = player.damageSources().source(CMIDamageTypes.STORM_PECK);
+        if (player.hurt(source, (float) ServerConfig.stormWaveDamage)) {
+            // vanilla Player.attack knockback shape: push the target AWAY from
+            // the contact point (pass the offset (from - to) like the attacker does)
+            player.knockback(0.5, contact.x - player.getX(), contact.z - player.getZ());
+        }
+    }
+
     // ---- command surface -------------------------------------------------------
 
     /**
@@ -584,7 +832,7 @@ public final class AllayStormManager {
     public static void setStorm(ServerLevel level, BlockPos anchor, int count) {
         AllayStormData data = level.getData(CMIAttachments.STORM_DATA.get());
         if (data.active) {
-            data.anchor = anchor.atY(AllayStormData.CHASE_Y);
+            data.anchor = anchor.atY(ServerConfig.stormChaseY);
             level.setData(CMIAttachments.STORM_DATA.get(), data);
             broadcast(level, data, true);
         } else {
@@ -619,6 +867,8 @@ public final class AllayStormManager {
             level.setData(CMIAttachments.STORM_DATA.get(), data);
         }
         Runtime rt = runtime(level);
+        rt.waves.clear();
+        rt.waveByTarget.clear();
         for (var entry : rt.tracks.entrySet()) {
             Track t = entry.getValue();
             if (!t.active)

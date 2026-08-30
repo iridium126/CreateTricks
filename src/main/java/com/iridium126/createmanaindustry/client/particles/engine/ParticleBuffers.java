@@ -166,6 +166,29 @@ public final class ParticleBuffers {
      * guard as the correction slots).
      */
     public static final int MEMBERMAP_BB = 21;
+    /**
+     * Wave-contact self-report staging (see wavecontact.comp): uint count +
+     * entries of 5 floats {memberIdx, waveId, pos.xyz}. The result rides the
+     * frame fence back; the runtime dedupes per member per wave and ships
+     * ServerboundStormWaveContactPacket reports.
+     */
+    public static final int WAVECONTACT_BB = 22;
+    /** Entries per wave-contact readback (the touches in ONE frame; tiny). */
+    public static final int WAVECONTACT_CAP = 8;
+    /** Floats per wave-contact entry: memberIdx, waveId, pos.xyz. */
+    public static final int WAVECONTACT_ENTRY_FLOATS = 5;
+    /**
+     * Storm-member identity packing in p0.w: bits 0..17 hold memberIdx+1
+     * (max 131072 = 2^17, so bit 17 IS used), and the next free bit —
+     * {@link #MEMBER_LATCH_BIT}, bit 18 — is the dive-wave pass-completed
+     * latch (set once, on the first contact frame). The packed value stays
+     * float-exact (max 393216 &lt;&lt; 2^24). EVERY identity extraction must
+     * mask with {@link #MEMBER_IDX_MASK}; the size-multiplier consumers are
+     * exempt (they take the constant 1.0 on the storm branch).
+     */
+    public static final int MEMBER_IDX_BITS = 18;
+    public static final int MEMBER_IDX_MASK = (1 << MEMBER_IDX_BITS) - 1;
+    public static final int MEMBER_LATCH_BIT = 1 << MEMBER_IDX_BITS;
     /** Players fed to the storm repulsion / readback passes. */
     public static final int MAX_STORM_PLAYERS = 16;
     /** Entries per authority readback snapshot (nearest-to-players cap). */
@@ -274,6 +297,7 @@ public final class ParticleBuffers {
     private int correctionSSBO = -1;
     private int stormPosSSBO = -1;
     private int memberMapSSBO = -1;
+    private int waveContactSSBO = -1;
     /** Static element indices for the MODEL sub-draws (bound into the VAO). */
     private int modelIndexBuffer = -1;
     private int vao = -1;
@@ -306,6 +330,9 @@ public final class ParticleBuffers {
     /** Authority snapshot readback: count header + capped entries. */
     private final ByteBuffer readTmpStorm = BufferUtils.createByteBuffer(
             4 + STORMPOS_CAP * STORMPOS_ENTRY_FLOATS * 4);
+    /** Wave-contact readback: count header + capped entries. */
+    private final ByteBuffer readTmpWave = BufferUtils.createByteBuffer(
+            4 + WAVECONTACT_CAP * WAVECONTACT_ENTRY_FLOATS * 4);
     /** Staging for per-frame player positions (MAX_STORM_PLAYERS vec4). */
     private final FloatBuffer playersTmp = BufferUtils.createFloatBuffer(MAX_STORM_PLAYERS * 4);
     /** Staging for one correction-slot write (2 vec4). */
@@ -406,6 +433,9 @@ public final class ParticleBuffers {
                 4L + (long) STORMPOS_CAP * STORMPOS_ENTRY_FLOATS * 4L, null);
         // Storm member identity -> pool-slot map (see MEMBERMAP_BB).
         this.memberMapSSBO = createBuffer((long) cap * 4L, null);
+        // Wave-contact self-report staging: uint count + capped entry floats.
+        this.waveContactSSBO = createBuffer(
+                4L + (long) WAVECONTACT_CAP * WAVECONTACT_ENTRY_FLOATS * 4L, null);
 
         // initial indirect payload: one command per slot (6 verts / 0 inst
         // each; the 5th uint pads arrays commands to the uniform 20 B stride)
@@ -791,6 +821,44 @@ public final class ParticleBuffers {
         return out;
     }
 
+    /** Binds the wave-contact staging buffer at its fixed binding. */
+    public void bindWaveContact() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, WAVECONTACT_BB, this.waveContactSSBO);
+    }
+
+    /** Zeroes the wave-contact entry count ahead of a dispatch (4-byte write). */
+    public void clearWaveContactCount() {
+        this.tmp4.clear();
+        this.tmp4.putInt(0);
+        this.tmp4.flip();
+        GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.waveContactSSBO);
+        GL15.glBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.tmp4);
+    }
+
+    /**
+     * Reads one completed wave-contact snapshot (fence-covered — same stall
+     * discipline as {@link #readbackStormPos()}): entries of
+     * {@link #WAVECONTACT_ENTRY_FLOATS} floats
+     * ({@code memberIdx, waveId, pos.xyz}) or {@code null} when empty.
+     */
+    public float[] readbackWaveContact() {
+        this.readTmpWave.clear();
+        this.readTmpWave.limit(4);
+        GL30.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.waveContactSSBO);
+        GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.readTmpWave);
+        int count = this.readTmpWave.getInt(0);
+        if (count <= 0)
+            return null;
+        int n = Math.min(count, WAVECONTACT_CAP);
+        this.readTmpWave.clear();
+        this.readTmpWave.limit(4 + n * WAVECONTACT_ENTRY_FLOATS * 4);
+        GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, this.readTmpWave);
+        float[] out = new float[n * WAVECONTACT_ENTRY_FLOATS];
+        for (int i = 0; i < out.length; i++)
+            out[i] = this.readTmpWave.getFloat(4 + i * 4);
+        return out;
+    }
+
     /**
      * Zeroes the heads table ({@link #GRID_TABLE} ints) ahead of each
      * gridbuild dispatch; the {@code next} chain half needs no clearing because
@@ -928,7 +996,7 @@ public final class ParticleBuffers {
      * of the world's rendering after our frame.
      */
     public void unbindShaders() {
-        for (int i = 0; i <= STORMPOS_BB; i++) {
+        for (int i = 0; i <= WAVECONTACT_BB; i++) {
             GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, i, 0);
         }
     }
@@ -1024,6 +1092,8 @@ public final class ParticleBuffers {
             GL15.glDeleteBuffers(this.stormPosSSBO);
         if (this.memberMapSSBO > 0)
             GL15.glDeleteBuffers(this.memberMapSSBO);
+        if (this.waveContactSSBO > 0)
+            GL15.glDeleteBuffers(this.waveContactSSBO);
         for (int[] t : this.mergedTbos)
             if (t[0] > 0)
                 GL11.glDeleteTextures(t[0]);

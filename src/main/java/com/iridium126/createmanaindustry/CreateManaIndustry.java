@@ -52,8 +52,10 @@ import com.iridium126.createmanaindustry.network.ClientboundStormCenterPacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormDamagePacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormPositionsPacket;
 import com.iridium126.createmanaindustry.network.ClientboundStormStatePacket;
+import com.iridium126.createmanaindustry.network.ClientboundStormWavePacket;
 import com.iridium126.createmanaindustry.network.ServerboundStormHitPacket;
 import com.iridium126.createmanaindustry.network.ServerboundStormPositionsPacket;
+import com.iridium126.createmanaindustry.network.ServerboundStormWaveContactPacket;
 
 @Mod(CreateManaIndustry.MODID)
 public class CreateManaIndustry {
@@ -175,10 +177,19 @@ public class CreateManaIndustry {
                 ClientboundStormCenterPacket.TYPE,
                 ClientboundStormCenterPacket.STREAM_CODEC,
                 ClientboundStormCenterPacket::handle);
+        // dive-wave AI: one event per wave launch/abort, contact self-reports
+        registrar.playToClient(
+                ClientboundStormWavePacket.TYPE,
+                ClientboundStormWavePacket.STREAM_CODEC,
+                ClientboundStormWavePacket::handle);
         registrar.playToServer(
                 ServerboundStormHitPacket.TYPE,
                 ServerboundStormHitPacket.STREAM_CODEC,
                 ServerboundStormHitPacket::handle);
+        registrar.playToServer(
+                ServerboundStormWaveContactPacket.TYPE,
+                ServerboundStormWaveContactPacket.STREAM_CODEC,
+                ServerboundStormWaveContactPacket::handle);
         registrar.playToServer(
                 ServerboundStormPositionsPacket.TYPE,
                 ServerboundStormPositionsPacket.STREAM_CODEC,

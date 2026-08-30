@@ -1,0 +1,77 @@
+// Wave-contact self-report detection (dive-wave AI, docs/allay-storm-ai.md §7).
+// Dispatched every frame while a wave is live: one thread per live pool
+// particle tests whether a wave-squad member in its pursuit window is touching
+// THIS client's local player. The GPU holds the exact positions, so the
+// contact lands on the visual moment with zero quantization delay; the result
+// rides the frame fence back and the runtime ships a
+// ServerboundStormWaveContactPacket (deduped per member per wave) for the
+// server to validate and adjudicate. The contact point is the member's world
+// position — the runtime re-frames it rel-to-center before sending, the same
+// reconstruction convention the melee hit reports use (+8 reach margin).
+// Cost: one distance test per member per live wave; only the handful of
+// members actually touching the player reach the atomic append.
+layout(local_size_x = 64) in;
+
+layout(std430, binding = BIND_POOL_WRITE) readonly buffer Pool { vec4 data[]; } pool;
+layout(std430, binding = BIND_COUNTER) readonly buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; } counter;
+layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
+// {uint count; float entries[];} — entries begin at byte 4 (std430 stride 4).
+// Entry stride 5: {memberIdx, waveId, pos.xyz} (world space; Java reframes).
+layout(std430, binding = BIND_WAVECONTACT) buffer WaveContactBuf { uint count; float entries[]; } result;
+
+uniform vec3 uLocalPlayerPos; // local player aim point (feet + 0.5), world space
+uniform float uTimeSec;       // shared simulation clock (seconds)
+uniform vec4 uWave[4];        // x waveSeed, y fraction, z assembleSec, w diveUntilSec
+uniform vec4 uWaveTarget[4];  // xyz live target aim point, w waveId (0 = inactive slot)
+
+const float CONTACT_R = 1.6;
+
+#pragma cmi_include chunks/allay_pose.glsl
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= counter.writeSlot)
+        return;
+
+    uint base = idx * 4u;
+    vec4 p0 = pool.data[base + 0u];
+    vec4 p3 = pool.data[base + 3u];
+    if (p3.y <= 0.0)
+        return; // corpse: never reports
+    uint eid = floatBitsToUint(p3.w);
+    uint hb = eid * VEC4_PER_EMITTER;
+    // THE storm gate is the header storm slot (same gate as update/stormpos/
+    // hit): p0.w identity (memberIdx+1) collides with a non-storm MODEL's
+    // size multiplier exactly at member 0
+    if (emitters.u[hb + 18u].x < 0.5)
+        return; // not a storm member
+    // pass-completed latch (p0.w bit 18): a diver that already landed its
+    // contact never re-reports — the server dedupes anyway, this just keeps
+    // the staging buffer and the wire quiet
+    if ((uint(p0.w + 0.5) & MEMBER_LATCH_BIT) != 0u)
+        return;
+
+    for (uint k = 0u; k < 4u; k++) {
+        vec4 wt = uWaveTarget[k];
+        if (wt.w < 0.5)
+            continue; // slot inactive
+        vec4 w = uWave[k];
+        if (uTimeSec < w.z || uTimeSec > w.w)
+            continue; // outside the wave window
+        if (!cmiStormWaveMember(p3.z, w.x, w.y))
+            continue;
+        vec3 d = p0.xyz - uLocalPlayerPos;
+        if (dot(d, d) > CONTACT_R * CONTACT_R)
+            continue;
+        uint slot = atomicAdd(result.count, 1u);
+        if (slot >= WAVECONTACT_CAP)
+            return;
+        uint o = slot * 5u;
+        result.entries[o + 0u] = float(uint(p0.w + 0.5) & MEMBER_IDX_MASK) - 1.0; // memberIdx
+        result.entries[o + 1u] = wt.w;       // waveId (float-exact counter value)
+        result.entries[o + 2u] = p0.x;
+        result.entries[o + 3u] = p0.y;
+        result.entries[o + 4u] = p0.z;
+        return; // one report per member thread
+    }
+}

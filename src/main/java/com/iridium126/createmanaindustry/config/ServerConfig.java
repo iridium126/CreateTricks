@@ -74,6 +74,12 @@ public final class ServerConfig {
     private static ModConfigSpec.DoubleValue STORM_CORRECTION_HZ;
     private static ModConfigSpec.IntValue STORM_MAX_COUNT;
     private static ModConfigSpec.DoubleValue STORM_GROWTH_PER_SECOND;
+    private static ModConfigSpec.DoubleValue STORM_WAVE_INTERVAL;
+    private static ModConfigSpec.DoubleValue STORM_WAVE_FRACTION;
+    private static ModConfigSpec.IntValue STORM_WAVE_MAX_SIZE;
+    private static ModConfigSpec.DoubleValue STORM_WAVE_DAMAGE;
+    private static ModConfigSpec.DoubleValue STORM_WAVE_RANGE;
+    private static ModConfigSpec.IntValue STORM_CHASE_Y;
 
     // ---- hexcasting --------------------------------------------------------
 
@@ -163,6 +169,24 @@ public final class ServerConfig {
         STORM_GROWTH_PER_SECOND = BUILDER
                 .comment("Members the storm generates per second while below stormMaxCount (growth runs on the server tick regardless of whether any player is in range). New members spawn on a ring just outside the visible envelope and fly to their storm positions. 0 disables growth (storms spawn at their initial count and never grow).")
                 .defineInRange("stormGrowthPerSecond", 20.0, 0.0, 2048.0);
+        STORM_WAVE_INTERVAL = BUILDER
+                .comment("Seconds between dive-wave launches per player. Each player's cooldown fires independently; a wave launches only when the target is eligible (active, under open sky, within stormWaveRange of the chased center) and fewer than 4 waves are running. Waves are the storm's only offense: squad members break formation, follow a server-computed corridor to the target and deal stormWaveDamage on contact (self-reported by the target's client, server-validated).")
+                .defineInRange("stormWaveInterval", 60.0, 5.0, 600.0);
+        STORM_WAVE_FRACTION = BUILDER
+                .comment("Squad size of a dive wave as a fraction of the ALIVE member population (membership is a deterministic per-member hash against this fraction, identical on every client and re-derivable server-side). Population attrition visibly shrinks the waves — the population IS the boss health bar.")
+                .defineInRange("stormWaveFraction", 0.10, 0.001, 1.0);
+        STORM_WAVE_MAX_SIZE = BUILDER
+                .comment("Absolute cap on a dive-wave squad size (the fraction is clamped so alive * fraction never exceeds this). Bounds the separation-force cost of a converged dive.")
+                .defineInRange("stormWaveMaxSize", 256, 1, 4096);
+        STORM_WAVE_DAMAGE = BUILDER
+                .comment("Damage per dive-wave contact. Fixed (no variance). Routed through player.hurt with the createmanaindustry:storm_peck damage type, so vanilla invulnerability frames, armor, absorption and totems all apply — concurrent divers cannot burst through the 10-tick i-frame window.")
+                .defineInRange("stormWaveDamage", 7.0, 0.0, 40.0);
+        STORM_WAVE_RANGE = BUILDER
+                .comment("Maximum distance from the chased center for a player to be eligible as a wave target (keeps dives inside the client visibility envelope so every active client can render the attack).")
+                .defineInRange("stormWaveRange", 96.0, 16.0, 120.0);
+        STORM_CHASE_Y = BUILDER
+                .comment("Fixed altitude of the chased storm center (the typhoon is a sky storm pinned to this Y; the command input Y is overridden). Lower it and the storm may clip taller terrain — the wave corridor pathfinding routes dives around obstacles regardless.")
+                .defineInRange("stormChaseY", 128, 40, 300);
         BUILDER.pop();
 
         BUILDER.comment("Incomplete Hexcasting item media capacities (in Hexcasting dust units, 1 dust = 10,000).").push("hexcasting");
@@ -233,6 +257,12 @@ public final class ServerConfig {
     public static double stormCorrectionHz = 5.0;
     public static int stormMaxCount = 65536;
     public static double stormGrowthPerSecond = 20.0;
+    public static double stormWaveInterval = 60.0;
+    public static double stormWaveFraction = 0.10;
+    public static int stormWaveMaxSize = 256;
+    public static double stormWaveDamage = 7.0;
+    public static double stormWaveRange = 96.0;
+    public static int stormChaseY = 128;
     public static long cypherMaxMedia = 6400000L;
     public static long trinketMaxMedia = 64000000L;
     public static long artifactMaxMedia = 640000000L;
@@ -313,6 +343,12 @@ public final class ServerConfig {
             stormCorrectionHz = STORM_CORRECTION_HZ.get();
             stormMaxCount = STORM_MAX_COUNT.get();
             stormGrowthPerSecond = STORM_GROWTH_PER_SECOND.get();
+            stormWaveInterval = STORM_WAVE_INTERVAL.get();
+            stormWaveFraction = STORM_WAVE_FRACTION.get();
+            stormWaveMaxSize = STORM_WAVE_MAX_SIZE.get();
+            stormWaveDamage = STORM_WAVE_DAMAGE.get();
+            stormWaveRange = STORM_WAVE_RANGE.get();
+            stormChaseY = STORM_CHASE_Y.get();
             cypherMaxMedia = CYPHER_MAX_MEDIA.get();
             trinketMaxMedia = TRINKET_MAX_MEDIA.get();
             artifactMaxMedia = ARTIFACT_MAX_MEDIA.get();

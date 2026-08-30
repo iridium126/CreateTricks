@@ -58,7 +58,7 @@ public final class AllayStormClientHandler {
             com.iridium126.createmanaindustry.network.ClientboundStormWavePacket packet) {
         CMIParticleEngine.INSTANCE.applyWave(packet.waveId(), packet.abort(), packet.waveSeed(),
                 packet.fraction(), packet.targetEntityId(), packet.path(),
-                packet.assembleSec(), packet.diveUntilSec());
+                packet.assembleSec(), packet.diveUntilSec(), packet.swordTier());
     }
 
     /** The client's shared simulation clock (game ticks; the engine mod-masks). */

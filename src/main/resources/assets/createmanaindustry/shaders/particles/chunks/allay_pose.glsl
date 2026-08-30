@@ -42,6 +42,10 @@ mat4 cmiPart(vec3 pivot, float xr, float yr, float zr) {
     return t * cmiRotX(xr) * cmiRotY(yr) * cmiRotZ(zr);
 }
 
+// plain PoseStack.translate/scale stand-ins for the hand chain below
+mat4 cmiTranslate4(vec3 t) { mat4 m = mat4(1.0); m[3].xyz = t; return m; }
+mat4 cmiScale4(float s) { return mat4(s,0,0,0, 0,s,0,0, 0,0,s,0, 0,0,0,1); }
+
 // ---- storm swarm shared helpers ------------------------------------------
 // Procedural dance-burst arbitration for storm members: inner-band members
 // (inside 0.55 of the storm radius from the chased center) run full vanilla
@@ -85,6 +89,19 @@ float cmiStormWaveGo(float mseed, float waveSeed) {
     float base = mseed * 13.77;
     float q = base + shift;
     return cmiHash1(q);
+}
+
+// ---- dive-wave carried item (held sword) ------------------------------------
+// The carried-item ramp of a wave-squad member under predicate (a): a hash
+// member carries the sword for the WHOLE wave window, ramping the vanilla
+// 5-tick arm raise in from the wave's assemble moment and back out so it
+// reaches zero exactly at the deadline (C0 at both edges — a member never
+// visibly snaps; aborts drop the uniforms, which is the rare hard cut).
+// Pure function of the wave schedule — no state, identical on every client.
+float cmiStormCarryRamp(float timeSec, float assembleSec, float diveUntilSec) {
+    float up = clamp((timeSec - assembleSec) / 0.25, 0.0, 1.0);
+    float down = clamp((diveUntilSec - timeSec) / 0.25, 0.0, 1.0);
+    return min(up, down);
 }
 
 // ---- typhoon home-point ----------------------------------------------------
@@ -260,9 +277,17 @@ vec3 cmiDeathRoll(vec3 v, float sinceDeathSec) {
 // (units of 1/16 block, before the /16 · S(-1,-1,1) · Ry(pi-yaw) chain).
 //   ageSec  particle age in seconds        seed  per-particle random seed
 //   vel     particle velocity (blocks/s)   anim  0 FLY 1 DANCE 2 HOLD 3 DEATH
-//   pid     part id (see AllayModelGeometry)
+//   pid     part id (see AllayModelGeometry); 7 = held item (vanilla
+//           translateToHand + ItemInHandLayer hand chain, vertices in
+//           ITEM-MODEL space [0,1] — CMI_HELD_DISPLAY maps them into the hand
+//           frame; injected by the prelude / the pack merged source)
 //   yaw     out: body facing yaw (radians)
-mat4 cmiAllayPartTransform(float ageSec, float seed, vec3 vel, int anim, int pid, out float yaw) {
+//   carryRamp  vanilla carrying ramp f6 for NON-HOLD anims (the dive-wave
+//           carrying predicate; HOLD keeps its age-based ramp, other paths
+//           pass 0) — vanilla raises the arms whenever an item is held,
+//           regardless of the base animation
+mat4 cmiAllayPartTransform(float ageSec, float seed, vec3 vel, int anim, int pid, out float yaw,
+        float carryRamp) {
     // ---- animation inputs (procedural stand-ins for the entity values) ----
     float animAge = ageSec + cmiHash1(seed * 1.7) * 7.0;
     float ticks = animAge * 20.0;
@@ -281,8 +306,9 @@ mat4 cmiAllayPartTransform(float ageSec, float seed, vec3 vel, int anim, int pid
     float f5 = 1.0 - f4;
     // HOLD ramp -- vanilla getHoldingItemAnimationProgress lerps its tick
     // counter LINEARLY over five ticks (lerp(...)/5); mirror that linear shape
-    // (the symmetric release needs a hold-end event particles never observe)
-    float f6 = (anim == 2) ? clamp(ageSec / 0.25, 0.0, 1.0) : 0.0;
+    // (the symmetric release needs a hold-end event particles never observe).
+    // Non-HOLD anims take the external carrying ramp (the wave predicate).
+    float f6 = (anim == 2) ? clamp(ageSec / 0.25, 0.0, 1.0) : carryRamp;
     bool dance = (anim == 1); // full vanilla jukebox dance incl. the spin rhythm
 
     float rootYBob = cos(f3) * 0.25 * f5;
@@ -329,6 +355,34 @@ mat4 cmiAllayPartTransform(float ageSec, float seed, vec3 vel, int anim, int pid
         return rootM * cmiPart(vec3(0.0, -3.99, 0.0), headXRot, headYRot, headZRot);
     }
     mat4 bodyM = rootM * cmiPart(vec3(0.0, -4.0, 0.0), bodyXR, 0.0, 0.0);
+    if (pid == 7) {
+        // ---- held item: vanilla ItemInHandLayer hand chain ------------------
+        // AllayModel.translateToHand: root -> body -> translate(0, 0.0625,
+        // 0.1875) -> Rx(right_arm.xRot) -> scale(0.7) -> translate(0.0625, 0,
+        // 0). Two vanilla quirks replicated verbatim: BOTH arms feed
+        // right_arm.xRot, and the arm's yRot/zRot are IGNORED here (only the
+        // raise xRot reaches the hand). Then ItemInHandLayer.renderArmWithItem
+        // (right hand): Rx(-90deg) · Ry(180deg) · translate(1/16, 0.125,
+        // -0.625), and the frozen handheld thirdperson_righthand display
+        // transform (CMI_HELD_DISPLAY, JOML-computed on the Java side,
+        // includes ItemRenderer.render's translate(-0.5)). UNIT DISCIPLINE:
+        // vanilla runs this chain on a BLOCK-unit layer posestack
+        // (ModelPart.translateAndRotate divides pivots by 16) while this
+        // function works in RAW model units (the /16 happens once at the call
+        // site) — so every vanilla translate is x16 here, and CMI_HELD_DISPLAY
+        // carries a leading x16 scale. Input vertices are in ITEM-MODEL space
+        // [0,1]; the result lives in the body parts' model space, so the
+        // /16 · flip · yaw chain below applies unchanged.
+        mat4 handM = bodyM
+                * cmiTranslate4(vec3(0.0, 1.0, 3.0))
+                * cmiRotX(f12)
+                * cmiScale4(0.7)
+                * cmiTranslate4(vec3(1.0, 0.0, 0.0))
+                * cmiRotX(-1.5707963)
+                * cmiRotY(3.14159265)
+                * cmiTranslate4(vec3(1.0, 2.0, -10.0));
+        return handM * CMI_HELD_DISPLAY;
+    }
     if (pid == 1 || pid == 6) {
         return bodyM; // skin and the translucent cloak share the body transform
     } else if (pid == 2) {

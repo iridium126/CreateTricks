@@ -29,6 +29,14 @@ uniform mat4 ProjMat;
 uniform vec3 uCamPos;
 uniform float uFadeDist;
 uniform float uTimeSec; // engine-accumulated simulation time (storm dance bursts)
+// dive-wave squads: the held-sword carrier predicate reads the SAME slots the
+// steering pass does (first live-window slot whose hash claims the member —
+// isomorphic to update.comp's engagement order, so the sword can never
+// disagree with the motion)
+uniform vec4 uWave[4];       // x waveSeed, y fraction, z assembleSec, w diveUntilSec
+uniform vec4 uWaveTarget[4]; // xyz aim point, w waveId (0 = inactive slot)
+uniform float uWaveTier[4];  // held-sword material id per slot (0 = none)
+uniform vec4 uHeldItemUV[7]; // per-tier atlas rects {uvMin.xy, uvMax.xy}, slot 0 unused
 
 layout(std430, binding = BIND_POOL_WRITE) readonly buffer ParticleRead { vec4 data[]; } particles; // freshly written pool
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
@@ -63,7 +71,10 @@ void main() {
     uint vb = uint(gl_VertexID) * MODEL_VERTEX_FLOATS;
     int pid = int(geo.v[vb + 5u]);
     int normalCode = int(geo.v[vb + 6u]);
-    vSeg = pid >= 4 ? 1.0 : 0.0;
+    // explicit translucent id set {4,5,6}: partId 7 (held item) is a cutout
+    // part inside the OPAQUE segment, so the old pid >= 4 test would shunt it
+    // into the blended sub-draw
+    vSeg = (pid >= 4 && pid <= 6) ? 1.0 : 0.0;
     vec4 p0 = particles.data[base + 0u];
     vec4 p1 = particles.data[base + 1u];
     vec4 p2 = particles.data[base + 2u];
@@ -94,13 +105,7 @@ void main() {
     float scale = (2.0 * size) / MODEL_ABOVE_FEET;
 
     int anim = int(emitters.u[hb + 17u].x);
-    // Storm members: inner-band members near the chased anchor periodically
-    // run full vanilla dance cycles instead of plain flight.
     vec4 stormA = emitters.u[hb + 18u];
-    if (stormA.x > 0.5) {
-        anim = cmiStormAnimOverride(distance(p0.xyz, emitters.u[hb + 19u].xyz),
-                stormA.y, p3.z, uTimeSec);
-    }
     // HP-death corpse: the animation id rides the per-EMITTER header, so a
     // single death needs this per-particle signal -- update.comp flips the HP
     // slot negative and counts it down over the vanilla 20-tick death window.
@@ -109,15 +114,57 @@ void main() {
     // hp <= 0 (not < 0): the kill frame itself already counts as dead, matching
     // update.comp's corpse predicate and vanilla's deathTime > 0 overlay.
     bool corpse = p3.y <= 0.0;
+    // ---- carried item (held sword): wave predicate (a) ----------------------
+    // First live-window slot whose hash claims this member — the same order
+    // update.comp's steering block uses, so a member rendered with a sword is
+    // exactly one that steers. Corpses never carry (vanilla drops the held
+    // item on death). Non-storm emitters skip the loop entirely: their item
+    // rides the header slot below, gated by the HOLD animation.
+    float carryRamp = 0.0;
+    float waveTier = 0.0;
+    if (!corpse && stormA.x > 0.5) {
+        for (int k = 0; k < 4; k++) {
+            if (uWaveTarget[k].w < 0.5)
+                continue; // slot inactive (waveId 0)
+            if (uTimeSec < uWave[k].z || uTimeSec > uWave[k].w)
+                continue; // outside the wave window
+            if (!cmiStormWaveMember(p3.z, uWave[k].x, uWave[k].y))
+                continue;
+            carryRamp = cmiStormCarryRamp(uTimeSec, uWave[k].z, uWave[k].w);
+            waveTier = uWaveTier[k];
+            break;
+        }
+    }
+    // held-item id: a wave claim OVERRIDES the emitter header slot (storm
+    // specs keep 17.z = 0, so the two paths can never stack)
+    float itemId = waveTier > 0.5 ? waveTier : emitters.u[hb + 17u].z;
+    // the item vertices exist for EVERY MODEL instance — non-carriers clip
+    // before any hand-chain math (the ~0.04% invocation overhead is documented)
+    if (pid == 7 && itemId <= 0.5) {
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+    }
+    // Storm members: inner-band members near the chased anchor periodically
+    // run full vanilla dance cycles instead of plain flight.
+    if (stormA.x > 0.5) {
+        anim = cmiStormAnimOverride(distance(p0.xyz, emitters.u[hb + 19u].xyz),
+                stormA.y, p3.z, uTimeSec);
+    }
     if (corpse)
         anim = 3;
     float sinceDeath = corpse ? -p3.y : 0.0;
     float yaw;
-    mat4 M = cmiAllayPartTransform(p3.x, p3.z, p1.xyz, anim, pid, yaw);
+    mat4 M = cmiAllayPartTransform(p3.x, p3.z, p1.xyz, anim, pid, yaw, carryRamp);
 
     // ---- vertex transform to world ----
     vec3 local = vec3(geo.v[vb], geo.v[vb + 1u], geo.v[vb + 2u]);
     vUv = vec2(geo.v[vb + 3u], geo.v[vb + 4u]);
+    if (pid == 7) {
+        // canonical sprite UV -> the carrier tier's atlas frame (slot 0 is
+        // unused; the id is 1..6 from the wire or the spec)
+        int tier = clamp(int(itemId + 0.5), 0, 6);
+        vUv = mix(uHeldItemUV[tier].xy, uHeldItemUV[tier].zw, vUv);
+    }
     vec3 pm = (M * vec4(local, 1.0)).xyz / 16.0;   // vanilla per-part /16
     // vanilla chain after the parts: T(0,-1.501,0) then S(-1,-1,1), then the
     // death roll (setupRotations' Rz, INNER to the facing yaw -- PoseStack

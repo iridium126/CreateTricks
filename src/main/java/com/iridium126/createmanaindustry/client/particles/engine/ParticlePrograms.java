@@ -113,6 +113,11 @@ public final class ParticlePrograms {
         sb.append("#define HIT_INFLATE ").append(ParticleBuffers.HIT_INFLATE).append('\n');
         // rest-pose model above-feet height in blocks (vanilla size divisor)
         sb.append("#define MODEL_ABOVE_FEET ").append(AllayModelGeometry.MODEL_ABOVE_FEET).append('\n');
+        // held item (MODEL partId 7): the vanilla handheld display transform as
+        // ONE constant mat4 — JOML-computed from the frozen vanilla constants,
+        // see HeldItemGeometry (the pack merged source declares it as a const
+        // instead — #defines do not survive the AST transplant)
+        sb.append("#define CMI_HELD_DISPLAY ").append(HeldItemGeometry.displayMatrixGLSL()).append('\n');
         return sb.toString();
     }
 
@@ -340,6 +345,20 @@ public final class ParticlePrograms {
      */
     public static float modelAboveFeet() {
         return AllayModelGeometry.MODEL_ABOVE_FEET;
+    }
+
+    /**
+     * The vanilla handheld display transform as a GLSL {@code mat4(...)}
+     * constructor string — injected as {@code CMI_HELD_DISPLAY} into the
+     * self-drawn prelude and the shader-pack merged vertex source.
+     */
+    public static String heldItemDisplayMatrix() {
+        return HeldItemGeometry.displayMatrixGLSL();
+    }
+
+    /** Per-tier atlas UV rects ({@code uHeldItemUV}) for the MODEL render path. */
+    public static float[] heldItemUVTable() {
+        return HeldItemGeometry.uvTable();
     }
 
     /** Matches {@code #pragma cmi_include chunks/name.glsl} lines in shader sources. */

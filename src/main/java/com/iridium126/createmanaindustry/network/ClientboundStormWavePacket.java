@@ -26,13 +26,16 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  * {@code hash(memberSeed, waveSeed) < fraction} against),
  * {@code targetEntityId} (each client resolves the live position from its own
  * entity sync), the smoothed corridor waypoints (rel-to-anchor, 1/16 block
- * shorts — the same reconstruction frame as the hit/contact reports) and the
+ * shorts — the same reconstruction frame as the hit/contact reports), the
  * schedule in shared-clock seconds ({@code (gameTime mod 2^21)/20} — the
- * domain every storm timestamp already shares).
+ * domain every storm timestamp already shares) and the {@code swordTier} —
+ * the squad's held-sword material id ({@code EmitterSpec.HeldItem} order),
+ * derived server-side from {@code stormWaveDamage} and frozen with the wave
+ * like the schedule (in-flight waves never re-style).
  */
 public record ClientboundStormWavePacket(
         int waveId, boolean abort, int waveSeed, float fraction, int targetEntityId,
-        float[] path, float assembleSec, float diveUntilSec) implements CustomPacketPayload {
+        float[] path, float assembleSec, float diveUntilSec, int swordTier) implements CustomPacketPayload {
 
     public static final CustomPacketPayload.Type<ClientboundStormWavePacket> TYPE =
             new CustomPacketPayload.Type<>(CreateManaIndustry.modLoc("storm_wave"));
@@ -57,6 +60,7 @@ public record ClientboundStormWavePacket(
         }
         buffer.writeFloat(p.assembleSec);
         buffer.writeFloat(p.diveUntilSec);
+        buffer.writeByte(p.swordTier);
     }
 
     private static short quant(double worldRel) {
@@ -68,7 +72,7 @@ public record ClientboundStormWavePacket(
         int waveId = ByteBufCodecs.VAR_INT.decode(buffer);
         boolean abort = (buffer.readByte() & 1) != 0;
         if (abort)
-            return new ClientboundStormWavePacket(waveId, true, 0, 0, 0, null, 0, 0);
+            return new ClientboundStormWavePacket(waveId, true, 0, 0, 0, null, 0, 0, 0);
         int seed = ByteBufCodecs.VAR_INT.decode(buffer);
         float fraction = buffer.readFloat();
         int targetId = ByteBufCodecs.VAR_INT.decode(buffer);
@@ -80,8 +84,11 @@ public record ClientboundStormWavePacket(
             path[i] = buffer.readShort() / 16.0f;
         float assemble = buffer.readFloat();
         float diveUntil = buffer.readFloat();
+        int swordTier = buffer.readByte() & 0xFF;
+        if (swordTier > 6)
+            throw new DecoderException("storm wave sword tier out of bounds: " + swordTier);
         return new ClientboundStormWavePacket(waveId, false, seed, fraction, targetId,
-                path, assemble, diveUntil);
+                path, assemble, diveUntil, swordTier);
     }
 
     @Override

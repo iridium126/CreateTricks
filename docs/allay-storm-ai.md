@@ -3,7 +3,7 @@
 > 模组：CreateManaIndustry（机械动力：魔法工业）
 > 版本基线：1.21.1 / NeoForge 21.1.227 / Java 21
 > 前置阅读：`docs/allay-storm-sync.md`（风暴持久化与网络同步——本文全部架构约束的出处）
-> 状态：**已实现（2026-08-30），compileJava/processResources 通过；GLSL 待进服实测**——落地记录：服务器波次状态机在 `AllayStormManager`（tickWaves/launchWave/handleWaveContact），走廊在 `AllayStormWaves`（高度图 A* + RDP + Chaikin×2 + 采样 ≤6 航点），共享哈希链 Java 移植与 GLSL 逐行对应（`cmiStormWaveRoll`/`cmiStormWaveGo`）；GPU 侧 `update.comp` 波次转向分支（pure-pursuit + whisker 锥 + 掠袭者跳过玩家排斥）、`wavecontact.comp` 接触自报检测（fence 回读 + 每成员每波去重）；竖井锚定 `CollisionBake.ensureColumn/ensureAnchorCell`（脚底对齐 + 16×16 滞回）。终局弧线（§10）仍未实现。
+> 状态：**已实现（2026-08-30），compileJava/processResources 通过；GLSL 待进服实测**——落地记录：服务器波次状态机在 `AllayStormManager`（tickWaves/launchWave/handleWaveContact），走廊在 `AllayStormWaves`（高度图 A* + RDP + Chaikin×2 + 采样 ≤6 航点），共享哈希链 Java 移植与 GLSL 逐行对应（`cmiStormWaveRoll`/`cmiStormWaveGo`）；GPU 侧 `update.comp` 波次转向分支（pure-pursuit + whisker 锥 + 掠袭者跳过玩家排斥）、`wavecontact.comp` 接触自报检测（fence 回读 + 每成员每波去重）；竖井锚定 `CollisionBake.ensureColumn/ensureAnchorCell`（脚底对齐 + 16×16 滞回）。**手持剑（§5.1，2026-08-30 追加实装）**：`swordTier` 映射 + wave 包 byte + 渲染侧携带谓词 (a)，管线见 alignment 文档。终局弧线（§10）仍未实现。
 > 定稿方式：grilling 逐题评审（威胁模型 → 大脑权威 → 命中权威 → 选拔规则 → 俯冲形态 → 生命线 → 并发 → 节奏 → 生命周期 → 伤害 → 避障），每项结论均标注决策来源。
 
 ---
@@ -64,6 +64,15 @@ per-level Runtime 增加波次状态机，挂在现有 `tick()` 的 chase/grow �
 - **whisker 锥绕行（防卡死）**：现有碰撞只对**嵌入**（已在实体内）响应——成员从外面贴上玩家搭的顶/墙时每帧被清零轴向速度、被伺服压在障碍上悬停卡死（"轻易困住"的根源）。俯冲成员新增主动绕行：沿期望方向张一个 **~13 射线的探测锥**（直前、±35°、±70° 各若干，射程 2-3 格），被挡射线贡献排斥、自由射线按"偏离期望方向最少"择优，把转向目标弯到自由方向上——贴顶下不来时自动侧滑绕过檐口再继续下潜，被围墙挡时沿墙切向绕行。锥内全挡（玩家把自己封死）才落到现有逃逸扫描兜底。作用域：俯冲成员、有烘焙数据的区域（切片归属跟位置走）。
 - **露天资格 ⇔ 走廊畅通**：天空光满格保证目标头顶垂直走廊无障碍——脚底 +32 格以上空域的主避障需求被资格规则从结构上消解。
 - **俯冲窗口 = 反击窗口**：掠袭成员进入近战距离，现有 hit.comp / 近战管线**零改动**即可反打。杀掠袭者直接削减下一波选拔池。
+
+### 5.1 手持剑（伤害读数，2026-08-30 实装）
+
+编队成员手持与 `stormWaveDamage` 档位对应的剑——**种群即血条**之后，剑材质即单次伤害读数。渲染管线与对齐论证在 `docs/allay-particle-vanilla-alignment.md` 的手持物品节，此处只记波次语义：
+
+- **携带谓词（拷问定案 a）**：哈希成员 + `[assembleSec, diveUntilSec]` 窗口内即"携带中"——渲染门与 update.comp 的转向门共享同一条"首个匹配波槽认领"判定（`cmiStormWaveMember`，严格同构，剑与运动永不打架）。个人 go 错峰与接触锁存**不参与**：集结段全队持剑待命、锁存成员持剑归队至窗口末。抬臂走原版 carrying 斜坡（`cmiStormCarryRamp`：从 assemble 5-tick 线性升入、到 diveUntil 恰好降尽，C0 连续；中止事件丢 uniform 属罕见硬切）。尸体不携带（原版死亡掉落手持物语义）。
+- **档位映射（服务端一处硬编码）**：`AllayStormManager.swordTier(damage)`——≥10 下界合金 / ≥7 钻石（默认落点）/ ≥5 铁 / ≥4 金 / ≥3 石 / 否则木。id 序即 `EmitterSpec.HeldItem`（1..6），wave 包 byte、emitter 头槽 17.z、客户端 UV 表三者共用同一 id 域，零映射层。
+- **携带方式**：`ClientboundStormWavePacket` 增 1 byte `swordTier`（abort 包恒 0；解码侧 >6 拒绝）。发射时冻结——`stormWaveDamage` 中途改档，在飞波次保持旧材质（与走廊/日程冻结语义一致），下一次发射生效，无新增广播路径。
+- **零额外 per-particle 状态**：档位随波次 uniform 槽（`uWaveTier[4]`，`refreshWaves` 舞台重建），成员资格本就是无状态哈希——渲染侧不新增任何同步。
 
 ## 6. 碰撞竖井烘焙
 

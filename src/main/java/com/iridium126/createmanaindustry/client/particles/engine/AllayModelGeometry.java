@@ -27,13 +27,17 @@ import java.util.List;
  * <p>
  * The mesh is split into two contiguous index ranges so the model renders as
  * two sub-draws sharing one instance permutation: the OPAQUE segment (head,
- * skin, arms — pure 0/255 texels) keeps the cutout + depth-write path, and
- * the TRANSLUCENT segment (cloak + wings — the texture's alpha&lt;255 texels)
- * draws alpha-blended without depth writes after every other particle pass.
+ * skin, arms, and the held item's quad pair) keeps the cutout + depth-write
+ * path, and the TRANSLUCENT segment (cloak + wings — the texture's alpha&lt;255
+ * texels) draws alpha-blended without depth writes after every other particle
+ * pass.
  * <p>
  * Part ids: 0=head, 1=body skin, 2=right_arm, 3=left_arm, 4=right_wing,
  * 5=left_wing, 6=body cloak (shares the body transform; sorted into the
- * translucent range). Pivots and pose math live in the shader.
+ * translucent range), 7=held item ({@link HeldItemGeometry}: pos.xyz in
+ * ITEM-MODEL space [0,1] with CANONICAL sprite UVs, remapped per tier in the
+ * vertex shader — unlike the body parts, whose UVs are baked atlas-space).
+ * Pivots and pose math live in the shader.
  */
 final class AllayModelGeometry {
 
@@ -48,8 +52,21 @@ final class AllayModelGeometry {
 
     /** Face normalAxis ids, matching the per-vertex attribute from {@link #face}.
      * Declared before the bake block so its cube() calls can use them. */
-    private static final int AXIS_EAST = 0, AXIS_WEST = 1, AXIS_UP = 2,
+    static final int AXIS_EAST = 0, AXIS_WEST = 1, AXIS_UP = 2,
             AXIS_DOWN = 3, AXIS_SOUTH = 4, AXIS_NORTH = 5;
+
+    /**
+     * MODEL atlas layout (shared with {@link ParticleAtlas#ALLAY}, whose frame
+     * grid is sized from these): frame 0 = the allay body texture, frames
+     * 1..6 = the held-item sword tiers ({@link HeldItemGeometry}). The cell
+     * equals the 32x32 allay texture; the 16x16 sword sprites upscale to fill.
+     */
+    public static final int ATLAS_COLS = HeldItemGeometry.ATLAS_COLS;
+    public static final int ATLAS_ROWS = HeldItemGeometry.ATLAS_ROWS;
+    public static final int ATLAS_CELL = HeldItemGeometry.ATLAS_CELL;
+    /** Atlas-space UV scale for frame 0 (the allay, cell (0,0)). */
+    private static final float UV_SCALE_U = (float) ATLAS_CELL / (ATLAS_COLS * ATLAS_CELL);
+    private static final float UV_SCALE_V = (float) ATLAS_CELL / (ATLAS_ROWS * ATLAS_CELL);
 
     /** Flat vertex array (pos.xyz model units / uv normalised / partId). */
     static final float[] VERTICES;
@@ -107,6 +124,10 @@ final class AllayModelGeometry {
         cube(verts, idx, 2, 23, 0, -0.75f, -0.5f, -1f, 1f, 4f, 2f, -0.01f, false, 0);
         // part 3: left_arm  texOffs(23,6) box(-0.25,-0.5,-1, 1,4,2) inflate -0.01
         cube(verts, idx, 3, 23, 6, -0.25f, -0.5f, -1f, 1f, 4f, 2f, -0.01f, false, 0);
+        // held item (partId 7): the vanilla flat handheld quad pair — emitted
+        // into the OPAQUE segment (alpha cutout), so it lands BEFORE the
+        // translucent index split below
+        HeldItemGeometry.appendQuads(verts, idx);
         OPAQUE_INDEX_COUNT = idx.size();
         // ---- translucent segment (alpha blend; cloak + wings are double-wound
         // so both shell sides are visible under cull — the sub-draw writes
@@ -206,8 +227,10 @@ final class AllayModelGeometry {
             out.add(p[0]);
             out.add(p[1]);
             out.add(p[2]);
-            out.add(us[t] / TEX_SIZE);
-            out.add(vs[t] / TEX_SIZE);
+            // atlas-space UV: frame-0 (allay) texel UVs scaled into the frame's
+            // atlas cell — the MODEL atlas is a 4x2 grid, allay at cell (0,0)
+            out.add(us[t] / TEX_SIZE * UV_SCALE_U);
+            out.add(vs[t] / TEX_SIZE * UV_SCALE_V);
             out.add((float) partId);
             out.add((float) normalAxis);
         }

@@ -122,6 +122,29 @@ public final class AllayStormManager {
     private static final double WAVE_END_ABOVE_FEET = 10.0;
 
     /**
+     * Dive-wave sword tier from the configured per-contact damage
+     * ({@code ServerConfig.stormWaveDamage}): the squad's carried sword reads
+     * as a damage gauge. Hardcoded thresholds in the
+     * {@code EmitterSpec.HeldItem} id order (the same byte the wave packet
+     * ships and the client's UV table indexes); a mid-storm config change
+     * applies at the NEXT launch — in-flight waves keep the tier frozen with
+     * their schedule, so no retroactive visual switch ever exists.
+     */
+    public static int swordTier(float damage) {
+        if (damage >= 10.0f)
+            return 6; // netherite
+        if (damage >= 7.0f)
+            return 5; // diamond (the 7.0 default)
+        if (damage >= 5.0f)
+            return 4; // iron
+        if (damage >= 4.0f)
+            return 3; // golden
+        if (damage >= 3.0f)
+            return 2; // stone
+        return 1;     // wooden
+    }
+
+    /**
      * One launched dive wave. Everything on it is wire state (identical on
      * every client); the only server-only field is {@code reported} — the
      * per-member contact dedupe (a member lands its shot exactly once per
@@ -264,7 +287,7 @@ public final class AllayStormManager {
                 it.remove();
                 rt.waveByTarget.remove(w.target);
             } else if (invalid || !data.active) {
-                broadcastWave(level, rt, new ClientboundStormWavePacket(w.id, true, 0, 0, 0, null, 0, 0));
+                broadcastWave(level, rt, new ClientboundStormWavePacket(w.id, true, 0, 0, 0, null, 0, 0, 0));
                 it.remove();
                 rt.waveByTarget.remove(w.target);
             }
@@ -339,7 +362,8 @@ public final class AllayStormManager {
         rt.waves.add(w);
         rt.waveByTarget.put(target.getUUID(), w);
         broadcastWave(level, rt, new ClientboundStormWavePacket(id, false, seed, fraction,
-                target.getId(), rel, assemble, w.diveUntilSec));
+                target.getId(), rel, assemble, w.diveUntilSec,
+                swordTier((float) ServerConfig.stormWaveDamage)));
     }
 
     /** Broadcasts a wave event to every active-track player (all must render the same attack). */

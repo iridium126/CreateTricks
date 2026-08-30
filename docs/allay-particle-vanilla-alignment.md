@@ -249,7 +249,7 @@ ShadowDistortionRegistry + 各包参数解析｜ShadowRendererAccessor mixin 先
 ParticlePrograms 编译时拼接（PRELUDE 机制的自然扩展）。禁止任何形式的拷贝复用。
 
 ### 明确不做（含理由存档）
-精灵类粒子（ADDITIVE/ALPHA/OPAQUE）的光影包效果适配——Q9 实测定案：现有路径任意包稳定叠加渲染，无包效果即预期形态，改动零收益｜L1 手动采样受光（被 S1 取代）｜Complementary C1 真实接管（需放弃 SSBO 顶点拉取改喂 #version130 传统属性，动摇引擎根基）｜L2b 走包实体程序（架构不可达）｜S2 HDR 伪发光（神似非一致）｜贴地阴影 / 手持物品 / OVERLAY（见 Q5）。
+精灵类粒子（ADDITIVE/ALPHA/OPAQUE）的光影包效果适配——Q9 实测定案：现有路径任意包稳定叠加渲染，无包效果即预期形态，改动零收益｜L1 手动采样受光（被 S1 取代）｜Complementary C1 真实接管（需放弃 SSBO 顶点拉取改喂 #version130 传统属性，动摇引擎根基）｜L2b 走包实体程序（架构不可达）｜S2 HDR 伪发光（神似非一致）｜贴地阴影 / OVERLAY（见 Q5）。~~手持物品~~ **已被 Q10 推翻并实装**（见 §7）。
 
 ---
 
@@ -267,4 +267,47 @@ ParticlePrograms 编译时拼接（PRELUDE 机制的自然扩展）。禁止任�
 
 ## 6. 决策记录索引
 
-Q1 验收=B 观感对齐｜Q2 光照=法线漫反射+近白基色｜Q3 自旋=复刻爆发节奏｜Q4 mip=仅 ALLAY 图集｜Q5 排除三项｜Q6 分包=L2a+S1(Photon) 核心、C2 缓办、余排除｜工程约束=源码组装去重｜Q7 交付=报告+计划（本文档），开工另批。Q8 性能定案=MODEL 项 keygen 剔除放宽至距离界（精灵类保持视锥严格剔除）＋各钩子点独立 timer query 环并入节流＋S1 激活帧跳过主模型段。Q9 范围修订（游戏内实测）=现有自绘管线在任意光影包下兼容（正确渲染、仅不叠加包效果）；光影包适配收敛为仅 MODEL 粒子（表面受光 G-self ＋ 投影 L2a），ADDITIVE/ALPHA/OPAQUE 精灵类冻结不动。
+Q1 验收=B 观感对齐｜Q2 光照=法线漫反射+近白基色｜Q3 自旋=复刻爆发节奏｜Q4 mip=仅 ALLAY 图集｜Q5 排除三项｜Q6 分包=L2a+S1(Photon) 核心、C2 缓办、余排除｜工程约束=源码组装去重｜Q7 交付=报告+计划（本文档），开工另批。Q8 性能定案=MODEL 项 keygen 剔除放宽至距离界（精灵类保持视锥严格剔除）＋各钩子点独立 timer query 环并入节流＋S1 激活帧跳过主模型段。Q9 范围修订（游戏内实测）=现有自绘管线在任意光影包下兼容（正确渲染、仅不叠加包效果）；光影包适配收敛为仅 MODEL 粒子（表面受光 G-self ＋ 投影 L2a），ADDITIVE/ALPHA/OPAQUE 精灵类冻结不动。Q10 手持物品（2026-08-30，推翻 Q5 的排除项）=双路径共享机器（波次 uniform 寻址 + 头槽 17.z 寻址）、携带谓词 (a)、资产完全自持（私有图集 4×2）、glint 跳过、谓词早退顶点账目（+0.04%，keygen 携带者分区否决）——详见 §7。
+
+---
+
+## 7. 手持物品（Held Item）管线 — Q10，2026-08-30 拷问定案并实装
+
+> 背景：Q5 曾把"手持物品"列入明确不做（当时无玩法调用方）。悦灵突袭小队（`docs/allay-storm-ai.md` §5.1） commission 后经 grilling 逐题定案（调用方/谓词/映射/双路径/烘焙深度/边缘语义），本节为共识固化。波次语义在 storm-ai 文档，本节管**渲染管线与对齐论证**。
+
+### 7.1 原版基准（.refs/neoforge-21.1.227 逐行核对）
+
+- 渲染链：`AllayRenderer` 挂 `ItemInHandLayer` → `renderArmWithItem(THIRD_PERSON_RIGHT_HAND)` → `AllayModel.translateToHand` → `ItemInHandRenderer.renderItem` → `ItemRenderer.renderStatic`（完整物品烘焙模型 + display JSON 变换）。
+- **手部变换链**（`translateToHand`，逐字移植进 `cmiAllayPartTransform` 的 pid-7 分支）：`root → body → translate(0, 0.0625, 0.1875) → Rx(right_arm.xRot) → scale(0.7) → translate(0.0625, 0, 0)`，再叠 `Rx(-90°)·Ry(180°)·translate(1/16, 0.125, -0.625)`。**两个必须复刻的原版怪癖**：① 两只手同用 `right_arm.xRot`（= f12 抬臂量），手臂的 yRot/zRot **不进入**手部链；② 副手恒空 → 只渲染主手（右）一件。
+- **display 变换**：`item/handheld.json` thirdperson_righthand（rotation [0,-90,55]、translation [0,4,0.5] 经反序列化器 ×0.0625、scale 0.85、rightRotation 恒等）+ `ItemRenderer.render` 的 `translate(-0.5)`，作为**一个常量 mat4**（`CMI_HELD_DISPLAY`）在 Java 侧以 JOML 逐字复刻 PoseStack 调用序（translate→mulPose(rotationXYZ)→scale→translate）一次算死注入着色器——四元数组合语义不靠手推。
+- **平面几何**：`ItemModelGenerator.processFrames` 全元素 (0,0,7.5)..(16,16,8.5)，SOUTH 面 z=0.53125 UV 正、NORTH 面 z=0.46875 UV 镜像（背面镜像即原版生成物品的背面行为）；逐像素 run 的侧壳省略，满 quad + alpha cutout 片元等价。顶点/索引绕向沿用引擎 face() 约定（法线方向看 CCW，cull 开启）。
+- **姿势**：原版悦灵**只要手上有物品**就抬臂——`Allay.tick` 的 `hasItemInHand()` 驱动 `holdingItemAnimationTicks`（5 tick 线性到满），f6 = lerp/5。抬臂是叠加在当前动画（FLY/DANCE）上的连续斜坡，不是独立姿势。`translateToHand` 的手链以 `right_arm.xRot = f12 = f6·lerp(f4, -π/3, -1.134464)` 为输入，剑自动跟随抬臂。
+- **光照**：`AllayRenderer.getBlockLightLevel = 15` 同喂图层 → 物品与身体同源（引擎全亮 + 视空间漫反射路径白送，剑面法线走同一 `minecraft_mix_light`）。
+
+### 7.2 定案清单（拷问 Q1–Q6）
+
+| 项 | 定案 |
+|---|---|
+| 调用方 | **双路径共享机器**：波次路径（档位随 `ClientboundStormWavePacket` byte，谓词 = 波次窗口 (a)）+ 通用路径（`EmitterSpec.heldItem(...)` → 头槽 17.z，谓词 = `anim==HOLD`）；`ALLAY_HOLD` preset 默认钻石剑兼作对拍验收工具 |
+| 携带谓词 (a) | 哈希成员 + `[assembleSec, diveUntilSec]` 全窗携带；f6 斜坡 5-tick 线性升降（`cmiStormCarryRamp`，C0 两端）；集结段持剑待命、锁存持剑归队；尸体不携带（`!corpse`） |
+| 伤害→材质 | 服务端一处硬编码阈值（≥10 下界合金/≥7 钻石/≥5 铁/≥4 金/≥3 石/否则木），id 序 = `EmitterSpec.HeldItem`，三消费点（头槽/wave 包/UV 表）同一 id 域 |
+| 资产 | **完全自持**：6 档原版剑贴图复制进 `textures/particle/sword_*.png`，并入 MODEL 图集（4×2 of 32×32 格，帧 0 悦灵、1..6 剑；16×16 小帧走图集既有的填格放大）。运行时零 `ModelManager` 依赖；资源包不能重塑剑外观——与悦灵身体同款资产自治，**这是特性** |
+| 几何 | 6 档共享一份几何（同轮廓），顶点带**规范 [0,1] sprite UV**，`uHeldItemUV[7]` uniform 表按携带档位重映射（单 instanced draw 无法按实例选元素范围）；partId 7，走 OPAQUE cutout 段（`vSeg` 判定由 `pid>=4` 改显式集合 {4,5,6}） |
+| glint | **跳过**，记录为已知偏差（伤害读数不是附魔物品；独立 glint 层只有成本无对齐收益） |
+| 顶点开销 | 不携带实例**跳不过调用**（+8 顶点/实例 ≈ 现状 +0.04%，本就画全部 7 个悦灵部件），但谓词早退跳过全部手链/哈希/输出（无波次时 ≈ 4 次 uniform 比较）。手臂部件（pid 2/3）跑同一谓词取 f6 |
+| 否决存档 | keygen"携带者分区 + 独立 indirect 命令 instanceCount=携带数"实现真零调用——需动 keygen/capture/排序槽/draw 命令四处机具，为省 0.04% 不成比例 |
+
+### 7.3 实装落点
+
+- Java：`EmitterSpec.HeldItem`/Builder/17.z 打包、`HeldItemGeometry`（quad 烘焙 + `CMI_HELD_DISPLAY` + UV 表）、`AllayModelGeometry`（UV 改图集空间、剑 quad 拼入 OPAQUE 段、ATLAS 常量）、`ParticleAtlas.ALLAY` 7 帧、服务端 `AllayStormManager.swordTier` + wave 包 byte、`AllayStormRuntime`（WaveClient 档位 + `waveTierUniform` 舞台）、`CMIParticleEngine`（`applyWave` 委托、`setFloatArrayUniform`、`uploadStormItemUniforms`）。
+- 着色器：`chunks/allay_pose.glsl`（`cmiStormCarryRamp`、`cmiTranslate4/cmiScale4`、pid-7 手链分支、`cmiAllayPartTransform` 增 `carryRamp` 参数——**签名变更**，两处调用点同步）、`model.vsh`（谓词/itemId/早退/UV 重映射/vSeg 显式集合）。
+- 光影包：`ShaderPackProgramCompiler.buildMergedSource` 镜像同款谓词与手链（TBO 读取形态）+ `CMI_HELD_DISPLAY` 以 const（非 #define，AST 移植不吃预处理器）注入；`CMIPackEntityMergeHook` 为 gbuffer 与 shadow 两轨上传 `uWave/uWaveTarget/uWaveTier/uHeldItemUV`。剑进阴影与受光管线免费获得（同一条合并顶点源）。
+- 图集回归面：MODEL 图集从 1×1 变 4×2，悦灵 UV 烘焙同步改图集空间（帧 0 位于 (0,0)，纹素位置不变）；mip 渗色窗口在 level 6（128×64 的 2×1 档，全部帧混合）——发生时精灵已远小于像素，接受并记录。
+
+### 7.4 验收（待进服/进图实测）
+
+1. **对拍基准**：`/cmip spawn allay_hold` vs `/summon allay` 给同档剑——手部位置/剑朝向/缩放/抬臂斜坡节奏逐分量核对（重点核对 display 常量矩阵与手链怪癖）。
+2. **波次冒烟**：波次发射 → 小队持剑掠袭 → 跨档改 `stormWaveDamage` → 新波换材质、在飞波次保持旧档；尸体不持剑。
+3. **性能抽查**：131k 满编无波次帧加剑前后帧时间无可見差（预期：纯 +0.04% 早退顶点）。
+4. **光影包**：至少一包（Photon/Complementary 任一）下剑随合并路径正确渲染并进阴影。
+

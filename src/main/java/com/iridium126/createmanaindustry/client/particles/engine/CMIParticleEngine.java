@@ -524,9 +524,28 @@ public final class CMIParticleEngine {
      * {@link AllayStormRuntime#applyWave}.
      */
     public void applyWave(int waveId, boolean abort, int waveSeed, float fraction,
-            int targetEntityId, float[] path, float assembleSec, float diveUntilSec) {
+            int targetEntityId, float[] path, float assembleSec, float diveUntilSec,
+            int swordTier) {
         this.storm.applyWave(waveId, abort, waveSeed, fraction, targetEntityId, path,
-                assembleSec, diveUntilSec);
+                assembleSec, diveUntilSec, swordTier);
+    }
+
+    /**
+     * Dive-wave uniform staging for the MODEL render path (the held-sword
+     * carrier predicate + tier) and the shader-pack merged programs. The
+     * arrays are the SAME staging update.comp consumes — one refreshWaves
+     * rebuild per frame feeds both.
+     */
+    public float[] stormWaveUniform() {
+        return this.storm.waveUniform();
+    }
+
+    public float[] stormWaveTargetUniform() {
+        return this.storm.waveTargetUniform();
+    }
+
+    public float[] stormWaveTierUniform() {
+        return this.storm.waveTierUniform();
     }
 
     /** Shared simulation clock (storm phases/dance bursts + allay pose paths). */
@@ -1589,6 +1608,7 @@ public final class CMIParticleEngine {
         setFloatUniform(prog, "uCamPos", (float) pos.x, (float) pos.y, (float) pos.z);
         setFloatUniform(prog, "uFadeDist", (float) ClientConfig.particleFadeDistance);
         setFloatUniform(prog, "uTimeSec", this.timeSec());
+        uploadStormItemUniforms(prog);
         this.allayAtlas.bind(1);
         setIntUniform(prog, "uSprite", 1);
 
@@ -1610,6 +1630,19 @@ public final class CMIParticleEngine {
         RenderSystem.disableBlend();
         GL20.glUseProgram(0);
         GL30.glBindVertexArray(0);
+    }
+
+    /**
+     * Held-item uniforms for a MODEL vertex program (self-drawn or merged):
+     * the wave staging (carrier predicate + tier — the same arrays update.comp
+     * steers with) and the per-tier atlas UV rects. Cheap on stormless frames
+     * (zeroed staging); the UV table is a constant of the atlas layout.
+     */
+    private void uploadStormItemUniforms(int prog) {
+        setVec4ArrayUniform(prog, "uWave", this.storm.waveUniform());
+        setVec4ArrayUniform(prog, "uWaveTarget", this.storm.waveTargetUniform());
+        setFloatArrayUniform(prog, "uWaveTier", this.storm.waveTierUniform());
+        setVec4ArrayUniform(prog, "uHeldItemUV", HeldItemGeometry.uvTable());
     }
 
     /**
@@ -2369,6 +2402,13 @@ public final class CMIParticleEngine {
         int l = loc(prog, name);
         if (l >= 0 && values.length >= 4)
             GL20.glUniform4fv(l, values);
+    }
+
+    /** Uploads a float uniform array ({@code uniform float name[N]}). */
+    public static void setFloatArrayUniform(int prog, String name, float[] values) {
+        int l = loc(prog, name);
+        if (l >= 0 && values.length > 0)
+            GL20.glUniform1fv(l, values);
     }
 
     private static void setMat4Uniform(int prog, String name, Matrix4fc matrix) {

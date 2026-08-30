@@ -172,7 +172,7 @@ public final class CMIPackEntityMergeHook {
 
         ShaderInstance shader = COMPILER.shadowShader();
         shader.apply();
-        uploadShadowUniforms(shader.getId());
+        uploadShadowUniforms(shader.getId(), engine);
         // Depth-led pass: draw order is irrelevant here (every visible instance
         // contributes its depth exactly once either way), so keep forward reads.
         uploadSegmentMode(shader.getId(), engine, false);
@@ -207,7 +207,7 @@ public final class CMIPackEntityMergeHook {
      * per-section offsets). So cmi_CameraPos here feeds exactly what the gbuffer
      * path feeds, and our vertex main needs no shadow variant at all.
      */
-    private static void uploadShadowUniforms(int progId) {
+    private static void uploadShadowUniforms(int progId, CMIParticleEngine engine) {
         Matrix4f projection = new Matrix4f(ShadowRenderer.PROJECTION);
         Matrix4f modelView = new Matrix4f(ShadowRenderer.MODELVIEW);
         uploadIrisMatrices(progId, projection, modelView);
@@ -226,6 +226,7 @@ public final class CMIPackEntityMergeHook {
         setMat(progId, "shadowModelViewInverse", new Matrix4f(modelView).invert());
         setFloat3(progId, "cameraPosition", (float) camPos.x, (float) camPos.y, (float) camPos.z);
         setSamplers(progId);
+        uploadStormItemUniforms(progId, engine);
     }
 
     // ------------------------------------------------------------------
@@ -363,6 +364,21 @@ public final class CMIPackEntityMergeHook {
         setFloat3(progId, "cmi_CameraPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
         setFloat(progId, "cmi_FadeDist", (float) ClientConfig.particleFadeDistance);
         setFloat(progId, "uTimeSec", engine.timeSec());
+        uploadStormItemUniforms(progId, engine);
+    }
+
+    /**
+     * Held-item uniforms (mirror of the engine's uploadStormItemUniforms): the
+     * dive-wave staging feeding the carrier predicate and sword tier, plus the
+     * per-tier atlas UV rects. Same names and staging the self-drawn model.vsh
+     * consumes; cheap on stormless frames.
+     */
+    private static void uploadStormItemUniforms(int progId, CMIParticleEngine engine) {
+        setVec4Array(progId, "uWave", engine.stormWaveUniform());
+        setVec4Array(progId, "uWaveTarget", engine.stormWaveTargetUniform());
+        setFloatArray(progId, "uWaveTier", engine.stormWaveTierUniform());
+        setVec4Array(progId, "uHeldItemUV",
+                com.iridium126.createmanaindustry.client.particles.engine.ParticlePrograms.heldItemUVTable());
     }
 
     /**
@@ -435,5 +451,17 @@ public final class CMIPackEntityMergeHook {
     private static void setFloat4(int prog, String name, float x, float y, float z, float w) {
         int l = loc(prog, name);
         if (l >= 0) GL20.glUniform4f(l, x, y, z, w);
+    }
+
+    private static void setVec4Array(int prog, String name, float[] values) {
+        int l = loc(prog, name);
+        if (l >= 0 && values != null && values.length >= 4)
+            GL20.glUniform4fv(l, values);
+    }
+
+    private static void setFloatArray(int prog, String name, float[] values) {
+        int l = loc(prog, name);
+        if (l >= 0 && values != null && values.length > 0)
+            GL20.glUniform1fv(l, values);
     }
 }

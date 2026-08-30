@@ -30,8 +30,10 @@ import net.minecraft.world.phys.Vec3;
  *  16:  reserved 0 (collision bake slices are selected per particle on the
  *      GPU — the header deliberately carries no world-position state),
  *      spriteCount, 0, 0
- *  17:  animation(0 FLY..3 DEATH, MODEL only), 0, 0, 0
- *  18..19: reserved
+ *  17:  animation(0 FLY..3 DEATH, MODEL only), spawnStyle (storm members
+ *      write 3 post-pack), heldItem (0 none, 1..6 sword tier — see
+ *      {@link HeldItem}), 0
+ *  18..19: reserved (storm parameters + anchor for storm specs)
  * </pre>
  */
 public final class EmitterSpec {
@@ -80,7 +82,12 @@ public final class EmitterSpec {
          * rhythm in vanilla, so there is no separate spin-only pose.
          */
         DANCE(1),
-        /** Arms raised as if carrying an item (item itself is not rendered). */
+        /**
+         * Arms raised as if carrying an item. With a {@link HeldItem} on the
+         * spec the item itself renders at the vanilla hand anchor (vanilla
+         * raising ramp: {@code Allay.getHoldingItemAnimationProgress}); with
+         * no item the pose is unchanged from before.
+         */
         HOLD(2),
         /**
          * Vanilla death sequence: the idle pose keeps playing while the corpse
@@ -133,6 +140,54 @@ public final class EmitterSpec {
         }
     }
 
+    /**
+     * Held-item ids carried in header vec4 #17.z. The id space is shared with
+     * the server's dive-wave sword-tier byte ({@code AllayStormManager.
+     * swordTier}) and indexes the sword frames of the MODEL atlas (frame 0 is
+     * the allay body, frames 1..6 the tiers below in order) — one enum, three
+     * consumers, no mapping layer. The geometry is a static bake of the
+     * vanilla flat {@code item/handheld} model copied into mod assets (pack
+     * independent); all six tiers share one silhouette, so the shader selects
+     * the frame through a per-tier UV remap.
+     */
+    public enum HeldItem {
+        NONE(0),
+        /** Frames the vanilla wooden_sword sprite. */
+        WOODEN_SWORD(1),
+        /** Frames the vanilla stone_sword sprite. */
+        STONE_SWORD(2),
+        /** Frames the vanilla golden_sword sprite. */
+        GOLDEN_SWORD(3),
+        /** Frames the vanilla iron_sword sprite. */
+        IRON_SWORD(4),
+        /** Frames the vanilla diamond_sword sprite. */
+        DIAMOND_SWORD(5),
+        /** Frames the vanilla netherite_sword sprite. */
+        NETHERITE_SWORD(6);
+
+        final int index;
+
+        HeldItem(int index) {
+            this.index = index;
+        }
+
+        public int index() {
+            return this.index;
+        }
+
+        public static HeldItem byIndex(int i) {
+            return switch (i) {
+                case 1 -> WOODEN_SWORD;
+                case 2 -> STONE_SWORD;
+                case 3 -> GOLDEN_SWORD;
+                case 4 -> IRON_SWORD;
+                case 5 -> DIAMOND_SWORD;
+                case 6 -> NETHERITE_SWORD;
+                default -> NONE;
+            };
+        }
+    }
+
     /** Max keyframe colours carried to the shader (RGBA each). */
     public static final int MAX_COLORS = 8;
     /** GPU header size in vec4 (see class javadoc). */
@@ -177,6 +232,14 @@ public final class EmitterSpec {
     public final int spriteCount;
     /** Procedural animation for {@link Material#MODEL} emitters. */
     public final Animation animation;
+    /**
+     * Held item for {@link Material#MODEL} emitters (header 17.z): rendered at
+     * the vanilla hand anchor when the pose carries it (HOLD animation, or a
+     * dive-wave claim overriding the id at render time). {@link HeldItem#NONE}
+     * renders nothing; storm specs stay NONE — the wave tier rides the wave
+     * uniforms instead, and the two paths must never stack.
+     */
+    public final HeldItem heldItem;
 
     private final float[] packed;
 
@@ -208,6 +271,7 @@ public final class EmitterSpec {
         this.spin = b.spin;
         this.spriteCount = Math.max(1, Math.min(64, b.spriteCount));
         this.animation = Objects.requireNonNull(b.animation, "animation");
+        this.heldItem = Objects.requireNonNull(b.heldItem, "heldItem");
         this.packed = pack();
     }
 
@@ -262,8 +326,9 @@ public final class EmitterSpec {
         f[16 * 4 + 1] = spriteCount;
         f[16 * 4 + 2] = 0f;
         f[16 * 4 + 3] = 0f;
-        // 17: animation (MODEL only), 0, 0, 0
+        // 17: animation (MODEL only), spawnStyle (storm writes post-pack), heldItem, 0
         f[17 * 4 + 0] = animation.index();
+        f[17 * 4 + 2] = heldItem.index();
         // 18..19 stay zero
         return f;
     }
@@ -329,6 +394,7 @@ public final class EmitterSpec {
         private boolean spin = false;
         private int spriteCount = 1;
         private Animation animation = Animation.FLY;
+        private HeldItem heldItem = HeldItem.NONE;
 
         public Builder shape(EmitterShape v) { this.shape = v; return this; }
         public Builder size(double v) { this.size = v; return this; }
@@ -378,6 +444,8 @@ public final class EmitterSpec {
         public Builder spriteCount(int v) { this.spriteCount = v; return this; }
         /** Procedural animation for MODEL emitters (default FLY). */
         public Builder animation(Animation v) { this.animation = v; return this; }
+        /** Held item rendered at the vanilla hand anchor (default NONE). */
+        public Builder heldItem(HeldItem v) { this.heldItem = v; return this; }
 
         public EmitterSpec build() {
             return new EmitterSpec(this);

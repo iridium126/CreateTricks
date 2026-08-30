@@ -1010,6 +1010,9 @@ public final class AllayStormRuntime {
         float fraction;
         float assembleSec;
         float diveUntilSec;
+        /** Held-sword material id (EmitterSpec.HeldItem order; 0 = none) —
+         * frozen with the wave from the server's stormWaveDamage mapping. */
+        int swordTier;
         int targetEntityId;
         /** Smoothed corridor waypoints, flat WORLD xyz (decoded from anchor-relative shorts). */
         final double[] path = new double[MAX_WAVE_PATH * 3];
@@ -1026,10 +1029,13 @@ public final class AllayStormRuntime {
     /** Set by the compute phase's wave-contact dispatch; consumed at fence poll. */
     private boolean waveContactPending = false;
 
-    // uniform staging, rebuilt every refreshWaves (uploaded with the update dispatch)
+    // uniform staging, rebuilt every refreshWaves (uploaded with the update dispatch
+    // AND consumed by the MODEL render path — the held-sword carrier predicate
+    // and tier selection read the same slots the steering does)
     private final float[] waveUniform = new float[MAX_WAVES * 4]; // {seed, fraction, assemble, diveUntil}
     private final float[] waveTargetUniform = new float[MAX_WAVES * 4]; // {pos.xyz, waveId}
     private final float[] wavePathUniform = new float[MAX_WAVES * MAX_WAVE_PATH * 4]; // {xyz, valid}
+    private final float[] waveTierUniform = new float[MAX_WAVES]; // held-sword id per slot
 
     public float[] waveUniform() {
         return this.waveUniform;
@@ -1041,6 +1047,10 @@ public final class AllayStormRuntime {
 
     public float[] wavePathUniform() {
         return this.wavePathUniform;
+    }
+
+    public float[] waveTierUniform() {
+        return this.waveTierUniform;
     }
 
     /** True while at least one live wave exists (engine gates the contact dispatch). */
@@ -1077,7 +1087,8 @@ public final class AllayStormRuntime {
      * points through the same servo, so no explicit dispersal exists.
      */
     public void applyWave(int waveId, boolean abort, int waveSeed, float fraction,
-            int targetEntityId, float[] pathRel, float assembleSec, float diveUntilSec) {
+            int targetEntityId, float[] pathRel, float assembleSec, float diveUntilSec,
+            int swordTier) {
         WaveClient w = findWaveById(waveId);
         if (abort) {
             if (w != null)
@@ -1097,6 +1108,7 @@ public final class AllayStormRuntime {
         w.fraction = fraction;
         w.assembleSec = assembleSec;
         w.diveUntilSec = diveUntilSec;
+        w.swordTier = swordTier;
         w.targetEntityId = targetEntityId;
         w.pathCount = Math.min(pathRel == null ? 0 : pathRel.length / 3, MAX_WAVE_PATH);
         for (int i = 0; i < w.pathCount; i++) {
@@ -1158,6 +1170,7 @@ public final class AllayStormRuntime {
         java.util.Arrays.fill(this.waveUniform, 0f);
         java.util.Arrays.fill(this.waveTargetUniform, 0f);
         java.util.Arrays.fill(this.wavePathUniform, 0f);
+        java.util.Arrays.fill(this.waveTierUniform, 0f);
         Minecraft mc = Minecraft.getInstance();
         for (WaveClient w : this.waveSlots) {
             if (w == null || !w.alive)
@@ -1205,6 +1218,7 @@ public final class AllayStormRuntime {
             this.waveTargetUniform[s + 1] = (float) (py + 0.5);
             this.waveTargetUniform[s + 2] = (float) pz;
             this.waveTargetUniform[s + 3] = (float) w.waveId;
+            this.waveTierUniform[w.slotIdx] = (float) w.swordTier;
             int pb = w.slotIdx * MAX_WAVE_PATH * 4;
             for (int i = 0; i < MAX_WAVE_PATH; i++) {
                 int o = pb + i * 4;

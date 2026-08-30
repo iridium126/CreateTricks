@@ -614,6 +614,17 @@ public final class ShaderPackProgramCompiler {
         sb.append("uniform samplerBuffer cmi_Pool;\n");
         sb.append("uniform samplerBuffer cmi_Emitters;\n");
         sb.append("uniform usamplerBuffer cmi_Sorted;\n");
+        // held item (partId 7): the display transform constant (JOML-computed,
+        // see HeldItemGeometry) as a plain const — #defines do not survive the
+        // AST transplant — and the dive-wave carrier uniforms, the same names
+        // and staging the self-drawn model.vsh consumes
+        sb.append("const mat4 CMI_HELD_DISPLAY = ").append(ParticlePrograms.heldItemDisplayMatrix()).append(";\n");
+        sb.append("""
+                uniform vec4 uWave[4];       // x waveSeed, y fraction, z assembleSec, w diveUntilSec
+                uniform vec4 uWaveTarget[4]; // xyz aim point, w waveId (0 = inactive slot)
+                uniform float uWaveTier[4];  // held-sword material id per slot (0 = none)
+                uniform vec4 uHeldItemUV[7]; // per-tier atlas rects {uvMin.xy, uvMax.xy}, slot 0 unused
+                """);
         sb.append("""
                 uniform vec3 cmi_CameraPos;
                 uniform float cmi_FadeDist;
@@ -707,25 +718,55 @@ public final class ShaderPackProgramCompiler {
                     // Storm members: inner-band members near the chased anchor
                     // periodically run full vanilla dance cycles.
                     vec4 stormA = texelFetch(cmi_Emitters, int(hb + 18u));
-                    if (stormA.x > 0.5 && !gone) {
-                        anim = cmiStormAnimOverride(
-                                distance(p0.xyz, texelFetch(cmi_Emitters, int(hb + 19u)).xyz),
-                                stormA.y, p3.z, uTimeSec);
-                    }
                     // HP-death corpse: per-particle death pose + roll timer
                     // (time since death; update.comp counts hp 0 -> -1 over the
                     // vanilla 20-tick window while age keeps the idle sway).
                     // hp <= 0 (not < 0): the kill frame itself already counts
                     // as dead, matching update.comp's corpse predicate.
                     bool corpse = p3.y <= 0.0;
+                    // ---- carried item (held sword): wave predicate (a) ------
+                    // mirror of model.vsh: first live-window slot whose hash
+                    // claims the member; corpses never carry (vanilla drops
+                    // the held item on death)
+                    float carryRamp = 0.0;
+                    float waveTier = 0.0;
+                    if (!corpse && !gone && stormA.x > 0.5) {
+                        for (int k = 0; k < 4; k++) {
+                            if (uWaveTarget[k].w < 0.5)
+                                continue;
+                            if (uTimeSec < uWave[k].z || uTimeSec > uWave[k].w)
+                                continue;
+                            if (!cmiStormWaveMember(p3.z, uWave[k].x, uWave[k].y))
+                                continue;
+                            carryRamp = cmiStormCarryRamp(uTimeSec, uWave[k].z, uWave[k].w);
+                            waveTier = uWaveTier[k];
+                            break;
+                        }
+                    }
+                    // held-item id: a wave claim overrides the header slot
+                    // (storm specs keep 17.z = 0, so the paths never stack)
+                    float itemId = waveTier > 0.5 ? waveTier
+                            : texelFetch(cmi_Emitters, int(hb + 17u)).z;
+                    // non-carriers clip before any hand-chain math
+                    gone = gone || (pid == 7 && itemId <= 0.5);
+                    if (stormA.x > 0.5 && !gone) {
+                        anim = cmiStormAnimOverride(
+                                distance(p0.xyz, texelFetch(cmi_Emitters, int(hb + 19u)).xyz),
+                                stormA.y, p3.z, uTimeSec);
+                    }
                     if (corpse)
                         anim = 3;
                     float sinceDeath = corpse ? -p3.y : 0.0;
                     float yaw;
-                    mat4 M = gone ? mat4(1.0) : cmiAllayPartTransform(p3.x, p3.z, p1.xyz, anim, pid, yaw);
+                    mat4 M = gone ? mat4(1.0) : cmiAllayPartTransform(p3.x, p3.z, p1.xyz, anim, pid, yaw, carryRamp);
 
                     vec3 local = gone ? vec3(0.0) : vec3(texelFetch(cmi_Geo, int(vb)).x, texelFetch(cmi_Geo, int(vb + 1u)).x, texelFetch(cmi_Geo, int(vb + 2u)).x);
                     vec2 uv = gone ? vec2(0.5) : vec2(texelFetch(cmi_Geo, int(vb + 3u)).x, texelFetch(cmi_Geo, int(vb + 4u)).x);
+                    if (pid == 7 && !gone) {
+                        // canonical sprite UV -> the carrier tier's atlas frame
+                        int tier = clamp(int(itemId + 0.5), 0, 6);
+                        uv = mix(uHeldItemUV[tier].xy, uHeldItemUV[tier].zw, uv);
+                    }
                     vec3 pm = (M * vec4(local, 1.0)).xyz / 16.0;
                     // vanilla chain after the parts: T(0,-1.501,0) then
                     // S(-1,-1,1), then the death roll (setupRotations' Rz,

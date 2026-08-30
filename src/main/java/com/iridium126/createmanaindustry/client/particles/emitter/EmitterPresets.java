@@ -164,7 +164,12 @@ public final class EmitterPresets {
             .color(1f, 1f, 1f, 1f)
             .build();
 
-    /** Allay drifting with raised arms (item not rendered). */
+    /**
+     * Allay drifting with raised arms, holding a diamond sword — the vanilla
+     * hand-anchor render's validation surface: spawn this beside a real
+     * {@code /summon allay} given the same item and compare transforms
+     * frame-by-frame (docs/allay-particle-vanilla-alignment.md, held items).
+     */
     public static final EmitterSpec ALLAY_HOLD = EmitterSpec.builder()
             .shape(EmitterShape.POINT)
             .speed(0.4, 0.9)
@@ -174,6 +179,7 @@ public final class EmitterPresets {
             .drag(1.0)
             .material(EmitterSpec.Material.MODEL)
             .animation(EmitterSpec.Animation.HOLD)
+            .heldItem(EmitterSpec.HeldItem.DIAMOND_SWORD)
             .glow(1.0)
             .color(1f, 1f, 1f, 1f)
             .build();

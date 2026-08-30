@@ -39,12 +39,18 @@ public final class ParticleAtlas {
     /** Shared ALPHA-sprite + OPAQUE-combat atlas (see class doc). */
     public static final ParticleAtlas SPRITE = new ParticleAtlas(SPRITE_FILES, 8, 3, false);
     /**
-     * Single 32x32 frame: the vanilla allay entity texture (for MODEL
-     * particles). Mipmapped like the vanilla entity atlas — safe here because
-     * a single-frame atlas cannot blend neighbouring sprites at high mip
-     * levels — removing distant shimmer.
+     * MODEL atlas: frame 0 is the vanilla allay entity texture, frames 1..6
+     * the held-item sword tiers ({@code EmitterSpec.HeldItem} order) — ONE
+     * texture so the shader-pack merged path (whose fragment stage only sees
+     * the pinned gtexture sampler) can sample both. Mipmapped like the vanilla
+     * entity atlas; a 4x2 grid of 32x32 cells keeps mip blocks within one cell
+     * through level 5 (level 6 blends frames, far past the visibility fade).
      */
-    public static final ParticleAtlas ALLAY = new ParticleAtlas(new String[] {"allay_0"}, 1, 1, true);
+    public static final ParticleAtlas ALLAY = new ParticleAtlas(new String[] {
+            "allay_0",
+            "sword_wooden", "sword_stone", "sword_golden", "sword_iron",
+            "sword_diamond", "sword_netherite" },
+            AllayModelGeometry.ATLAS_COLS, AllayModelGeometry.ATLAS_ROWS, true);
 
     private final String name;
     private final String[] files;

@@ -153,6 +153,7 @@
   "createmanaindustry.hex.mishap.empty_item": "The Depot or Placard at %s holds no item",
   "createmanaindustry.hex.mishap.invalid_item": "The item at %s does not hold an Iota",
   "hexcasting.action.createmanaindustry:light_burner": "Light Burner",
+  "hexcasting.action.createmanaindustry:players_in_circle": "Players in Circle",
   "hexcasting.action.createmanaindustry:read_trick_from_item": "Read Trick From Item",
   "hexcasting.action.createmanaindustry:execute_trick": "Execute Trick",
   "createmanaindustry.hex.mishap.invalid_burner": "The block at %s is not a lit Blaze Burner or an Allay Burner",
@@ -189,6 +190,11 @@
   "hexcasting.entry.createmanaindustry.light_burner": "Lighting Burners with Magic",
   "hexcasting.page.createmanaindustry.light_burner.1": "I have devised a pattern that lights a $(item)Blaze Burner/$ or an $(item)Allay Burner/$ from afar. It consumes a $(thing)vector/$ — the block position — and a $(thing)number/$ — the burn time in seconds — then adds exactly that much burn time to the burner.$(br2)Media is charged per second, at the same rate the burner itself consumes media, so the spell is economically equivalent to pouring in $(l:createmanaindustry/liquid_media)$(media)Liquid Media/$.",
   "hexcasting.page.createmanaindustry.light_burner.2": "A Blaze Burner holding no blaze cannot be lit by this spell, and a $(thing)SEETHING/$ or creative burner is left untouched. If the targeted block is not a lit Blaze Burner or an Allay Burner, the spell fails with a $(thing)mishap/$ — the target position is reported in the error for easy debugging.$(br2)Like all non-great-spell patterns, it can also be stamped onto a $(l:items/slate)$(item)Blank Slate/$ via $(thing)Stonecutting/$.",
+
+  "hexcasting.entry.createmanaindustry.players_in_circle": "Players in the Circle",
+  "hexcasting.page.createmanaindustry.players_in_circle.1": "A spell circle may be walked upon by many feet, yet $(action)Mind's Reflection/$ speaks only of its activator. This pattern takes a census instead: it consumes no iotas and costs $(thing)0 media/$ — it surveys the circle's own extent, the same bounds reported by $(action)Lesser Fold Reflection/$ and $(action)Greater Fold Reflection/$, and pushes a $(thing)list/$ of $(thing)entities/$, one for each $(thing)player/$ standing within.",
+  "hexcasting.page.createmanaindustry.players_in_circle.2": "Players who are dead or in spectator mode are not counted, and the resulting list is in no particular order.$(br2)Executed anywhere other than a spell circle — from a $(thing)casting item/$, say — the spell fails with a $(thing)mishap/$: a circle has bounds to survey; a wand does not.",
+  "hexcasting.page.createmanaindustry.players_in_circle.3": "Like all non-great-spell patterns, it can also be stamped onto a $(l:items/slate)$(item)Blank Slate/$ through $(thing)Stonecutting/$ — select $(action)Players in Circle/$ from the list.$(br2)See the $(l:createmanaindustry/slate_stonecutting)$(thing)Slate Pattern Stonecutting/$ entry for details.",
 
   "hexcasting.entry.createmanaindustry.slate_stonecutting": "Slate Pattern Stonecutting",
   "hexcasting.page.createmanaindustry.slate_stonecutting.1": "$(thing)Create: Mana Industry/$ dynamically registers $(thing)Stonecutting/$ recipes that let you stamp any non-great-spell Hexcasting pattern directly onto a $(l:items/slate)$(item)Blank Slate/$.$(br2)These recipes are generated automatically at server startup and after every $(thing)/reload/$, reflecting the exact registry of installed $(action)patterns/$ — including those from other addon mods.",

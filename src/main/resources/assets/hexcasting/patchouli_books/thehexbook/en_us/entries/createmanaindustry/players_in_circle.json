@@ -1,0 +1,19 @@
+{
+  "name": "hexcasting.entry.createmanaindustry.players_in_circle",
+  "category": "hexcasting:createmanaindustry",
+  "icon": "hexcasting:thought_knot",
+  "sortnum": 8,
+  "advancement": "hexcasting:root",
+  "pages": [
+    "hexcasting.page.createmanaindustry.players_in_circle.1",
+    {
+      "type": "hexcasting:pattern",
+      "op_id": "createmanaindustry:players_in_circle",
+      "anchor": "createmanaindustry:players_in_circle",
+      "input": "",
+      "output": "list of entities",
+      "text": "hexcasting.page.createmanaindustry.players_in_circle.2"
+    },
+    "hexcasting.page.createmanaindustry.players_in_circle.3"
+  ]
+}

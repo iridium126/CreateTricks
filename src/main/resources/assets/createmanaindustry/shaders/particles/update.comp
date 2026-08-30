@@ -94,7 +94,10 @@ layout(std430, binding = BIND_CORRECTION) readonly buffer CorrectionBuf { vec4 c
 // Sized like the correction slots (2 vec4 there, 1 float here per slot).
 layout(std430, binding = BIND_MEMBERMAP) buffer MemberMapBuf { float m[]; } memberMap;
 uniform uint  uKillEmit;   // emitter id force-expired this frame (none = ~0u)
-uniform float uStormOmega; // SIGNED angular velocity rad/s (vortex mode; 0 = n/a)
+uniform float uStormOmegaNow; // SIGNED spin rate omega = SPIN_K/R_now (vortex; 0 = n/a)
+uniform float uStormRotPhase;  // rotation phase (radians) — CPU growth-law integral
+uniform float uStormConvPhase; // shared conveyor phase scalar (per-member scale rate/a)
+uniform float uStormConvRate;  // d(convPhase)/dt — drives the target-velocity conveyor term
 
 const float CELL_SIZE        = 2.5;  // == neighbour radius (one cell per axis)
 const float STORM_SEP_R      = 1.0;
@@ -371,14 +374,17 @@ void main() {
     // Mode 1 (ball): boids neighbour forces + containment shell around G(t).
     // Mode 2 (typhoon): world-frame SERVO onto each member's circulating home
     // point on one of 6 trailing log-spiral arms (shared cmiTyphoonHome:
-    // eyewall ascent -> outflow deck -> edge sink -> inflow, rigid co-rotation
-    // at omega, funnel-shaped outflow deck). The center is the SERVER-CHASED
+    // eyewall ascent -> outflow deck -> edge sink -> inflow, rigid co-rotation,
+    // funnel-shaped outflow deck). The center is the SERVER-CHASED
     // anchor (header 19) — no per-member wander. Equilibrium == the analytic
     // spawn state in emit.comp (the SAME shared function), so late joiners
-    // start settled and the pattern phase is a pure function of the shared
-    // clock -- identical on every client. The engine clamps |omega| to
-    // MAX_SPEED / radius client-side and the function caps its own target
-    // velocity at the speed cap, so servo targets always stay reachable.
+    // start settled and the pattern phase is identical on every client.
+    // Omega and the phases are CLIENT-DERIVED, not wire state: the spin rate
+    // is SPIN_K / R_now (the fringe tangential speed holds at 0.85 * the
+    // member speed cap at every size), and the rotation/conveyor PHASES are
+    // CPU-side growth-law integrals — never rate * timeSec, whose
+    // radius-dependent coefficient would teleport the pattern (and collapse
+    // the whole storm onto the center) whenever the radius moves.
     // Only WORLD-frame acceleration leaves this block: the collision sweep
     // below still owns the final position move.
     if (!corpse && stormA.x > 0.5 && stormA.x < 1.5) {
@@ -464,15 +470,17 @@ void main() {
     else if (!corpse && stormA.x > 1.5) {
         // ----- typhoon: world-frame servo onto the circulating arm home point
         vec3 anchor = emitters.u[hb + 19u].xyz;
-        float omega = uStormOmega;
         float spMaxV = max(stormA.w, 0.5);
         // Shared home-point function (chunks/allay_pose.glsl) — the SAME
         // function emit.comp spawns with, so the two call sites cannot
-        // diverge and the spawn state IS this servo's equilibrium.
+        // diverge and the spawn state IS this servo's equilibrium. The
+        // rotation/conveyor phases arrive as CPU-side growth-law integrals
+        // (AllayStormRuntime) — never rate * timeSec, which would teleport
+        // the pattern whenever the growing radius moves.
         vec3 target;
         vec3 vT;
-        cmiTyphoonHome(p3.z, max(stormA.y, 2.0), omega, spMaxV, uTimeSec,
-                anchor, target, vT);
+        cmiTyphoonHome(p3.z, max(stormA.y, 2.0), uStormOmegaNow, uStormRotPhase,
+                uStormConvPhase, uStormConvRate, spMaxV, anchor, target, vT);
 
         // separation + player repulsion, world space exactly like ball mode.
         // Same visit budget as the ball-mode sweep.

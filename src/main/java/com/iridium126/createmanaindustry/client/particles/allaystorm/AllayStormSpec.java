@@ -8,9 +8,9 @@ import net.minecraft.world.phys.Vec3;
 /**
  * All-in-one static home of the Allay Storm's emitter spec and its per-id
  * header packing. Extracted from {@code CMIParticleEngine} so the engine file
- * keeps only the storm's RUNTIME state (active latch, anchor, omega,
+ * keeps only the storm's RUNTIME state (active latch, anchor, derived omega,
  * trickle-in counter); everything that describes WHAT a storm member is —
- * the spec, its population/speed/omega caps and the reserved header slots
+ * the spec, its population/speed caps and the reserved header slots
  * 18/19 layout — lives here.
  * <p>
  * The storm spec is deliberately unique (lifetime/speed/drag differ from
@@ -30,8 +30,6 @@ public final class AllayStormSpec {
     public static final int MODE_VORTEX = 2;
     /** Stress-test ceiling (user-set): 2^17 members. */
     public static final int MAX_COUNT = 131072;
-    /** Vortex-mode cap on |omega| (rad/s). */
-    public static final float MAX_OMEGA = 3.0f;
     /** Client-side mirror of the server's 24-bit seed mask (StormData.SEED_MASK). */
     public static final int SEED_MASK_CLIENT = (1 << 24) - 1;
     /** Wandering-centre radius packed into header #18.z (blocks). */
@@ -65,12 +63,13 @@ public final class AllayStormSpec {
      * Packs the storm's per-id header: the spec fields with the FLY animation
      * pinned, the member spawn style 3 (server-synced analytic orbit placement
      * — see emit.comp), plus the motion parameters and anchor in the reserved
-     * slots 18/19. {@code omega} selects the motion mode (non-zero = vortex).
+     * slots 18/19. The motion mode is explicit (the spin rate is now a
+     * per-frame growth-law integral, not a header constant).
      */
-    public static float[] packedHeader(float omega, double radius, Vec3 anchor) {
+    public static float[] packedHeader(int mode, double radius, Vec3 anchor) {
         float[] h = SPEC.packedWithAnimation(EmitterSpec.Animation.FLY.index());
         h[17 * 4 + 1] = 3.0f; // spawnStyle 3: storm member (identity + analytic spawn)
-        h[18 * 4 + 0] = omega != 0f ? (float) MODE_VORTEX : (float) MODE_BALL;
+        h[18 * 4 + 0] = (float) mode;
         h[18 * 4 + 1] = (float) radius;
         h[18 * 4 + 2] = WANDER_RADIUS;
         h[18 * 4 + 3] = MAX_SPEED;

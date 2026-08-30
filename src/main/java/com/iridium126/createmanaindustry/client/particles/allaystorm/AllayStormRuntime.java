@@ -4,6 +4,7 @@ import java.util.BitSet;
 
 import com.iridium126.createmanaindustry.client.particles.engine.CMIParticleEngine;
 import com.iridium126.createmanaindustry.client.particles.engine.ParticleBuffers;
+import com.iridium126.createmanaindustry.content.allaystorm.AllayStormData;
 import com.iridium126.createmanaindustry.content.allaystorm.AllayStormManager;
 import com.iridium126.createmanaindustry.network.ClientboundStormStatePacket;
 import com.iridium126.createmanaindustry.network.ServerboundStormPositionsPacket;
@@ -75,11 +76,13 @@ public final class AllayStormRuntime {
         public final float[] emitLight;
         public final int[] emitMemberBase;
         public final int[] emitMemberKey;
+        public final boolean[] emitRingSpawn;
         public int entryCount;
         public int totalSpawn;
 
         public EmitSchedule(int[] emitIds, int[] emitCounts, Vec3[] emitOrigins, boolean[] emitTranslucent,
-                float[] emitOriginRef, float[] emitLight, int[] emitMemberBase, int[] emitMemberKey) {
+                float[] emitOriginRef, float[] emitLight, int[] emitMemberBase, int[] emitMemberKey,
+                boolean[] emitRingSpawn) {
             this.emitIds = emitIds;
             this.emitCounts = emitCounts;
             this.emitOrigins = emitOrigins;
@@ -88,6 +91,7 @@ public final class AllayStormRuntime {
             this.emitLight = emitLight;
             this.emitMemberBase = emitMemberBase;
             this.emitMemberKey = emitMemberKey;
+            this.emitRingSpawn = emitRingSpawn;
             this.entryCount = 0;
             this.totalSpawn = 0;
         }
@@ -108,8 +112,10 @@ public final class AllayStormRuntime {
 
     /** Advances the shared clock from the level's game time (render thread). */
     public void tickClock(long gameTime) {
+        this.gameTimeNow = gameTime;
         this.timeSec = (gameTime & ((1 << 21) - 1)) / 20.0f;
         refreshInterpolatedCenter();
+        refreshInterpolatedCount();
     }
 
     /**
@@ -133,6 +139,51 @@ public final class AllayStormRuntime {
     }
 
     /**
+     * Re-evaluates the interpolated generated count for this frame — the same
+     * double-snapshot scheme as {@link #refreshInterpolatedCenter} (shared
+     * clock, one interval behind, clamped alpha): bit-identical on every
+     * client. In vortex mode the radius DERIVES from it every frame
+     * ({@code sqrt(count)/8}, unquantized) and ω follows ({@code 6/radius}),
+     * so the expanding typhoon shell grows smoothly instead of jumping at
+     * packet or quantization steps. Before the first center packet (and
+     * after ACTIVATE resets validity) the count falls back to the raw packet
+     * integer — an ACTIVATE-time derivation is already exact. Ball mode keeps
+     * its command-set radius.
+     */
+    private void refreshInterpolatedCount() {
+        if (!this.countValid) {
+            this.countInterp = this.stormCount;
+        } else {
+            float renderT = this.timeSec - CENTER_LAG_SECONDS;
+            float span = this.countCurrT - this.countPrevT;
+            float alpha = span <= 0.0f ? 1.0f : (renderT - this.countPrevT) / span;
+            alpha = Math.max(0.0f, Math.min(1.0f, alpha));
+            this.countInterp = this.countPrev + (this.countCurr - this.countPrev) * alpha;
+        }
+        if (this.stormActive && this.stormMode == 2) {
+            this.stormRadius = AllayStormData.vortexRadius(this.countInterp);
+            // growth-law phase integrals (see the field doc above): LINEAR in
+            // the grown radius during the growth window, constant-rate after.
+            float r0 = this.stormCreationRadius;
+            float rf = Math.max(this.stormFinalRadius, 0.5f);
+            float rNow = (float) this.stormRadius;
+            float grown = Math.min(rNow, rf) - r0;
+            float age = (this.gameTimeNow - this.stormCreatedAtGameTime) / 20.0f;
+            float growDur = this.stormGrowthPerSecond > 0.0f
+                    ? (float) (64.0 * ((double) rf * rf - (double) r0 * r0) / this.stormGrowthPerSecond)
+                    : 0.0f;
+            float postSec = Math.max(0.0f, age - growDur);
+            float g = Math.max(this.stormGrowthPerSecond, 1.0e-6f);
+            this.stormRotPhase = AllayStormData.SPIN_K * 128.0f * grown / g
+                    + AllayStormData.SPIN_K / rf * postSec;
+            this.stormConvPhase = 64.0f * grown / g + postSec / (2.0f * rf);
+            this.stormConvRate = (rNow < rf ? 1.0f / (2.0f * rNow) : 0.0f)
+                    + (postSec > 0.0f ? 1.0f / (2.0f * rf) : 0.0f);
+            this.stormOmegaNow = AllayStormData.vortexOmega(rNow, this.stormSeed);
+        }
+    }
+
+    /**
      * Applies one {@code ClientboundStormCenterPacket}: the previous current
      * snapshot rolls into prev, the packet becomes current. The FIRST packet
      * initializes both snapshots (no lerp from the stale block anchor).
@@ -141,8 +192,14 @@ public final class AllayStormRuntime {
      * diagnostics / a future extrapolation path — the clamped lerp ignores
      * them (a late packet freezes the center for under a second, invisible
      * at 2 b/s).
+     * <p>
+     * The packet's growth state drives two consumers: the generated count
+     * joins the double-snapshot interpolation (geometry derivation, see
+     * {@link #refreshInterpolatedCount}) and its integer delta joins the
+     * spawn backlog (new indices later spawn on the ring and fly in).
      */
-    public void applyStormCenter(float x, float y, float z, float velX, float velZ, long gameTime) {
+    public void applyStormCenter(float x, float y, float z, float velX, float velZ,
+            int count, long gameTime) {
         if (!this.stormActive)
             return;
         float t = clockSeconds(gameTime);
@@ -162,6 +219,25 @@ public final class AllayStormRuntime {
         this.centerCurrZ = z;
         this.centerCurrT = t;
         this.centerValid = true;
+
+        // count snapshot (same double-buffer scheme as the center above)
+        if (!this.countValid) {
+            this.countPrev = count;
+            this.countPrevT = t;
+        } else if (this.countCurrT != t) {
+            this.countPrev = this.countCurr;
+            this.countPrevT = this.countCurrT;
+        }
+        this.countCurr = count;
+        this.countCurrT = t;
+        this.countValid = true;
+
+        // growth delta: the server's generated population advanced — the new
+        // indices join the spawn backlog (members cannot be removed by this
+        // stream; only ACTIVATE/STOP reshape the population)
+        if (count > this.stormCount)
+            this.pendingStormSpawns += count - this.stormCount;
+        this.stormCount = Math.max(this.stormCount, count);
     }
 
     /** Shared simulation clock in seconds (storm wander/burst + pose paths). */
@@ -210,9 +286,71 @@ public final class AllayStormRuntime {
     private boolean centerValid = false;
     /** Interpolated center, refreshed every {@link #tickClock}; all consumers read this. */
     private Vec3 center = Vec3.ZERO;
+
+    // ---- continuous generated-count interpolation (growth channel) ----------
+    /**
+     * The generated population arrives as center-packet integers at 1 Hz; the
+     * vortex radius/omega derive from it CONTINUOUSLY through the same
+     * double-snapshot scheme as the chased center (shared-clock alpha, so
+     * every client computes bit-identical values — no per-client divergence,
+     * no packet-step or 0.5-quantization jumps in the expanding shell). The
+     * raw integer {@link #stormCount} stays the spawn-backlog authority; this
+     * interpolated float feeds only the geometry derivation.
+     */
+    private float countPrev;
+    private float countCurr;
+    private float countPrevT;
+    private float countCurrT;
+    private boolean countValid = false;
+    /** Interpolated generated count, refreshed every {@link #tickClock}. */
+    private float countInterp = 0f;
+
     private double stormRadius = 8.0;
-    /** SIGNED vortex angular velocity rad/s (0 in ball mode / when idle). */
-    private float stormOmega = 0f;
+    /**
+     * Motion mode mirror (1 ball, 2 vortex) — gates the per-frame phase
+     * derivation. The vortex spin rate is {@code AllayStormData.SPIN_K / R}
+     * (signed by the seed's low bit), integrated by the growth-law phase
+     * below — never accumulated as {@code ω * timeSec}, which would teleport
+     * the whole pattern whenever the (growing) radius moves.
+     */
+    private int stormMode = 0;
+
+    // ---- frozen growth law + per-frame phase integrals (vortex) -------------
+    /**
+     * The typhoon's rotation and conveyor phases are INTEGRALS of rates that
+     * depend on the radius. The naive {@code rate(R) * timeSec} form re-derives
+     * the entire pattern phase whenever R moves — amplified by the accumulated
+     * world clock into target teleports and the "whole storm clumps into a
+     * blob" collapse (the members cannot track a pattern spinning at
+     * {@code dω/dR * dR/dt * timeSec} rad/s, so the servo's time-averaged pull
+     * drags everything to the rotation center). The fix ships the FROZEN
+     * growth law from the server (state packet, frozen at creation like the
+     * seed): with {@code count(t) = count0 + g*t} and {@code R = sqrt(count)/8},
+     * both phase integrals are CLOSED FORM and LINEAR in the grown radius —
+     * bounded expressions every client evaluates identically:
+     * <pre>
+     *   rotPhase  = SPIN_K·128·(min(R,Rf) − R0)/g + (SPIN_K/Rf)·postSec
+     *   convPhase = (rate_i/a_i)·(64·(min(R,Rf) − R0)/g + postSec/(2Rf))
+     * </pre>
+     * (postSec = the age past the growth window; {@code dt = 128·R·dR/g} is
+     * what makes ∫dt/R linear). Every term is a constant rate times a bounded
+     * quantity — a radius change can only advance the pattern by its
+     * physically-correct amount, never teleport it.
+     */
+    private float stormCreationRadius;
+    private float stormFinalRadius;
+    private float stormGrowthPerSecond;
+    private long stormCreatedAtGameTime;
+    /** Raw current gameTime (the post-growth phase terms' age clock). */
+    private long gameTimeNow;
+    /** Shared rotation phase (radians) — refreshed every {@link #tickClock}. */
+    private float stormRotPhase;
+    /** Shared conveyor phase scalar (per-member scale rate/a in the shader). */
+    private float stormConvPhase;
+    /** d(convPhase)/dt — drives the conveyor component of the target velocity. */
+    private float stormConvRate;
+    /** Instantaneous spin rate ω = ±SPIN_K/R_now (the servo's orbital term). */
+    private float stormOmegaNow;
     private int pendingStormSpawns = 0;
     private boolean stormHeaderWritten = false;
     /** Emitter id force-expired on the NEXT update dispatch (-1 = none). */
@@ -221,6 +359,16 @@ public final class AllayStormRuntime {
     private int stormSeed = 0;
     /** Total member population of the current storm (alive + dead). */
     private int stormCount = 0;
+    /**
+     * Generated-population threshold between the two spawn styles: indices
+     * BELOW it existed at ACTIVATE time and spawn ANALYTICALLY (settled at
+     * their home points — a joining client sees a formed storm); indices AT
+     * OR ABOVE it arrived through GROWTH (center-packet deltas) and spawn on
+     * the ring outside the visible envelope, flying to their storm positions.
+     * Set to the packet count on ACTIVATE; growth only raises stormCount past
+     * it. {@code scheduleSpawnRuns} splits its runs at this boundary.
+     */
+    private int stormAnalyticUpTo = 0;
     /** Server-decided dead members (this client's mirror of the truth). */
     private final BitSet stormDead = new BitSet();
     /** True while THIS client is the authority (runs the position readback). */
@@ -276,12 +424,15 @@ public final class AllayStormRuntime {
      * alive members trickle in with seed-derived identity, so member counts
      * agree across clients and restarts by construction. UPDATE: parameter
      * change only — identity, HP and deaths are preserved (springs retarget);
-     * also carries the authority flag and correction rate. DEACTIVATE
-     * (out of range) and STOP (storm over): local dispersal; the members
-     * compact away on the next update dispatch.
+     * also carries the authority flag and correction rate. The vortex angular
+     * velocity rides NO wire: both paths derive it here from the synced
+     * (mode, radius, seed). DEACTIVATE (out of range) and STOP (storm over):
+     * local dispersal; the members compact away on the next update dispatch.
      */
     public void applyStormState(int action, boolean authority, double correctionHz,
-            Vec3 anchor, int count, float radius, int mode, float omega, int seed, byte[] deadBitmap) {
+            Vec3 anchor, int count, float radius, int mode, int seed,
+            float creationRadius, float finalRadius, float growthPerSecond, long createdAt,
+            byte[] deadBitmap) {
         switch (action) {
             case ClientboundStormStatePacket.ACTION_ACTIVATE -> {
                 // full restart: expire whatever storm generation is live
@@ -309,10 +460,21 @@ public final class AllayStormRuntime {
                 // (block-quantized) anchor
                 this.centerValid = false;
                 this.center = anchor;
-                this.stormRadius = radius;
-                this.stormOmega = clampVortexOmega(omega, radius); // signed; 0 = ball mode
+                this.countValid = false; // new generation: the count restarts from the packet
+                this.stormMode = mode;
                 this.stormSeed = seed & AllayStormSpec.SEED_MASK_CLIENT;
+                // the FROZEN growth law rides the state packet (the phase
+                // integrals' constants — identical on every client); the
+                // radius derives from the synced count, the spin rate follows
+                // per frame (the packet's radius byte only serves ball mode)
+                this.stormCreationRadius = creationRadius;
+                this.stormFinalRadius = finalRadius;
+                this.stormGrowthPerSecond = growthPerSecond;
+                this.stormCreatedAtGameTime = createdAt;
+                this.stormRadius = mode == 2 ? AllayStormData.vortexRadius(count)
+                        : AllayStormData.quantizeRadius(radius);
                 this.stormCount = count;
+                this.stormAnalyticUpTo = count; // everything present at ACTIVATE spawns settled
                 this.stormAuthority = authority;
                 this.stormCorrectionHz = correctionHz;
                 this.stormSpawnCursor = 0;
@@ -324,13 +486,23 @@ public final class AllayStormRuntime {
                 if (!this.stormActive)
                     return;
                 this.stormAnchor = anchor;
-                this.stormRadius = radius;
-                this.stormOmega = clampVortexOmega(omega, radius);
+                this.stormMode = mode;
+                // the frozen law is generation-constant, but re-store it anyway
+                // (UPDATE is also the config-change propagation path)
+                this.stormCreationRadius = creationRadius;
+                this.stormFinalRadius = finalRadius;
+                this.stormGrowthPerSecond = growthPerSecond;
+                this.stormCreatedAtGameTime = createdAt;
+                // vortex radius derives from the current generated count (the
+                // packet's radius only serves ball); the per-frame refresh
+                // keeps tracking the interpolated count afterwards
+                this.stormRadius = mode == 2 ? AllayStormData.vortexRadius(this.stormCount)
+                        : AllayStormData.quantizeRadius(radius);
                 this.stormAuthority = authority;
                 this.stormCorrectionHz = correctionHz;
                 if (this.stormHeaderWritten && this.stormEmitId >= 0) {
                     // re-pack header so G(t)/springs retarget on the next dispatch
-                    float[] h = AllayStormSpec.packedHeader(this.stormOmega, this.stormRadius, this.center);
+                    float[] h = AllayStormSpec.packedHeader(this.stormMode, this.stormRadius, this.center);
                     h[16 * 4 + 0] = engine.ensurePoofEmitter();
                     engine.gpu().setEmitterHeader(this.stormEmitId, h);
                 }
@@ -347,6 +519,12 @@ public final class AllayStormRuntime {
                 this.stormHeaderWritten = false;
                 this.stormDead.clear();
                 this.centerValid = false;
+                this.countValid = false;
+                this.stormMode = 0;
+                this.stormRotPhase = 0f;
+                this.stormConvPhase = 0f;
+                this.stormConvRate = 0f;
+                this.stormOmegaNow = 0f;
                 dropHitKeys();
             }
             default -> {
@@ -419,33 +597,22 @@ public final class AllayStormRuntime {
         this.stormHeaderWritten = false;
         this.stormEmitId = -1;
         this.stormKillEmitId = -1;
-        this.stormOmega = 0f;
         this.stormDead.clear();
         this.stormAuthority = false;
         this.stormSpawnCursor = 0;
         this.stormCount = 0;
+        this.stormAnalyticUpTo = 0;
         this.stormPosPending = false;
         this.lastSnapshotGameTime = Long.MIN_VALUE;
         this.centerValid = false;
         this.center = Vec3.ZERO;
-    }
-
-    /**
-     * Effective vortex angular velocity. Co-rotation needs the tangential
-     * speed {@code omega * homeR}, and member speed is hard-capped at
-     * {@link AllayStormSpec#MAX_SPEED}, so any |omega| beyond
-     * {@code MAX_SPEED / radius} would make the update.comp servo targets
-     * permanently unreachable — the members would chase a pattern they can
-     * never catch. Clamped by the STORM radius (an upper bound of every
-     * member's homeR), so the whole pattern stays rigidly co-rotating, and
-     * deterministically on every client: both operands are synced params.
-     * The sign survives (zero still selects ball mode).
-     */
-    private static float clampVortexOmega(float omega, double radius) {
-        if (omega == 0f)
-            return 0f;
-        float mag = (float) Math.min(Math.abs(omega), AllayStormSpec.MAX_SPEED / Math.max(radius, 2.0));
-        return Math.signum(omega) * mag;
+        this.countValid = false;
+        this.countInterp = 0f;
+        this.stormMode = 0;
+        this.stormRotPhase = 0f;
+        this.stormConvPhase = 0f;
+        this.stormConvRate = 0f;
+        this.stormOmegaNow = 0f;
     }
 
     // ---- runCompute skeleton hooks (single reads, never inside loops) --------
@@ -474,9 +641,27 @@ public final class AllayStormRuntime {
         return this.stormKillEmitId;
     }
 
-    /** SIGNED vortex angular velocity for the {@code uStormOmega} uniforms. */
-    public float omega() {
-        return this.stormOmega;
+    /**
+     * Shared typhoon phase scalars for the {@code uStormRotPhase} /
+     * {@code uStormConvPhase} / {@code uStormConvRate} / {@code uStormOmegaNow}
+     * uniforms — the growth-law integrals evaluated once per frame on the CPU
+     * (see the field doc). Zero outside vortex mode; the ball path never
+     * reads them.
+     */
+    public float rotPhase() {
+        return this.stormRotPhase;
+    }
+
+    public float convPhase() {
+        return this.stormConvPhase;
+    }
+
+    public float convRate() {
+        return this.stormConvRate;
+    }
+
+    public float omegaNow() {
+        return this.stormOmegaNow;
     }
 
     /** 24-bit instance seed for the {@code uStormSeed} emit uniform. */
@@ -711,7 +896,7 @@ public final class AllayStormRuntime {
                     // emitter id is patched here (MODEL particles poof on expiry).
                     // refreshCenterHeader rewrites the center every frame after
                     // this, so the initial value is just the seed.
-                    float[] h = AllayStormSpec.packedHeader(this.stormOmega, this.stormRadius, this.center);
+                    float[] h = AllayStormSpec.packedHeader(this.stormMode, this.stormRadius, this.center);
                     h[16 * 4 + 0] = engine.ensurePoofEmitter();
                     engine.gpu().setEmitterHeader(id, h); // uploaded below this frame
                     this.stormEmitId = id;
@@ -731,8 +916,15 @@ public final class AllayStormRuntime {
                         this.stormSpawnCursor++;
                     if (this.stormSpawnCursor >= this.stormCount)
                         break;
+                    // Runs must not cross the analytic/ring style boundary:
+                    // indices BELOW stormAnalyticUpTo existed at ACTIVATE and
+                    // spawn settled; indices AT OR ABOVE it arrived through
+                    // growth and spawn on the ring outside the visible
+                    // envelope, flying to their storm positions.
+                    boolean ring = this.stormSpawnCursor >= this.stormAnalyticUpTo;
+                    int styleLimit = ring ? this.stormCount : Math.min(this.stormCount, this.stormAnalyticUpTo);
                     int runStart = this.stormSpawnCursor;
-                    while (this.stormSpawnCursor < this.stormCount && !this.stormDead.get(this.stormSpawnCursor)
+                    while (this.stormSpawnCursor < styleLimit && !this.stormDead.get(this.stormSpawnCursor)
                             && scheduled + (this.stormSpawnCursor - runStart) < budget)
                         this.stormSpawnCursor++;
                     int runLen = this.stormSpawnCursor - runStart;
@@ -746,6 +938,7 @@ public final class AllayStormRuntime {
                     s.emitLight[s.entryCount] = 0f;
                     s.emitMemberBase[s.entryCount] = runStart;
                     s.emitMemberKey[s.entryCount] = 0; // c.z unused by the storm spawn style
+                    s.emitRingSpawn[s.entryCount] = ring; // c.w: ring-spawn flag (growth members)
                     s.totalSpawn += runLen;
                     scheduled += runLen;
                     s.entryCount++;
@@ -768,7 +961,7 @@ public final class AllayStormRuntime {
     public void refreshCenterHeader() {
         if (!this.stormActive || !this.stormHeaderWritten || this.stormEmitId < 0)
             return;
-        float[] h = AllayStormSpec.packedHeader(this.stormOmega, this.stormRadius, this.center);
+        float[] h = AllayStormSpec.packedHeader(this.stormMode, this.stormRadius, this.center);
         h[16 * 4 + 0] = engine.ensurePoofEmitter();
         engine.gpu().setEmitterHeader(this.stormEmitId, h);
     }

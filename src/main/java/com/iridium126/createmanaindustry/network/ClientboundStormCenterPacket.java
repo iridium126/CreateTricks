@@ -3,6 +3,7 @@ package com.iridium126.createmanaindustry.network;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 
 import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
@@ -21,9 +22,19 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  * about (and future paths may extrapolate); the current client interpolation
  * clamps at the newest snapshot — a stalled center moves 0 blocks/s versus
  * the truth's 2 b/s for under a second, which is invisible.
+ * <p>
+ * The packet also carries the storm's GROWTH state: the generated member
+ * population (count, varint). The client keeps it in a double-snapshot
+ * interpolation (same scheme as the center) and derives the vortex radius
+ * ({@code sqrt(count)/8}) and angular velocity ({@code 6/radius}) from it
+ * CONTINUOUSLY every frame — the radius rides no wire at all, so the
+ * expanding shell never jumps at packet or quantization steps.
+ * {@code ClientboundStormStatePacket} remains the lifecycle authority; this
+ * stream is the per-second delta channel.
  */
 public record ClientboundStormCenterPacket(
-        float x, float y, float z, float velX, float velZ, long gameTime) implements CustomPacketPayload {
+        float x, float y, float z, float velX, float velZ,
+        int count, long gameTime) implements CustomPacketPayload {
 
     public static final CustomPacketPayload.Type<ClientboundStormCenterPacket> TYPE =
             new CustomPacketPayload.Type<>(CreateManaIndustry.modLoc("storm_center"));
@@ -37,6 +48,7 @@ public record ClientboundStormCenterPacket(
         buffer.writeFloat(p.z);
         buffer.writeFloat(p.velX);
         buffer.writeFloat(p.velZ);
+        ByteBufCodecs.VAR_INT.encode(buffer, p.count);
         buffer.writeLong(p.gameTime);
     }
 
@@ -46,8 +58,9 @@ public record ClientboundStormCenterPacket(
         float z = buffer.readFloat();
         float velX = buffer.readFloat();
         float velZ = buffer.readFloat();
+        int count = ByteBufCodecs.VAR_INT.decode(buffer);
         long gameTime = buffer.readLong();
-        return new ClientboundStormCenterPacket(x, y, z, velX, velZ, gameTime);
+        return new ClientboundStormCenterPacket(x, y, z, velX, velZ, count, gameTime);
     }
 
     @Override

@@ -72,6 +72,8 @@ public final class ServerConfig {
     // ---- allay storm -------------------------------------------------------
 
     private static ModConfigSpec.DoubleValue STORM_CORRECTION_HZ;
+    private static ModConfigSpec.IntValue STORM_MAX_COUNT;
+    private static ModConfigSpec.DoubleValue STORM_GROWTH_PER_SECOND;
 
     // ---- hexcasting --------------------------------------------------------
 
@@ -155,6 +157,12 @@ public final class ServerConfig {
         STORM_CORRECTION_HZ = BUILDER
                 .comment("Authoritative-client position correction snapshots per second for storm members near players. Higher = tighter cross-player position agreement, more bandwidth (~4 KB/s per snapshot at the 256-member cap). Delivered to the authority client with its assignment; changes apply from the next snapshot.")
                 .defineInRange("stormCorrectionHz", 5.0, 0.5, 20.0);
+        STORM_MAX_COUNT = BUILDER
+                .comment("Maximum generated member population of a storm. The command's count argument is the INITIAL population; the storm then grows toward this ceiling (members killed along the way stay dead and keep consuming budget — the total number of members a storm ever generates is capped here). Also hard-clamps the command's initial count. Hard engine ceiling is 131072.")
+                .defineInRange("stormMaxCount", 65536, 1, 131072);
+        STORM_GROWTH_PER_SECOND = BUILDER
+                .comment("Members the storm generates per second while below stormMaxCount (growth runs on the server tick regardless of whether any player is in range). New members spawn on a ring just outside the visible envelope and fly to their storm positions. 0 disables growth (storms spawn at their initial count and never grow).")
+                .defineInRange("stormGrowthPerSecond", 20.0, 0.0, 2048.0);
         BUILDER.pop();
 
         BUILDER.comment("Incomplete Hexcasting item media capacities (in Hexcasting dust units, 1 dust = 10,000).").push("hexcasting");
@@ -223,6 +231,8 @@ public final class ServerConfig {
     public static int fuelRodMaxRadius = 5;
     public static boolean fuelRodStrictStacking = true;
     public static double stormCorrectionHz = 5.0;
+    public static int stormMaxCount = 65536;
+    public static double stormGrowthPerSecond = 20.0;
     public static long cypherMaxMedia = 6400000L;
     public static long trinketMaxMedia = 64000000L;
     public static long artifactMaxMedia = 640000000L;
@@ -301,6 +311,8 @@ public final class ServerConfig {
             fuelRodMaxRadius = FUEL_ROD_MAX_RADIUS.get();
             fuelRodStrictStacking = FUEL_ROD_STRICT_STACKING.get();
             stormCorrectionHz = STORM_CORRECTION_HZ.get();
+            stormMaxCount = STORM_MAX_COUNT.get();
+            stormGrowthPerSecond = STORM_GROWTH_PER_SECOND.get();
             cypherMaxMedia = CYPHER_MAX_MEDIA.get();
             trinketMaxMedia = TRINKET_MAX_MEDIA.get();
             artifactMaxMedia = ARTIFACT_MAX_MEDIA.get();

@@ -6,6 +6,7 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
+import com.iridium126.createmanaindustry.config.ServerConfig;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
@@ -22,9 +23,16 @@ import net.neoforged.neoforge.event.RegisterCommandsEvent;
  * swarm. Re-running moves / resizes / retypes the storm (identity and HP are
  * kept while the population is unchanged); {@code stop} ends it everywhere.
  * <pre>
- *   /cmip allaystorm [ball|vortex] [count ≤131072] [radius 2..64] [omega]
+ *   /cmip allaystorm ball [count ≤131072] [radius 2..64]
+ *   /cmip allaystorm vortex [count ≤131072]
  *   /cmip allaystorm stop
  * </pre>
+ * Vortex takes NO radius/omega: the radius derives from the population
+ * ({@code sqrt(count)/8}, see {@link AllayStormData#vortexRadius}) and the
+ * angular velocity follows client-side ({@code 6/radius}, handedness from
+ * the seed's low bit). The generic {@code mode} word branch still parses a
+ * radius for ball; vortex ignores it. Count changes restart the storm; the
+ * generic branch exists for scripting convenience.
  */
 @EventBusSubscriber(modid = com.iridium126.createmanaindustry.CreateManaIndustry.MODID)
 public final class AllayStormCommand {
@@ -41,58 +49,61 @@ public final class AllayStormCommand {
                 Commands.literal("cmip")
                         .then(Commands.literal("allaystorm")
                                 .requires(src -> src.hasPermission(2))
-                                .executes(ctx -> allayStorm(ctx, "ball", 2048, 8.0f, 0.6f))
+                                .executes(ctx -> allayStorm(ctx, "ball", 2048, 8.0f))
                                 .then(Commands.literal("stop")
                                         .executes(AllayStormCommand::allayStormStop))
                                 .then(Commands.literal("ball")
-                                        .executes(ctx -> allayStorm(ctx, "ball", 2048, 8.0f, 0.6f))
+                                        .executes(ctx -> allayStorm(ctx, "ball", 2048, 8.0f))
                                         .then(Commands.argument("count", IntegerArgumentType.integer(1, 131072))
                                                 .executes(ctx -> allayStorm(ctx, "ball",
-                                                        IntegerArgumentType.getInteger(ctx, "count"), 8.0f, 0.6f))
+                                                        IntegerArgumentType.getInteger(ctx, "count"), 8.0f))
                                                 .then(Commands.argument("radius", FloatArgumentType.floatArg(2.0f, 64.0f))
                                                         .executes(ctx -> allayStorm(ctx, "ball",
                                                                 IntegerArgumentType.getInteger(ctx, "count"),
-                                                                FloatArgumentType.getFloat(ctx, "radius"), 0.6f)))))
+                                                                FloatArgumentType.getFloat(ctx, "radius"))))))
                                 .then(Commands.literal("vortex")
-                                        .executes(ctx -> allayStorm(ctx, "vortex", 2048, 8.0f, 0.6f))
+                                        .executes(ctx -> allayStorm(ctx, "vortex", 2048, 8.0f))
                                         .then(Commands.argument("count", IntegerArgumentType.integer(1, 131072))
                                                 .executes(ctx -> allayStorm(ctx, "vortex",
-                                                        IntegerArgumentType.getInteger(ctx, "count"), 8.0f, 0.6f))
-                                                .then(Commands.argument("radius", FloatArgumentType.floatArg(2.0f, 64.0f))
-                                                        .executes(ctx -> allayStorm(ctx, "vortex",
-                                                                IntegerArgumentType.getInteger(ctx, "count"),
-                                                                FloatArgumentType.getFloat(ctx, "radius"), 0.6f))
-                                                        .then(Commands.argument("omega", FloatArgumentType.floatArg(0.05f, 3.0f))
-                                                                .executes(ctx -> allayStorm(ctx, "vortex",
-                                                                        IntegerArgumentType.getInteger(ctx, "count"),
-                                                                        FloatArgumentType.getFloat(ctx, "radius"),
-                                                                        FloatArgumentType.getFloat(ctx, "omega")))))))
+                                                        IntegerArgumentType.getInteger(ctx, "count"), 8.0f))))
                                 .then(Commands.argument("mode", StringArgumentType.word())
                                         .suggests(MODES)
                                         .executes(ctx -> allayStorm(ctx,
-                                                StringArgumentType.getString(ctx, "mode"), 2048, 8.0f, 0.6f))
+                                                StringArgumentType.getString(ctx, "mode"), 2048, 8.0f))
                                         .then(Commands.argument("count", IntegerArgumentType.integer(1, 131072))
                                                 .executes(ctx -> allayStorm(ctx,
                                                         StringArgumentType.getString(ctx, "mode"),
-                                                        IntegerArgumentType.getInteger(ctx, "count"), 8.0f, 0.6f))
+                                                        IntegerArgumentType.getInteger(ctx, "count"), 8.0f))
                                                 .then(Commands.argument("radius", FloatArgumentType.floatArg(2.0f, 64.0f))
                                                         .executes(ctx -> allayStorm(ctx,
                                                                 StringArgumentType.getString(ctx, "mode"),
                                                                 IntegerArgumentType.getInteger(ctx, "count"),
-                                                                FloatArgumentType.getFloat(ctx, "radius"), 0.6f)))))));
+                                                                FloatArgumentType.getFloat(ctx, "radius"))))))));
     }
 
     private static int allayStorm(CommandContext<CommandSourceStack> ctx, String mode,
-            int count, float radius, float omega) {
+            int count, float radius) {
         CommandSourceStack src = ctx.getSource();
         ServerLevel level = src.getLevel();
         AllayStormManager.setStorm(level,
                 net.minecraft.core.BlockPos.containing(src.getPosition().add(0.0, 1.0, 0.0)),
-                count, radius, "vortex".equals(mode) ? 2 : 1, omega);
-        src.sendSuccess(() -> Component.literal(
-                "§b[CMI storm]§r Allay Storm (§e" + mode + "§r): §e" + count + "§r members, radius §e" + (int) radius
-                + ("vortex".equals(mode) ? "§r, ω §e" + omega : "")
-                + "§r — persisted & synced (stop: /cmip allaystorm stop)"), false);
+                count, radius, "vortex".equals(mode) ? 2 : 1);
+        // display the CANONICAL derived values for vortex (the passed radius
+        // is ignored there; ω is client-derived, magnitude 6/R)
+        boolean vortex = "vortex".equals(mode);
+        float effRadius = vortex ? AllayStormData.vortexRadius(count) : radius;
+        String radiusText = vortex
+                ? String.format("%.1f (auto)", effRadius)
+                : String.valueOf((int) radius);
+        String omegaText = vortex
+                ? String.format(", ω §e±%.3f§r rad/s (auto)", AllayStormData.vortexOmega(effRadius, 0))
+                : "";
+        String growthText = "§r, initial spawn §e" + count + "§r, growing to §e"
+                + ServerConfig.stormMaxCount + "§r at §e" + String.format("%.1f", ServerConfig.stormGrowthPerSecond)
+                + "/s";
+        String finalText = "§b[CMI storm]§r Allay Storm (§e" + mode + "§r): §e" + count + "§r members, radius §e"
+                + radiusText + omegaText + growthText + "§r — persisted & synced (stop: /cmip allaystorm stop)";
+        src.sendSuccess(() -> Component.literal(finalText), false);
         return Command.SINGLE_SUCCESS;
     }
 

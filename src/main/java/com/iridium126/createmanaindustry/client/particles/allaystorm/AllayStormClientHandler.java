@@ -30,7 +30,8 @@ public final class AllayStormClientHandler {
         Vec3 anchor = new Vec3(packet.anchor().getX(), packet.anchor().getY(), packet.anchor().getZ());
         e.applyStormState(packet.action(), packet.authority(), packet.correctionHz(),
                 anchor, packet.count(), packet.radius(), packet.mode(),
-                packet.omega(), packet.stormSeed(), packet.deadBitmap());
+                packet.stormSeed(), packet.creationRadius(), packet.finalRadius(),
+                packet.growthPerSecond(), packet.createdAt(), packet.deadBitmap());
     }
 
     /** {@link ClientboundStormDamagePacket}: authoritative damage + hit correction. */
@@ -46,10 +47,10 @@ public final class AllayStormClientHandler {
         CMIParticleEngine.INSTANCE.applyCorrections(packet.entries(), packet.gameTime());
     }
 
-    /** {@link ClientboundStormCenterPacket}: continuous chased-center snapshot. */
+    /** {@link ClientboundStormCenterPacket}: continuous chased-center + growth snapshot. */
     public static void onCenter(ClientboundStormCenterPacket packet) {
         CMIParticleEngine.INSTANCE.applyStormCenter(packet.x(), packet.y(), packet.z(),
-                packet.velX(), packet.velZ(), packet.gameTime());
+                packet.velX(), packet.velZ(), packet.count(), packet.gameTime());
     }
 
     /** The client's shared simulation clock (game ticks; the engine mod-masks). */

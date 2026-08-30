@@ -202,6 +202,8 @@ public final class CMIParticleEngine {
     private final int[] emitMemberBase = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
     /** Storm member key (memberIdx+1, 0 = legacy pool-index source) of each emit command. */
     private final int[] emitMemberKey = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
+    /** Per-command ring-spawn flag (storm growth members; emit command word c.w). */
+    private final boolean[] emitRingSpawn = new boolean[ParticleBuffers.MAX_EMIT_COMMANDS];
 
     // ---- vanilla combat particles (crit / enchanted-hit / heart / poof) ----
     /**
@@ -487,9 +489,11 @@ public final class CMIParticleEngine {
      * live on {@link AllayStormRuntime#applyStormState}.
      */
     public void applyStormState(int action, boolean authority, double correctionHz,
-            Vec3 anchor, int count, float radius, int mode, float omega, int seed, byte[] deadBitmap) {
-        this.storm.applyStormState(action, authority, correctionHz, anchor, count, radius, mode, omega, seed,
-                deadBitmap);
+            Vec3 anchor, int count, float radius, int mode, int seed,
+            float creationRadius, float finalRadius, float growthPerSecond, long createdAt,
+            byte[] deadBitmap) {
+        this.storm.applyStormState(action, authority, correctionHz, anchor, count, radius, mode, seed,
+                creationRadius, finalRadius, growthPerSecond, createdAt, deadBitmap);
     }
 
     /** Applies one relayed position snapshot — semantics on {@link AllayStormRuntime}. */
@@ -501,8 +505,9 @@ public final class CMIParticleEngine {
      * Applies one continuous chased-center snapshot — semantics on
      * {@link AllayStormRuntime#applyStormCenter}.
      */
-    public void applyStormCenter(float x, float y, float z, float velX, float velZ, long gameTime) {
-        this.storm.applyStormCenter(x, y, z, velX, velZ, gameTime);
+    public void applyStormCenter(float x, float y, float z, float velX, float velZ,
+            int count, long gameTime) {
+        this.storm.applyStormCenter(x, y, z, velX, velZ, count, gameTime);
     }
 
     /**
@@ -858,7 +863,8 @@ public final class CMIParticleEngine {
         // scheduling semantics (dead-member run splitting, ~60-frame drain,
         // atlas + bake-quadrant upkeep).
         var schedule = new AllayStormRuntime.EmitSchedule(this.emitIds, this.emitCounts, this.emitOrigins,
-                this.emitTranslucent, this.emitOriginRef, this.emitLight, this.emitMemberBase, this.emitMemberKey);
+                this.emitTranslucent, this.emitOriginRef, this.emitLight, this.emitMemberBase, this.emitMemberKey,
+                this.emitRingSpawn);
         this.storm.scheduleSpawnRuns(schedule);
         // continuous chased center: rewrite the storm header's anchor slot from
         // the interpolated center every frame (1 Hz snapshots, frame-rate motion)
@@ -881,6 +887,7 @@ public final class CMIParticleEngine {
             this.emitOriginRef[entryCount] = 0f;
             this.emitLight[entryCount] = 0f;
             this.emitMemberKey[entryCount] = 0;
+            this.emitRingSpawn[entryCount] = false;
             totalSpawn += n;
             entryCount++;
         }
@@ -900,6 +907,7 @@ public final class CMIParticleEngine {
             this.emitOriginRef[entryCount] = (float) (cb.sourceIdx() + 1);
             this.emitLight[entryCount] = cb.light();
             this.emitMemberKey[entryCount] = cb.memberIdx() + 1; // 0 = non-storm source
+            this.emitRingSpawn[entryCount] = false;
             totalSpawn += cb.count();
             entryCount++;
         }
@@ -921,6 +929,7 @@ public final class CMIParticleEngine {
                     this.emitOriginRef[entryCount] = (float) (t.sourceIdx + 1);
                     this.emitLight[entryCount] = t.light;
                     this.emitMemberKey[entryCount] = t.memberIdx + 1; // 0 = non-storm source
+                    this.emitRingSpawn[entryCount] = false;
                     totalSpawn += n;
                     entryCount++;
                     t.remaining -= n;
@@ -953,6 +962,7 @@ public final class CMIParticleEngine {
             this.emitOriginRef[entryCount] = 0f;
             this.emitLight[entryCount] = 0f;
             this.emitMemberKey[entryCount] = 0;
+            this.emitRingSpawn[entryCount] = false;
             totalSpawn += n;
             entryCount++;
         }
@@ -1019,9 +1029,10 @@ public final class CMIParticleEngine {
                 this.emitFront.put(this.emitIds[i]).put(seed).put((float) prefix).put(this.emitOriginRef[i]);
                 // c: spawn-time packed light (combat), storm member index base
                 // (storm style 3), combat member key (c.z: memberIdx+1, 0 =
-                // legacy pool-index source; consumed only by combat styles 1/2)
+                // legacy pool-index source; consumed only by combat styles 1/2),
+                // ring-spawn flag (c.w: storm growth members spawn on the ring)
                 this.emitFront.put(this.emitLight[i]).put(this.emitMemberBase[i])
-                        .put((float) this.emitMemberKey[i]).put(0f);
+                        .put((float) this.emitMemberKey[i]).put(this.emitRingSpawn[i] ? 1f : 0f);
                 // b.z carries the exclusive prefix offset so the shader can
                 // binary-search its command instead of scanning linearly
                 prefix += this.emitCounts[i];
@@ -1142,7 +1153,14 @@ public final class CMIParticleEngine {
             this.gpu.uploadPlayers(this.storm.playerScratch(), playerCount);
             setIntUniform(this.programs.update(), "uPlayerCount", playerCount);
             setUIntUniform(this.programs.update(), "uKillEmit", this.storm.killEmitId());
-            setFloatUniform(this.programs.update(), "uStormOmega", this.storm.omega());
+            // typhoon growth-law phases (see AllayStormRuntime's field doc):
+            // the CPU integrates the R-dependent rates into two shared phase
+            // scalars + their rates, so the shader never multiplies an
+            // accumulated clock by a radius-dependent coefficient
+            setFloatUniform(this.programs.update(), "uStormOmegaNow", this.storm.omegaNow());
+            setFloatUniform(this.programs.update(), "uStormRotPhase", this.storm.rotPhase());
+            setFloatUniform(this.programs.update(), "uStormConvPhase", this.storm.convPhase());
+            setFloatUniform(this.programs.update(), "uStormConvRate", this.storm.convRate());
             GL43.glDispatchCompute(Math.max(1, (updateBound + 63) / 64), 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
             // uKillEmit is retired at the SUCCESS TAIL (after the pool swap), not
@@ -1164,9 +1182,14 @@ public final class CMIParticleEngine {
                 setUIntUniform(this.programs.emit(), "uEmitCount", entryCount);
                 setUIntUniform(this.programs.emit(), "uCapacity", cap);
                 // storm style 3 (analytic spawn): shared clock + instance seed
+                // + the growth-law phases (the spawn state IS the servo's
+                // equilibrium at the current phase — see AllayStormRuntime)
                 setFloatUniform(this.programs.emit(), "uTimeSec", this.timeSec());
                 setFloatUniform(this.programs.emit(), "uStormSeed", this.storm.seed());
-                setFloatUniform(this.programs.emit(), "uStormOmega", this.storm.omega());
+                setFloatUniform(this.programs.emit(), "uStormOmegaNow", this.storm.omegaNow());
+                setFloatUniform(this.programs.emit(), "uStormRotPhase", this.storm.rotPhase());
+                setFloatUniform(this.programs.emit(), "uStormConvPhase", this.storm.convPhase());
+                setFloatUniform(this.programs.emit(), "uStormConvRate", this.storm.convRate());
                 GL43.glDispatchCompute(Math.max(1, (totalSpawn + 63) / 64), 1, 1);
                 GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
             }

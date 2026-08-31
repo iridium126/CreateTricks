@@ -616,34 +616,41 @@ public final class ShaderPackProgramCompiler {
         sb.append("uniform usamplerBuffer cmi_Sorted;\n");
         // held item (partId 7): the display transform constant (JOML-computed,
         // see HeldItemGeometry) as a plain const — #defines do not survive the
-        // AST transplant — and the dive-wave carrier uniforms, the same names
-        // and staging the self-drawn model.vsh consumes
+        // AST transplant — and the per-tier sword atlas rects. uWave /
+        // uWaveTarget / uTimeSec arrive through chunks/allay_pose.glsl's
+        // top-included allay_storm chunk (declared next to the shared
+        // cmiStormWaveClaim predicate), so they must NOT be re-declared here.
         sb.append("const mat4 CMI_HELD_DISPLAY = ").append(ParticlePrograms.heldItemDisplayMatrix()).append(";\n");
         sb.append("""
-                uniform vec4 uWave[4];       // x waveSeed, y fraction, z assembleSec, w diveUntilSec
-                uniform vec4 uWaveTarget[4]; // xyz aim point, w waveId (0 = inactive slot)
                 uniform float uWaveTier[4];  // held-sword material id per slot (0 = none)
                 uniform vec4 uHeldItemUV[7]; // per-tier atlas rects {uvMin.xy, uvMax.xy}, slot 0 unused
                 """);
         sb.append("""
                 uniform vec3 cmi_CameraPos;
                 uniform float cmi_FadeDist;
-                uniform float uTimeSec; // engine simulation time (storm dance bursts)
 
-                // Sort-buffer metadata tail slot (index == particle capacity,
-                // see ParticleBuffers allocation). capture.comp stores THIS
-                // generation's exact MODEL item count there, inside the same
-                // buffer as the permutation itself, so the count consumed below
-                // is structurally always the same generation as the items --
-                // an aborted frame leaves count and permutation stale together
-                // instead of pairing a fresh count with a stale array.
+                // Sort-buffer metadata tail slot (index == capacity +
+                // CARRIER_CAP, see ParticleBuffers allocation). capture.comp
+                // stores THIS generation's exact MODEL item count there, inside
+                // the same buffer as the permutation itself, so the count
+                // consumed below is structurally always the same generation as
+                // the items -- an aborted frame leaves count and permutation
+                // stale together instead of pairing a fresh count with a stale
+                // array.
                 uniform int cmi_MetaSlot;
-                // 1 = cutout segment: iterate the MODEL partition NEAREST first,
-                // so early-Z rejects every occluded fragment before the pack's
-                // fragment shader runs (dense-swarm fragment pressure collapses
-                // from k shaded layers per pixel to ~1). 0 = ghost segment keeps
-                // the array's native back-to-front order for correct blending.
-                uniform int cmi_ReverseInstance;
+                // Fixed base of the held-item CARRIER region in the same buffer
+                // (== the particle capacity; keygen appends carrier instances
+                // there, never radix-touched).
+                uniform int cmi_CarrierBase;
+                // Segment selector: 0 = ghost segment, keep the array's native
+                // back-to-front order for correct blending. 1 = cutout segment:
+                // iterate the MODEL partition NEAREST first, so early-Z rejects
+                // every occluded fragment before the pack's fragment shader runs
+                // (dense-swarm fragment pressure collapses from k shaded layers
+                // per pixel to ~1). 2 = held-item CARRIER segment: instances
+                // index the carrier region at cmi_CarrierBase (forward, exact
+                // count).
+                uniform int cmi_SegmentMode;
 
                 // results consumed by the pack code through the injector's rewrites
                 vec4 cmi_VertexLevel;  // camera-relative level-space vertex
@@ -674,18 +681,25 @@ public final class ShaderPackProgramCompiler {
                     // draw, letting early-Z collapse dense overlaps from k shaded
                     // layers per pixel to ~1. N_model comes from the metadata tail
                     // slot of this same buffer, so index math can never mix
-                    // generations (see the uniform comment above).
+                    // generations (see the uniform comment above). The CARRIER
+                    // segment bypasses the partition: its exact-count instances
+                    // index the fixed-base carrier region behind the radix output.
                     uint iid = uint(gl_InstanceID);
-                    uint nModel = max(texelFetch(cmi_Sorted, cmi_MetaSlot).x, 1u);
-                    // Stale-count net: on an aborted frame the indirect draw count
-                    // can exceed the committed partition's N; clamp every index
-                    // into [0, N) so texelFetch stays defined and any extra
-                    // invocation degrades to a harmless duplicate instance.
-                    uint fwd = min(iid, nModel - 1u);
-                    uint sortSlot = (cmi_ReverseInstance == 1 && iid < nModel)
-                        ? (nModel - 1u - iid)   // cutout: nearest item first
-                        : fwd;                  // ghost: farthest item first
-                    uvec2 item = texelFetch(cmi_Sorted, int(sortSlot)).xy;
+                    uvec2 item;
+                    if (cmi_SegmentMode == 2) {
+                        item = texelFetch(cmi_Sorted, int(cmi_CarrierBase + iid)).xy;
+                    } else {
+                        uint nModel = max(texelFetch(cmi_Sorted, cmi_MetaSlot).x, 1u);
+                        // Stale-count net: on an aborted frame the indirect draw count
+                        // can exceed the committed partition's N; clamp every index
+                        // into [0, N) so texelFetch stays defined and any extra
+                        // invocation degrades to a harmless duplicate instance.
+                        uint fwd = min(iid, nModel - 1u);
+                        uint sortSlot = (cmi_SegmentMode == 1 && iid < nModel)
+                            ? (nModel - 1u - iid)   // cutout: nearest item first
+                            : fwd;                  // ghost: farthest item first
+                        item = texelFetch(cmi_Sorted, int(sortSlot)).xy;
+                    }
                     bool gone = (item.y & 3u) != 0u; // foreign-type item: upstream corruption guard
                     uint inst = item.y >> 2u;
                     uint base = inst * 4u;
@@ -724,31 +738,36 @@ public final class ShaderPackProgramCompiler {
                     // hp <= 0 (not < 0): the kill frame itself already counts
                     // as dead, matching update.comp's corpse predicate.
                     bool corpse = p3.y <= 0.0;
-                    // ---- carried item (held sword): wave predicate (a) ------
-                    // mirror of model.vsh: first live-window slot whose hash
-                    // claims the member; corpses never carry (vanilla drops
-                    // the held item on death)
+                    // ---- carried item (held sword): the carrier segment ------
+                    // Only partId-7 vertices arrive through the carrier command
+                    // (cmi_SegmentMode == 2), and keygen admitted each instance
+                    // through the SAME shared cmiStormWaveClaim predicate used
+                    // below — a member renders its sword exactly when it sits in
+                    // the carrier partition. Storm wave-squad members carry the
+                    // claim's tier (corpses never carry — vanilla drops the held
+                    // item on death); non-storm debug emitters carry their
+                    // header item, corpses included, like the old full-mesh
+                    // path. Body vertices never run this block: the per-vertex
+                    // item invocations for every non-carrier instance are gone.
                     float carryRamp = 0.0;
-                    float waveTier = 0.0;
-                    if (!corpse && !gone && stormA.x > 0.5) {
-                        for (int k = 0; k < 4; k++) {
-                            if (uWaveTarget[k].w < 0.5)
-                                continue;
-                            if (uTimeSec < uWave[k].z || uTimeSec > uWave[k].w)
-                                continue;
-                            if (!cmiStormWaveMember(p3.z, uWave[k].x, uWave[k].y))
-                                continue;
-                            carryRamp = cmiStormCarryRamp(uTimeSec, uWave[k].z, uWave[k].w);
-                            waveTier = uWaveTier[k];
-                            break;
+                    float itemId = 0.0;
+                    if (pid == 7 && !gone) {
+                        float waveTier = 0.0;
+                        if (!corpse && stormA.x > 0.5) {
+                            int k = cmiStormWaveClaim(p3.z);
+                            if (k >= 0) {
+                                carryRamp = cmiStormCarryRamp(uTimeSec, uWave[k].z, uWave[k].w);
+                                waveTier = uWaveTier[k];
+                            }
                         }
+                        // held-item id: a wave claim overrides the header slot
+                        // (storm specs keep 17.z = 0, so the paths never stack)
+                        itemId = waveTier > 0.5 ? waveTier
+                                : texelFetch(cmi_Emitters, int(hb + 17u)).z;
+                        // defensive only: keygen guarantees an item for every
+                        // carrier instance; a mismatch means upstream corruption
+                        gone = itemId <= 0.5;
                     }
-                    // held-item id: a wave claim overrides the header slot
-                    // (storm specs keep 17.z = 0, so the paths never stack)
-                    float itemId = waveTier > 0.5 ? waveTier
-                            : texelFetch(cmi_Emitters, int(hb + 17u)).z;
-                    // non-carriers clip before any hand-chain math
-                    gone = gone || (pid == 7 && itemId <= 0.5);
                     if (stormA.x > 0.5 && !gone) {
                         anim = cmiStormAnimOverride(
                                 distance(p0.xyz, texelFetch(cmi_Emitters, int(hb + 19u)).xyz),

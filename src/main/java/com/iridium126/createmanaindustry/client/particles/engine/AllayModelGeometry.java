@@ -25,12 +25,13 @@ import java.util.List;
  * DEPTH-OCCLUDING SHELL (the ghost segment writes depth). If the texture is
  * ever replaced, re-verify these UV rects before re-enabling those faces.
  * <p>
- * The mesh is split into two contiguous index ranges so the model renders as
- * two sub-draws sharing one instance permutation: the OPAQUE segment (head,
- * skin, arms, and the held item's quad pair) keeps the cutout + depth-write
- * path, and the TRANSLUCENT segment (cloak + wings — the texture's alpha&lt;255
- * texels) draws alpha-blended without depth writes after every other particle
- * pass.
+ * The mesh is split into three contiguous index ranges so the model renders as
+ * three sub-draws: the body-opaque segment (head, skin, arms) and the held
+ * item's CARRIER segment keep the cutout + depth-write path (the carrier
+ * segment is drawn with its own instance permutation, so only carrier
+ * instances pay the item's vertices), and the TRANSLUCENT segment (cloak +
+ * wings — the texture's alpha&lt;255 texels) draws alpha-blended without depth
+ * writes after every other particle pass.
  * <p>
  * Part ids: 0=head, 1=body skin, 2=right_arm, 3=left_arm, 4=right_wing,
  * 5=left_wing, 6=body cloak (shares the body transform; sorted into the
@@ -73,9 +74,13 @@ final class AllayModelGeometry {
     /** Triangle indices; wing faces carry both windings (double-sided planes). */
     static final int[] INDICES;
     /**
-     * {@code INDICES[0 .. OPAQUE_INDEX_COUNT)} = opaque cutout segment
-     * (indirect cmd2); the remainder = translucent blended segment (cmd3).
+     * {@code INDICES[0 .. BODY_OPAQUE_INDEX_COUNT)} = body-opaque cutout
+     * range (indirect cmd2); {@code [BODY_OPAQUE_INDEX_COUNT ..
+     * OPAQUE_INDEX_COUNT)} = the held item's CARRIER segment (cmd3, drawn
+     * only for carrier instances); the remainder = translucent blended
+     * segment (cmd4).
      */
+    static final int BODY_OPAQUE_INDEX_COUNT;
     static final int OPAQUE_INDEX_COUNT;
 
     /**
@@ -124,8 +129,11 @@ final class AllayModelGeometry {
         cube(verts, idx, 2, 23, 0, -0.75f, -0.5f, -1f, 1f, 4f, 2f, -0.01f, false, 0);
         // part 3: left_arm  texOffs(23,6) box(-0.25,-0.5,-1, 1,4,2) inflate -0.01
         cube(verts, idx, 3, 23, 6, -0.25f, -0.5f, -1f, 1f, 4f, 2f, -0.01f, false, 0);
+        // the held item's index range STARTS here: cmd2 (body cutout) ends and
+        // the cmd3 carrier segment begins at this boundary
+        BODY_OPAQUE_INDEX_COUNT = idx.size();
         // held item (partId 7): the vanilla flat handheld quad pair — emitted
-        // into the OPAQUE segment (alpha cutout), so it lands BEFORE the
+        // into the OPAQUE-class segments (alpha cutout), so it lands BEFORE the
         // translucent index split below
         HeldItemGeometry.appendQuads(verts, idx);
         OPAQUE_INDEX_COUNT = idx.size();

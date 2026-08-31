@@ -20,13 +20,13 @@ layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } 
 layout(std430, binding = BIND_WAVECONTACT) buffer WaveContactBuf { uint count; float entries[]; } result;
 
 uniform vec3 uLocalPlayerPos; // local player aim point (feet + 0.5), world space
-uniform float uTimeSec;       // shared simulation clock (seconds)
-uniform vec4 uWave[4];        // x waveSeed, y fraction, z assembleSec, w diveUntilSec
-uniform vec4 uWaveTarget[4];  // xyz live target aim point, w waveId (0 = inactive slot)
+// uTimeSec / uWave / uWaveTarget are declared by chunks/allay_storm.glsl
+// (included below) next to the membership function that reads them
 
 const float CONTACT_R = 1.6;
 
-#pragma cmi_include chunks/allay_pose.glsl
+// the membership test needs no pose math — the pose-free storm chunk suffices
+#pragma cmi_include chunks/allay_storm.glsl
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;

@@ -16,7 +16,7 @@ uniform uint uShift;
 
 void main() {
     uint g = gl_GlobalInvocationID.x;
-    if (g >= indirect.cmd[IDX_CNT_XLU] + indirect.cmd[IDX_CNT_ALPHA])
+    if (g >= indirect.cmd[IDX_CNT_GHOST] + indirect.cmd[IDX_CNT_ALPHA])
         return;
     uvec2 kv = sortIn.kv[g];
     uint bin = (kv.x >> uShift) & (RADIX_BINS - 1u);

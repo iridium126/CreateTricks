@@ -70,7 +70,6 @@ layout(std430, binding = BIND_GRID) buffer GridBuf {
     int heads[GRID_TABLE]; // bucket head: live index + 1 (0 = empty bucket)
     int next[];            // sized by pool capacity on the Java side
 } grid;
-uniform float uTimeSec;
 // All-player repulsion source: up to MAX_STORM_PLAYERS synced player
 // positions (vanilla entity sync feeds them -- no extra packets). Every
 // client repels against the SAME set (each seeing others 1-2 blocks lagged
@@ -103,8 +102,8 @@ uniform float uStormConvRate;  // d(convPhase)/dt — drives the target-velocity
 // 4 concurrent slots; membership/steering are pure functions of these
 // uniforms + the member's stored identity seed (p3.z), so every client
 // steers the same attack from the same packet with zero per-tick sync.
-uniform vec4 uWave[4];       // x waveSeed, y fraction, z assembleSec, w diveUntilSec (shared-clock seconds)
-uniform vec4 uWaveTarget[4]; // xyz live target aim point (feet + 0.5), w waveId (0 = inactive slot)
+// uWave / uWaveTarget / uTimeSec are declared by chunks/allay_storm.glsl
+// (included below) next to the claim/roll functions that read them.
 uniform vec4 uWavePath[24];  // 4 slots x 6 smoothed corridor waypoints {xyz, valid > 0.5}
 
 const float CELL_SIZE        = 2.5;  // == neighbour radius (one cell per axis)
@@ -134,7 +133,9 @@ const float STORM_WAVE_STAGGER   = 8.0;
 // of each chain -- a bounded random neighbourhood, acceptable for flocking.
 const int   STORM_MAX_VISITS = 256;
 
-#pragma cmi_include chunks/allay_pose.glsl
+// storm steering needs no pose math — the pose-free storm chunk provides
+// cmiHash1, the wave rolls/claim and cmiTyphoonHome
+#pragma cmi_include chunks/allay_storm.glsl
 
 bool solidAt(vec3 wp, vec3 mOrigin, int slice) {
     vec3 rel = wp - mOrigin;

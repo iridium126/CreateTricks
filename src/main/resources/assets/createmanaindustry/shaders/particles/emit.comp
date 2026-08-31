@@ -58,7 +58,8 @@ uniform float uStormRotPhase;  // rotation phase (radians) — CPU growth-law in
 uniform float uStormConvPhase; // shared conveyor phase scalar (per-member scale rate/a)
 uniform float uStormConvRate;  // d(convPhase)/dt — drives the target-velocity conveyor term
 
-#pragma cmi_include chunks/allay_pose.glsl
+// the analytic spawn needs the storm chunk only (cmiTyphoonHome) — no pose math
+#pragma cmi_include chunks/allay_storm.glsl
 
 float hash1(float p) {
     p = fract(p * 0.1031);

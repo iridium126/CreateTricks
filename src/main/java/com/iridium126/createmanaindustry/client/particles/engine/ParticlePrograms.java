@@ -81,7 +81,8 @@ public final class ParticlePrograms {
         sb.append("#define IDX_CNT_ADD ").append(ParticleBuffers.IDX_CNT_ADD).append('\n');
         sb.append("#define IDX_CNT_SPRITE ").append(ParticleBuffers.IDX_CNT_SPRITE).append('\n');
         sb.append("#define IDX_CNT_MODELOP ").append(ParticleBuffers.IDX_CNT_MODELOP).append('\n');
-        sb.append("#define IDX_CNT_XLU ").append(ParticleBuffers.IDX_CNT_XLU).append('\n');
+        sb.append("#define IDX_CNT_CARRIER ").append(ParticleBuffers.IDX_CNT_CARRIER).append('\n');
+        sb.append("#define IDX_CNT_GHOST ").append(ParticleBuffers.IDX_CNT_GHOST).append('\n');
         sb.append("#define IDX_CNT_ALPHA ").append(ParticleBuffers.IDX_CNT_ALPHA).append('\n');
         sb.append("#define VEC4_PER_PARTICLE ").append(ParticleBuffers.VEC4_PER_PARTICLE).append("u\n");
         sb.append("#define VEC4_PER_EMITTER ").append(ParticleBuffers.VEC4_PER_EMITTER).append("u\n");
@@ -105,10 +106,14 @@ public final class ParticlePrograms {
         // storm identity packing: bits 0..17 memberIdx+1, bit 18 the wave latch
         sb.append("#define MEMBER_IDX_MASK ").append(ParticleBuffers.MEMBER_IDX_MASK).append("u\n");
         sb.append("#define MEMBER_LATCH_BIT ").append(ParticleBuffers.MEMBER_LATCH_BIT).append("u\n");
-        // storm member identity -> pool-slot map (combat origin resolution)
+        // storm identity -> pool-slot map (combat origin resolution)
         sb.append("#define BIND_MEMBERMAP ").append(ParticleBuffers.MEMBERMAP_BB).append('\n');
+        // keygen's carrier-sink dual-write target (second sort buffer)
+        sb.append("#define BIND_CARRIERSINK ").append(ParticleBuffers.CARRIERSINK_BB).append('\n');
         sb.append("#define MAX_STORM_PLAYERS ").append(ParticleBuffers.MAX_STORM_PLAYERS).append("u\n");
         sb.append("#define STORMPOS_CAP ").append(ParticleBuffers.STORMPOS_CAP).append("u\n");
+        // held-item carrier region capacity (keygen's overflow guard)
+        sb.append("#define CARRIER_CAP ").append(ParticleBuffers.CARRIER_CAP).append("u\n");
         // vanilla pick forgiveness (unscaled AABB inflation, like GameRenderer)
         sb.append("#define HIT_INFLATE ").append(ParticleBuffers.HIT_INFLATE).append('\n');
         // rest-pose model above-feet height in blocks (vanilla size divisor)

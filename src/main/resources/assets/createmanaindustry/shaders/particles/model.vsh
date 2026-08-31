@@ -1,22 +1,28 @@
-// MODEL particle vertex shader: instanced vanilla-allay rendering. Each
-// instance reads the MODEL PARTITION of the type-partitioned sort array --
+// MODEL particle vertex shader: instanced vanilla-allay rendering. Body
+// instances read the MODEL PARTITION of the type-partitioned sort array --
 // sorted keys place all MODEL items (sort-type 0) at [0, N_model), so both
-// sub-draws resolve instances as plain sortedKv[gl_InstanceID] and their
+// body sub-draws resolve instances as plain sortedKv[gl_InstanceID] and their
 // commands' instanceCount is the exact N_model -- pulls its
 // particle record from the pool, and delegates the procedural AllayModel pose
 // to the shared chunk (allay_pose.glsl) while vertex-pulling the static
 // indexed geometry (binding 12, float stride 7: pos.xyz units / uv normalised /
 // partId / normal axis) -- gl_VertexID is the element index.
 //
-// The mesh renders as TWO sub-draws issued by ONE glMultiDrawElementsIndirect.
-// BOTH commands cover the same partition and differ ONLY in their
-// element-buffer index range: cmd2 references the opaque parts
-// (head/skin/arms, cutout + depth write in fsh), cmd3 the translucent parts
-// (cloak + wings, alpha blend WITH depth writes so ghost surfaces occlude
-// like tinted glass), depth-sorted together with the ALPHA sprites. Because
-// the index ranges are disjoint, the segment id is derived purely from the
-// vertex's own partId (>= 4 = translucent) and handed to the fragment stage
-// as a flat varying -- no per-draw uniform or attribute is needed.
+// The held item (partId 7) is a THIRD sub-draw whose instances come from the
+// CARRIER region of the same sort buffer (fixed base uCarrierBase, appended
+// by keygen for exactly the wave-claim/header-item instances) -- only
+// carriers pay the item's vertex range, so a 131072-member storm's
+// non-carriers skip those invocations entirely.
+//
+// The mesh renders as THREE sub-draws issued by ONE glMultiDrawElementsIndirect
+// (commands 2/3/4): cmd2 the body's opaque parts (head/skin/arms, cutout +
+// depth write in fsh), cmd3 the held item (same cutout class), cmd4 the
+// translucent parts (cloak + wings, alpha blend WITH depth writes so ghost
+// surfaces occlude like tinted glass), depth-sorted together with the ALPHA
+// sprites. Because the index ranges are disjoint, the segment id is derived
+// purely from the vertex's own partId (explicit translucent set {4,5,6}) and
+// handed to the fragment stage as a flat varying -- no per-draw uniform or
+// attribute is needed.
 //
 // Transform chain replicates vanilla LivingEntityRenderer:
 //   world = feet + Ry(pi - yaw) * S(-1,-1,1) * T(0,-1.501,0) * partChain / 16
@@ -28,15 +34,16 @@ uniform mat4 ModelViewMat;
 uniform mat4 ProjMat;
 uniform vec3 uCamPos;
 uniform float uFadeDist;
-uniform float uTimeSec; // engine-accumulated simulation time (storm dance bursts)
-// dive-wave squads: the held-sword carrier predicate reads the SAME slots the
-// steering pass does (first live-window slot whose hash claims the member —
-// isomorphic to update.comp's engagement order, so the sword can never
-// disagree with the motion)
-uniform vec4 uWave[4];       // x waveSeed, y fraction, z assembleSec, w diveUntilSec
-uniform vec4 uWaveTarget[4]; // xyz aim point, w waveId (0 = inactive slot)
+// uTimeSec / uWave / uWaveTarget are declared by chunks/allay_storm.glsl
+// (included below) next to cmiStormWaveClaim, the carrier predicate.
+// dive-wave squads: the held-sword tier rides the SAME slot table the
+// steering pass and keygen's carrier sweep consume, so the sword can never
+// disagree with the motion or with the carrier partition.
 uniform float uWaveTier[4];  // held-sword material id per slot (0 = none)
 uniform vec4 uHeldItemUV[7]; // per-tier atlas rects {uvMin.xy, uvMax.xy}, slot 0 unused
+// fixed base of the held-item CARRIER region inside the sort buffer
+// (= the pool capacity; keygen appends carrier instances there)
+uniform uint uCarrierBase;
 
 layout(std430, binding = BIND_POOL_WRITE) readonly buffer ParticleRead { vec4 data[]; } particles; // freshly written pool
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
@@ -53,28 +60,37 @@ flat out vec3 vNormalView; // view-space surface normal for vanilla-style diffus
 flat out float vOverlay; // 1.0 = vanilla hurt overlay active (hurt timer or corpse)
 
 void main() {
-    // Type check kept purely as a corruption guard: the partition guarantees
-    // every item here is sort-type 0 (MODEL), so this branch never fires on a
-    // healthy frame.
-    uvec2 item = sortedKv.kv[gl_InstanceID];
-    if ((item.y & 3u) != 0u) { // sprite-type item would mean upstream corruption
-        gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // beyond far plane -> clipped
-        return;
-    }
-    uint inst = item.y >> 2;
-    uint base = inst * 4u;
-
-    // pull the vertex's part id -- the segment id and per-part matrix
-    // branching both key off it. The two sub-draws' element ranges are
-    // disjoint (cmd2 only reaches parts 0-3, cmd3 only parts 4-6), so this
-    // also IS the segment selector.
+    // The held-item segment (partId 7) is a SEPARATE draw command (cmd3) whose
+    // instances index the CARRIER region of the sort buffer at uCarrierBase --
+    // only carrier instances pay the held-item vertex range at all, which is
+    // the whole point of the partition (a 131072-member storm's non-carriers
+    // skip the ~200 side-shell vertices entirely). Body vertices resolve
+    // through the MODEL partition at the array base as before, so the part-id
+    // read (instance-independent geometry data) must come first to pick the
+    // instance source.
     uint vb = uint(gl_VertexID) * MODEL_VERTEX_FLOATS;
     int pid = int(geo.v[vb + 5u]);
     int normalCode = int(geo.v[vb + 6u]);
     // explicit translucent id set {4,5,6}: partId 7 (held item) is a cutout
-    // part inside the OPAQUE segment, so the old pid >= 4 test would shunt it
-    // into the blended sub-draw
+    // part inside the OPAQUE-class segments, so the old pid >= 4 test would
+    // shunt it into the blended sub-draw
     vSeg = (pid >= 4 && pid <= 6) ? 1.0 : 0.0;
+    uvec2 item;
+    if (pid == 7) {
+        item = sortedKv.kv[uCarrierBase + uint(gl_InstanceID)];
+    } else {
+        item = sortedKv.kv[uint(gl_InstanceID)];
+        // Type check kept purely as a corruption guard: the partition guarantees
+        // every body item here is sort-type 0 (MODEL), so this branch never fires
+        // on a healthy frame. (Carrier entries carry the same payload layout;
+        // their count is keygen-exact, so no guard is needed on that path.)
+        if ((item.y & 3u) != 0u) { // sprite-type item would mean upstream corruption
+            gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // beyond far plane -> clipped
+            return;
+        }
+    }
+    uint inst = item.y >> 2;
+    uint base = inst * 4u;
     vec4 p0 = particles.data[base + 0u];
     vec4 p1 = particles.data[base + 1u];
     vec4 p2 = particles.data[base + 2u];
@@ -114,35 +130,37 @@ void main() {
     // hp <= 0 (not < 0): the kill frame itself already counts as dead, matching
     // update.comp's corpse predicate and vanilla's deathTime > 0 overlay.
     bool corpse = p3.y <= 0.0;
-    // ---- carried item (held sword): wave predicate (a) ----------------------
-    // First live-window slot whose hash claims this member — the same order
-    // update.comp's steering block uses, so a member rendered with a sword is
-    // exactly one that steers. Corpses never carry (vanilla drops the held
-    // item on death). Non-storm emitters skip the loop entirely: their item
-    // rides the header slot below, gated by the HOLD animation.
+    // ---- carried item (held sword): the carrier segment ---------------------
+    // Only partId-7 vertices arrive through the carrier command, and keygen's
+    // sweep admitted each instance through the SAME shared cmiStormWaveClaim
+    // predicate used below — a member renders its sword exactly when it sits
+    // in the carrier partition. Storm wave-squad members carry the tier the
+    // claim selects (corpses never carry — vanilla drops the held item on
+    // death); non-storm debug emitters carry their header item (17.z), corpses
+    // included, exactly like the old full-mesh path. Body vertices never run
+    // this block: the per-vertex item invocations for every non-carrier
+    // instance no longer exist at all.
     float carryRamp = 0.0;
-    float waveTier = 0.0;
-    if (!corpse && stormA.x > 0.5) {
-        for (int k = 0; k < 4; k++) {
-            if (uWaveTarget[k].w < 0.5)
-                continue; // slot inactive (waveId 0)
-            if (uTimeSec < uWave[k].z || uTimeSec > uWave[k].w)
-                continue; // outside the wave window
-            if (!cmiStormWaveMember(p3.z, uWave[k].x, uWave[k].y))
-                continue;
-            carryRamp = cmiStormCarryRamp(uTimeSec, uWave[k].z, uWave[k].w);
-            waveTier = uWaveTier[k];
-            break;
+    float itemId = 0.0;
+    if (pid == 7) {
+        float waveTier = 0.0;
+        if (!corpse && stormA.x > 0.5) {
+            int k = cmiStormWaveClaim(p3.z);
+            if (k >= 0) {
+                carryRamp = cmiStormCarryRamp(uTimeSec, uWave[k].z, uWave[k].w);
+                waveTier = uWaveTier[k];
+            }
         }
-    }
-    // held-item id: a wave claim OVERRIDES the emitter header slot (storm
-    // specs keep 17.z = 0, so the two paths can never stack)
-    float itemId = waveTier > 0.5 ? waveTier : emitters.u[hb + 17u].z;
-    // the item vertices exist for EVERY MODEL instance — non-carriers clip
-    // before any hand-chain math (the ~0.04% invocation overhead is documented)
-    if (pid == 7 && itemId <= 0.5) {
-        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-        return;
+        // held-item id: a wave claim OVERRIDES the emitter header slot (storm
+        // specs keep 17.z = 0, so the two paths can never stack)
+        itemId = waveTier > 0.5 ? waveTier : emitters.u[hb + 17u].z;
+        if (itemId <= 0.5) {
+            // defensive only: keygen guarantees an item for every carrier
+            // instance, so a mismatch means upstream corruption — clip instead
+            // of rendering a mis-UV'd item
+            gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+            return;
+        }
     }
     // Storm members: inner-band members near the chased anchor periodically
     // run full vanilla dance cycles instead of plain flight.

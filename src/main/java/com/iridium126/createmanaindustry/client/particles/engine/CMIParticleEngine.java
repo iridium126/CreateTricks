@@ -713,6 +713,7 @@ public final class CMIParticleEngine {
             if (this.initialized)
                 this.gpu.uploadModelGeometry(
                         AllayModelGeometry.VERTICES, AllayModelGeometry.INDICES,
+                        AllayModelGeometry.BODY_OPAQUE_INDEX_COUNT,
                         AllayModelGeometry.OPAQUE_INDEX_COUNT);
             } catch (RuntimeException | LinkageError e) {
                 this.initialized = false;
@@ -1252,7 +1253,19 @@ public final class CMIParticleEngine {
                 this.gpu.bindOrderAdd();
                 this.gpu.bindOrderOpaque();
                 this.gpu.bindSort(ParticleBuffers.SORTWRITE_BINDING, this.gpu.sortBuffer(0));
+                // carrier sweep dual-writes the held-item region into BOTH sort
+                // buffers (the committed one differs by path — see CARRIERSINK_BB)
+                this.gpu.bindCarrierSink();
                 setUIntUniform(kg, "uUpper", sortUpper);
+                // held-item carrier sweep: fixed carrier-region base + the
+                // wave staging the shared cmiStormWaveClaim predicate reads
+                // (identical arrays update.comp steers and the render paths
+                // pick tiers with — one predicate, one staging)
+                setUIntUniform(kg, "uCarrierBase", this.gpu.carrierBase());
+                setFloatUniform(kg, "uTimeSec", this.timeSec());
+                setVec4ArrayUniform(kg, "uWave", this.storm.waveUniform());
+                setVec4ArrayUniform(kg, "uWaveTarget", this.storm.waveTargetUniform());
+                setFloatArrayUniform(kg, "uWaveTier", this.storm.waveTierUniform());
                 Vec3 camPos = camera.getPosition();
                 setFloatUniform(kg, "uCamPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
                 setFloatUniform(kg, "uMaxDepth", sortFarBlocks());
@@ -1372,7 +1385,7 @@ public final class CMIParticleEngine {
             GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER,
                     ParticleBuffers.SORTWRITE_BINDING,
                     finalPerm >= 0 ? finalPerm : this.gpu.sortBuffer(0));
-            setIntUniform(this.programs.capture(), "uMetaSlot", cap);
+            setIntUniform(this.programs.capture(), "uMetaSlot", this.gpu.metaSlotIndex());
             GL43.glDispatchCompute(1, 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
             this.computeTimer.endBracket();
@@ -1608,6 +1621,8 @@ public final class CMIParticleEngine {
         setFloatUniform(prog, "uCamPos", (float) pos.x, (float) pos.y, (float) pos.z);
         setFloatUniform(prog, "uFadeDist", (float) ClientConfig.particleFadeDistance);
         setFloatUniform(prog, "uTimeSec", this.timeSec());
+        // fixed base of the held-item carrier region inside the sort buffer
+        setUIntUniform(prog, "uCarrierBase", this.gpu.carrierBase());
         uploadStormItemUniforms(prog);
         this.allayAtlas.bind(1);
         setIntUniform(prog, "uSprite", 1);
@@ -1727,7 +1742,7 @@ public final class CMIParticleEngine {
         else if (mode == 1)
             this.gpu.drawIndirect(1);
         else
-            this.gpu.drawIndirect(4);
+            this.gpu.drawIndirect(5);
 
         RenderSystem.depthMask(true);
         RenderSystem.defaultBlendFunc();

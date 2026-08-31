@@ -16,9 +16,14 @@
 // so the scatter partitions the sorted array by type -- MODEL items occupy
 // [0, N_model), ALPHA items [N_model, N_total). Each draw therefore gets an
 // EXACT instanceCount and reads only its own contiguous slice:
-//   cmd2/cmd3 instanceCount = IDX_CNT_MODELOP / IDX_CNT_XLU = N_model
-//     (model.vsh reads sortedKv[gl_InstanceID])
-//   cmd4  instanceCount     = IDX_CNT_ALPHA        = N_alpha
+//   cmd2/cmd4 instanceCount = IDX_CNT_MODELOP / IDX_CNT_GHOST = N_model
+//     (model.vsh body vertices read sortedKv[gl_InstanceID])
+//   cmd3  instanceCount     = IDX_CNT_CARRIER     = N_carrier -- the held-item
+//     CARRIER sweep below appends wave-claim / header-item MODEL instances to
+//     the fixed-base carrier region of the sort buffer (uCarrierBase); only
+//     those instances pay the held-item vertex range, so a dense storm's
+//     non-carriers skip the sword's vertex invocations entirely
+//   cmd5  instanceCount     = IDX_CNT_ALPHA        = N_alpha
 //     (textured.vsh mode 0 reads sortedKv[N_model + gl_InstanceID]; the
 //     partition start IS the model count, taken from the indirect SSBO)
 // No vertex invocations are launched for foreign-type items anymore.
@@ -46,14 +51,25 @@ layout(std430, binding = BIND_INDIRECT) buffer IndirectBuf { uint cmd[INDIRECT_U
 layout(std430, binding = BIND_COUNTER) buffer CounterBuf { uint writeSlot; uint spare; uint translucentCensus; uint sortItems; } counter;
 layout(std430, binding = BIND_EMITTER) readonly buffer EmitterBuf { vec4 u[]; } emitters;
 layout(std430, binding = BIND_SORT_WRITE) buffer SortWrite { uvec2 kv[]; } sortOut;
+// Dual-write sink for the held-item carrier region: the committed permutation
+// buffer is sortBuffer(0) on the fast path but sortBuffer(1) on the sorted
+// path (the radix scatter moves the ITEMS across while never touching the
+// carrier region), so the sweep writes BOTH — see ParticleBuffers.CARRIERSINK_BB.
+layout(std430, binding = BIND_CARRIERSINK) buffer CarrierSink { uvec2 kv[]; } carrierSink;
 layout(std430, binding = BIND_ORDER_ADD) buffer OrderAddW { uint order[]; } orderAdd;
 layout(std430, binding = BIND_ORDER_OPAQUE) buffer OrderOpaqueW { uint order[]; } orderOpaque;
 
 uniform uint uUpper;      // CPU-side safe upper bound (aliveRead + spawns + margin)
+uniform uint uCarrierBase; // fixed sort-buffer base of the held-item carrier region
+uniform float uWaveTier[4]; // held-sword material id per wave slot (carrier sweep)
 uniform vec3 uCamPos;
 uniform mat4 uView;
 uniform float uMaxDepth;  // power-of-two far bound >= fade end (Java sortFarBlocks())
 uniform vec4 uFrustum[6]; // normalized planes, distances vs camera-relative points
+
+// the carrier sweep needs the shared claim predicate + the wave uniforms it
+// reads (uTimeSec / uWave / uWaveTarget live in the chunk)
+#pragma cmi_include chunks/allay_storm.glsl
 
 bool sphereVisible(vec3 rel, float r) {
     for (int i = 0; i < 6; i++) {
@@ -117,19 +133,57 @@ void main() {
     } else if (matId < 1.5) {
         // ALPHA blended sprite -> sort-type 1 (upper partition). The append
         // cursor only compacts the initial array; the scatter decides final
-        // placement from the key's type bit. cmd4 gets its exact count.
+        // placement from the key's type bit. cmd5 gets its exact count.
         uint slot = atomicAdd(counter.sortItems, 1u);
         sortOut.kv[slot] = uvec2((1u << SORT_KEY_TYPE_SHIFT) | depthKey(p0.xyz),
                                  (g << 2) | 1u);
         atomicAdd(indirect.cmd[IDX_CNT_ALPHA], 1u);
     } else {
-        // MODEL -> sort-type 0 (lower partition). Both model segments cover
+        // MODEL -> sort-type 0 (lower partition). Both body segments cover
         // this same partition (only their element ranges differ), so both
         // count fields receive N_model; textured.vsh also reads IDX_CNT_MODELOP
         // as its partition start offset.
+        uint dkey = depthKey(p0.xyz);
         uint slot = atomicAdd(counter.sortItems, 1u);
-        sortOut.kv[slot] = uvec2(depthKey(p0.xyz), (g << 2) | 0u);
-        atomicAdd(indirect.cmd[IDX_CNT_XLU], 1u);
+        sortOut.kv[slot] = uvec2(dkey, (g << 2) | 0u);
+        atomicAdd(indirect.cmd[IDX_CNT_GHOST], 1u);
         atomicAdd(indirect.cmd[IDX_CNT_MODELOP], 1u);
+
+        // ---- held-item CARRIER sweep ------------------------------------
+        // Dual-lists this instance into the fixed-base carrier region when it
+        // carries an item: storm wave-squad members through the SHARED
+        // cmiStormWaveClaim predicate (the exact function the render paths
+        // re-run — carrier membership and the rendered sword can never
+        // diverge), non-storm debug emitters through their header slot 17.z.
+        // Corpses never carry on the storm path (vanilla drops the held item;
+        // non-storm header carriers keep the old render-anything-the-header-
+        // says behavior, corpses included). Culling-consistent: this sits
+        // behind the frustum test, so an off-screen carrier drops its sword
+        // with its body. Overflow clamps the command's instanceCount back to
+        // CARRIER_CAP (silent drop, see ParticleBuffers.CARRIER_CAP).
+        bool carrier;
+        if (storm) {
+            carrier = false;
+            if (p3.y > 0.0) {
+                int k = cmiStormWaveClaim(p3.z);
+                if (k >= 0 && uWaveTier[k] > 0.5)
+                    carrier = true;
+            }
+        } else {
+            carrier = emitters.u[hb + 17u].z > 0.5;
+        }
+        if (carrier) {
+            uint cpos = atomicAdd(indirect.cmd[IDX_CNT_CARRIER], 1u);
+            if (cpos < CARRIER_CAP) {
+                // dual-write: whichever buffer the draw phase commits (buf0 on
+                // the fast path, buf1 after the radix scatter) carries the
+                // same-generation carrier region
+                uvec2 entry = uvec2(dkey, (g << 2) | 0u);
+                sortOut.kv[uCarrierBase + cpos] = entry;
+                carrierSink.kv[uCarrierBase + cpos] = entry;
+            } else {
+                atomicAdd(indirect.cmd[IDX_CNT_CARRIER], -1u);
+            }
+        }
     }
 }

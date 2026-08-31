@@ -5,9 +5,10 @@ layout(local_size_x = 1) in;
 // 16 bytes). Field j of command i is cmd[5*i + j]; the per-frame reset clears
 // every instanceCount field. The sorted array is TYPE-PARTITIONED (MODEL at
 // [0, N_model), ALPHA at [N_model, N_total)), so each count is EXACT:
-//   IDX_CNT_MODELOP / IDX_CNT_XLU = N_model (both model segments cover the
+//   IDX_CNT_MODELOP / IDX_CNT_GHOST = N_model (both body segments cover the
 //                   same model partition; MODELOP doubles as the ALPHA
 //                   partition's start offset for textured.vsh)
+//   IDX_CNT_CARRIER = N_carrier (the held-item carrier sweep's exact count)
 //   IDX_CNT_ALPHA   = N_alpha (the sprite partition's exact item count)
 layout(std430, binding = BIND_INDIRECT) buffer IndirectBuf {
     uint cmd[INDIRECT_UINTS];
@@ -36,7 +37,8 @@ void main() {
     indirect.cmd[IDX_CNT_ADD] = 0u;
     indirect.cmd[IDX_CNT_SPRITE] = 0u;
     indirect.cmd[IDX_CNT_MODELOP] = 0u;
-    indirect.cmd[IDX_CNT_XLU] = 0u;
+    indirect.cmd[IDX_CNT_CARRIER] = 0u;
+    indirect.cmd[IDX_CNT_GHOST] = 0u;
     indirect.cmd[IDX_CNT_ALPHA] = 0u;
     hitOut.pair = uvec4(0xFFFFFFFFu, 0u, 0xFFFFFFFFu, 0u);
 }

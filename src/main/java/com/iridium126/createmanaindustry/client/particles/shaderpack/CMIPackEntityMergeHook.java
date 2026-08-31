@@ -174,14 +174,19 @@ public final class CMIPackEntityMergeHook {
         shader.apply();
         uploadShadowUniforms(shader.getId(), engine);
         // Depth-led pass: draw order is irrelevant here (every visible instance
-        // contributes its depth exactly once either way), so keep forward reads.
-        uploadSegmentMode(shader.getId(), engine, false);
+        // contributes its depth exactly once either way), so every segment keeps
+        // forward reads (mode 0); the carrier segment only needs mode 2 to
+        // switch its instance source to the carrier region.
+        uploadSegmentMode(shader.getId(), engine, 0);
         RenderSystem.enableDepthTest();
         GL11.glEnable(GL11.GL_CULL_FACE);
         RenderSystem.disableBlend();
         RenderSystem.depthMask(true);
         bindAtlas(engine, COMPILER.shadowGtextureUnit());
         gpu.drawModelCutout();
+        uploadSegmentMode(shader.getId(), engine, 2);
+        gpu.drawModelCarrier();
+        uploadSegmentMode(shader.getId(), engine, 0);
         gpu.drawModelGhost();
         shader.clear();
 
@@ -215,6 +220,9 @@ public final class CMIPackEntityMergeHook {
         var camPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
         setFloat3(progId, "cmi_CameraPos", (float) camPos.x, (float) camPos.y, (float) camPos.z);
         setFloat(progId, "cmi_FadeDist", (float) ClientConfig.particleFadeDistance);
+        // the shared simulation clock — without it the wave-claim window test
+        // (chunks/allay_storm.glsl) never fires and swords drop out of shadows
+        setFloat(progId, "uTimeSec", engine.timeSec());
         // Round-trip insurance for packs whose merged program is the plain
         // terrain-fallback shadow variant (no shadow_entities source): its
         // vertex stage routes positions through the NAMED matrices
@@ -248,13 +256,18 @@ public final class CMIPackEntityMergeHook {
         uploadSegmentUniforms(progId, engine);
         // Nearest-first cutout: early-Z rejects occluded fragments before the
         // pack's fragment shader runs -- the dense-swarm fragment-pressure fix.
-        uploadSegmentMode(progId, engine, true);
+        uploadSegmentMode(progId, engine, 1);
         RenderSystem.enableDepthTest();
         GL11.glEnable(GL11.GL_CULL_FACE);
         RenderSystem.disableBlend();
         RenderSystem.depthMask(true);
         bindAtlas(engine, COMPILER.gtextureUnit());
         gpu.drawModelCutout();
+        // Held-item carrier segment: same cutout class as the body (depth
+        // writes, no blending), so it rides the body's shader state — drawn
+        // after the body, before the blended ghost, mirroring the L0 order.
+        uploadSegmentMode(progId, engine, 2);
+        gpu.drawModelCarrier();
         shader.clear();
 
         // Ghost segment: same geometry stream and inherited alpha test, but the
@@ -268,7 +281,7 @@ public final class CMIPackEntityMergeHook {
         uploadSegmentUniforms(progId, engine);
         // Ghost keeps forward reads: back-to-front order is load-bearing for
         // correct translucent compositing of overlapping shells.
-        uploadSegmentMode(progId, engine, false);
+        uploadSegmentMode(progId, engine, 0);
         RenderSystem.enableDepthTest();
         GL11.glEnable(GL11.GL_CULL_FACE);
         RenderSystem.enableBlend();
@@ -383,15 +396,19 @@ public final class CMIPackEntityMergeHook {
 
     /**
      * Segment-selection uniforms shared by every merged program variant. The
-     * metadata slot index is the particle CAPACITY (the reserved tail cell of
-     * each sort buffer where capture.comp published this generation's N_model),
-     * read from the live buffer sizing rather than config so the two can never
-     * drift; {@code nearestFirst} flips only the cutout segment's iteration
-     * direction (see the reversed-read comment in the merged vertex source).
+     * metadata slot index sits BEHIND the held-item carrier region (index ==
+     * capacity + CARRIER_CAP, read from the live buffer sizing rather than
+     * config so the two can never drift), and {@code cmi_CarrierBase} is the
+     * carrier region's fixed base (== capacity); {@code segmentMode} selects
+     * the vertex-stage instance resolution: 0 = ghost (forward), 1 = cutout
+     * (nearest-first reversed read, see the reversed-read comment in the
+     * merged vertex source), 2 = held-item carrier region (forward, exact
+     * count).
      */
-    private static void uploadSegmentMode(int progId, CMIParticleEngine engine, boolean nearestFirst) {
-        setInt(progId, "cmi_MetaSlot", engine.gpuBuffers().capacity());
-        setInt(progId, "cmi_ReverseInstance", nearestFirst ? 1 : 0);
+    private static void uploadSegmentMode(int progId, CMIParticleEngine engine, int segmentMode) {
+        setInt(progId, "cmi_MetaSlot", engine.gpuBuffers().metaSlotIndex());
+        setInt(progId, "cmi_CarrierBase", engine.gpuBuffers().carrierBase());
+        setInt(progId, "cmi_SegmentMode", segmentMode);
     }
 
     /** The pack fragment samples the entity texture through its gtexture sampler. */

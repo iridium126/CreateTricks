@@ -63,10 +63,11 @@ public final class ParticleBuffers {
     public static final int COUNTER_RING = 4;
     /**
      * Number of draw commands in the indirect buffer: additive, OPAQUE
-     * cutout billboards, model opaque segment, model translucent segment,
-     * ALPHA blended billboards.
+     * cutout billboards, model body-opaque segment, model CARRIER segment
+     * (held item, instances from the carrier region), model translucent
+     * segment, ALPHA blended billboards.
      */
-    public static final int INDIRECT_COMMANDS = 5;
+    public static final int INDIRECT_COMMANDS = 6;
     /**
      * Uniform byte stride of every indirect command. ELEMENT commands
      * ({@code glDrawElementsIndirect}, commands 2/3) read the full
@@ -173,6 +174,17 @@ public final class ParticleBuffers {
      * ServerboundStormWaveContactPacket reports.
      */
     public static final int WAVECONTACT_BB = 22;
+    /**
+     * Second sort buffer, bound ONLY during the keygen dispatch as the
+     * held-item carrier sink: keygen dual-writes every carrier instance into
+     * sortBuffer(0) (BIND_SORT_WRITE) and sortBuffer(1) (this binding),
+     * because which buffer ends up committed differs by path — the radix
+     * scatter moves the ITEMS buf0 -> buf1 but never touches the carrier
+     * region, so the sorted path's final permutation (buf1) needs the
+     * keygen-written carrier entries there, while the fast path's draw binds
+     * buf0. Dual-writing keeps both buffers structurally same-generation.
+     */
+    public static final int CARRIERSINK_BB = 23;
     /** Entries per wave-contact readback (the touches in ONE frame; tiny). */
     public static final int WAVECONTACT_CAP = 8;
     /** Floats per wave-contact entry: memberIdx, waveId, pos.xyz. */
@@ -191,6 +203,18 @@ public final class ParticleBuffers {
     public static final int MEMBER_LATCH_BIT = 1 << MEMBER_IDX_BITS;
     /** Players fed to the storm repulsion / readback passes. */
     public static final int MAX_STORM_PLAYERS = 16;
+    /**
+     * Capacity of the held-item CARRIER region appended to the tail of each
+     * sort buffer (see the sort-buffer allocation below): the worst legal
+     * wave-squad population — {@code AllayStormRuntime.MAX_WAVES} (4)
+     * concurrent waves x the stormWaveMaxSize config HARD maximum (4096) —
+     * with no debug margin. Overflow (only reachable by extreme non-storm
+     * debug emitters competing with max-config waves) drops the offending
+     * instance's held item for the frame, same silent-drop convention as
+     * STORMPOS_CAP / WAVECONTACT_CAP. Entries are 8 B each, so the region
+     * costs 128 KiB per sort buffer.
+     */
+    public static final int CARRIER_CAP = 4 * 4096;
     /** Entries per authority readback snapshot (nearest-to-players cap). */
     public static final int STORMPOS_CAP = 256;
     /** Floats per readback entry: memberIdx, pad, pos.xyz, vel.xyz. */
@@ -246,21 +270,28 @@ public final class ParticleBuffers {
     public static final int IDX_CNT_ADD = cmdField(0, 1);
     /** instanceCount of cmd1 — OPAQUE cutout billboards. */
     public static final int IDX_CNT_SPRITE = cmdField(1, 1);
-    /**
-     * instanceCount of cmd2 — model opaque segment. EXACT count of MODEL
+    /** instanceCount of cmd2 — model body-opaque segment. EXACT count of MODEL
      * items: the sorted array is type-partitioned (MODEL first), so this
      * equals the model partition length. Its value also serves as the ALPHA
      * partition's start offset (read by textured.vsh from the indirect SSBO).
      */
     public static final int IDX_CNT_MODELOP = cmdField(2, 1);
     /**
-     * instanceCount of cmd3 — model translucent segment. Same exact MODEL
-     * item total as {@link #IDX_CNT_MODELOP} (both segments cover the same
-     * partition, only their element ranges differ); keygen increments both.
+     * instanceCount of cmd3 — model CARRIER segment (held item). EXACT count
+     * of carrier instances (keygen's atomic cursor over the wave-claim /
+     * header-item sweep); each carrier instance is ALSO a MODEL item (its
+     * body draws from cmd2/cmd4), so the instance is dual-listed.
      */
-    public static final int IDX_CNT_XLU = cmdField(3, 1);
-    /** instanceCount of cmd4 — ALPHA blended billboards. EXACT sprite-item count (the upper partition). */
-    public static final int IDX_CNT_ALPHA = cmdField(4, 1);
+    public static final int IDX_CNT_CARRIER = cmdField(3, 1);
+    /**
+     * instanceCount of cmd4 — model translucent segment. Same exact MODEL
+     * item total as {@link #IDX_CNT_MODELOP} (both body segments cover the
+     * same partition, only their element ranges differ); keygen increments
+     * both. (Was cmd3 before the carrier segment split the two apart.)
+     */
+    public static final int IDX_CNT_GHOST = cmdField(4, 1);
+    /** instanceCount of cmd5 — ALPHA blended billboards. EXACT sprite-item count (the upper partition). */
+    public static final int IDX_CNT_ALPHA = cmdField(5, 1);
 
     /**
      * Depth-band count of the sort key's LOW BYTE (one counting-sort pass).
@@ -384,17 +415,22 @@ public final class ParticleBuffers {
             this.counterSSBOs[i] = createBuffer(16, null);
         }
         // Radix sort data: (key, payload) per translucent item, double-buffered.
-        // One EXTRA tail slot per buffer (index == capacity) is a reserved METADATA
-        // cell: capture.comp stores this generation's N_MODEL there, next to the
-        // permutation it describes. The shader-pack merge reads N from the same
-        // buffer it reads items from, so N and items are structurally always the
-        // same generation -- an aborted frame leaves them stale TOGETHER instead of
-        // pairing a fresh count with a stale permutation. Safety: radix scatter
-        // writes [0, N_total), forward reads stay < N_total, the reversed cutout
-        // read stays < N_model <= N_total -- the metadata slot at index 'cap' is
-        // never touched by any of them. L0 shaders never fetch this slot either.
+        // BEHIND the [0, cap) radix output sit two reserved regions: the CARRIER
+        // region [cap, cap + CARRIER_CAP) — keygen appends held-item instances
+        // there (never radix-touched: the radix passes only ever address
+        // [0, translucentUpper) with translucentUpper <= cap) — and ONE METADATA
+        // tail slot (index cap + CARRIER_CAP): capture.comp stores this
+        // generation's N_MODEL there, next to the permutation it describes. The
+        // shader-pack merge reads N from the same buffer it reads items from, so
+        // N and items are structurally always the same generation -- an aborted
+        // frame leaves them stale TOGETHER instead of pairing a fresh count with
+        // a stale permutation. Safety: radix scatter writes [0, N_total), forward
+        // reads stay < N_total, the reversed cutout read stays < N_model <=
+        // N_total -- neither the carrier region nor the metadata slot is touched
+        // by any of them. L0 shaders fetch the carrier region only through the
+        // cmd3 carrier segment (whose instanceCount keygen clamps to CARRIER_CAP).
         for (int i = 0; i < 2; i++) {
-            this.sortSSBOs[i] = createBuffer((cap + 1L) * 8L, null);
+            this.sortSSBOs[i] = createBuffer((cap + (long) CARRIER_CAP + 1L) * 8L, null);
         }
         // Additive permutation (dense, uint per additive particle).
         this.orderAddSSBO = createBuffer(cap * 4L, null);
@@ -490,6 +526,26 @@ public final class ParticleBuffers {
 
     public int capacity() {
         return this.capacity;
+    }
+
+    /**
+     * Fixed sort-buffer base of the held-item CARRIER region (keygen appends
+     * carrier instances here; model.vsh / the merged source index the region
+     * through {@code uCarrierBase} / {@code cmi_CarrierBase} set from this).
+     * Derived from the live capacity so the uniform can never drift from the
+     * allocation.
+     */
+    public int carrierBase() {
+        return this.capacity;
+    }
+
+    /**
+     * Sort-buffer index of the reserved METADATA tail slot (capture.comp's
+     * {@code uMetaSlot}, the shader-pack merge's {@code cmi_MetaSlot}): it
+     * sits BEHIND the carrier region.
+     */
+    public int metaSlotIndex() {
+        return this.capacity + CARRIER_CAP;
     }
 
     public int maxEmitters() {
@@ -636,14 +692,22 @@ public final class ParticleBuffers {
      * Uploads the static indexed model geometry (see {@link AllayModelGeometry}:
      * {@code VERTEX_FLOATS} stride) once after init: vertices go to the geo
      * SSBO, indices to an element buffer bound into the engine's VAO (harmless
-     * for the unindexed particle draws), and draw commands 2/3 are rewritten as
-     * element commands — cmd2 = opaque cutout segment from index 0, cmd3 =
-     * translucent blended segment starting at {@code opaqueIndexCount}. Both
-     * commands' instanceCounts stay GPU-written each frame (keygen sets both to
-     * the exact MODEL partition length N_model; the disjoint element ranges make
-     * the segment id derivable from partId alone).
+     * for the unindexed particle draws), and draw commands 2/3/4 are rewritten
+     * as element commands — cmd2 = body opaque cutout segment from index 0,
+     * cmd3 = the held-item CARRIER segment (its own index range), cmd4 =
+     * translucent blended segment starting at {@code opaqueIndexCount}. Body
+     * commands' instanceCounts stay GPU-written each frame (keygen sets both
+     * to the exact MODEL partition length N_model), cmd3's to the exact
+     * carrier count; the disjoint element ranges make the segment id derivable
+     * from partId alone.
+     *
+     * @param bodyOpaqueIndexCount end of the body-opaque index range (where
+     *     the held-item indices begin)
+     * @param opaqueIndexCount end of the held-item indices (start of the
+     *     translucent segment)
      */
-    public void uploadModelGeometry(float[] vertices, int[] indices, int opaqueIndexCount) {
+    public void uploadModelGeometry(float[] vertices, int[] indices,
+            int bodyOpaqueIndexCount, int opaqueIndexCount) {
         try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
             FloatBuffer buf = stack.mallocFloat(vertices.length);
             buf.put(vertices).flip();
@@ -661,13 +725,16 @@ public final class ParticleBuffers {
         }
         GL30.glBindVertexArray(0);
 
-        // two full 20-byte element commands (indexCount, instanceCount=0,
-        // firstIndex, baseVertex=0, baseInstance=0): cmd2 = opaque cutout
-        // segment from index 0, cmd3 = translucent blended segment starting
-        // at opaqueIndexCount
+        // three full 20-byte element commands (indexCount, instanceCount=0,
+        // firstIndex, baseVertex=0, baseInstance=0): cmd2 = body opaque
+        // cutout from index 0, cmd3 = held-item carrier segment, cmd4 =
+        // translucent blended starting at opaqueIndexCount
         this.tmp4.clear();
-        this.tmp4.putInt(opaqueIndexCount).putInt(0).putInt(0).putInt(0).putInt(0);
-        this.tmp4.putInt(indices.length - opaqueIndexCount).putInt(0).putInt(opaqueIndexCount).putInt(0).putInt(0);
+        this.tmp4.putInt(bodyOpaqueIndexCount).putInt(0).putInt(0).putInt(0).putInt(0);
+        this.tmp4.putInt(opaqueIndexCount - bodyOpaqueIndexCount).putInt(0)
+                .putInt(bodyOpaqueIndexCount).putInt(0).putInt(0);
+        this.tmp4.putInt(indices.length - opaqueIndexCount).putInt(0)
+                .putInt(opaqueIndexCount).putInt(0).putInt(0);
         this.tmp4.flip();
         GL30.glBindBuffer(GL40.GL_DRAW_INDIRECT_BUFFER, this.indirectSSBO);
         GL15.glBufferSubData(GL40.GL_DRAW_INDIRECT_BUFFER, 2L * INDIRECT_STRIDE, this.tmp4);
@@ -704,6 +771,11 @@ public final class ParticleBuffers {
     /** Binds the boids spatial-hash buffer at its fixed binding. */
     public void bindGrid() {
         GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, GRID_BB, this.gridSSBO);
+    }
+
+    /** Binds the carrier-sink sort buffer (keygen's dual-write target) at its fixed binding. */
+    public void bindCarrierSink() {
+        GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, CARRIERSINK_BB, this.sortSSBOs[1]);
     }
 
     /** Binds the CPU melee-damage queue at its fixed binding. */
@@ -996,7 +1068,7 @@ public final class ParticleBuffers {
      * of the world's rendering after our frame.
      */
     public void unbindShaders() {
-        for (int i = 0; i <= WAVECONTACT_BB; i++) {
+        for (int i = 0; i <= CARRIERSINK_BB; i++) {
             GL30.glBindBufferBase(GL43.GL_SHADER_STORAGE_BUFFER, i, 0);
         }
     }
@@ -1011,27 +1083,34 @@ public final class ParticleBuffers {
     }
 
     /**
-     * Draws BOTH MODEL sub-draws with one multi-draw: commands 2 and 3 are
-     * contiguous element commands sharing program, VAO and state; their
-     * per-command segment selection arrives through baseInstance + the mode
-     * attribute. Zero-instance commands are skipped by the GPU, so the same
-     * call also serves the fast path (translucent segment empty).
+     * Draws ALL THREE MODEL sub-draws with one multi-draw: commands 2/3/4 are
+     * contiguous element commands sharing program, VAO and state (body
+     * cutout, held-item carrier, translucent ghost); their per-command
+     * segment selection arrives through the vertex's own partId (the index
+     * ranges are disjoint). Zero-instance commands are skipped by the GPU,
+     * so the same call also serves the fast path (no carriers, empty ghost).
      */
     public void drawModelSegments() {
         GL43.glMultiDrawElementsIndirect(GL11.GL_TRIANGLES, GL11.GL_UNSIGNED_INT,
-                2L * INDIRECT_STRIDE, 2, INDIRECT_STRIDE);
+                2L * INDIRECT_STRIDE, 3, INDIRECT_STRIDE);
     }
 
-    /** Draws ONLY the CUTOUT MODEL sub-draw (command 2) -- shader-pack early path. */
+    /** Draws ONLY the CUTOUT MODEL body segment (command 2) -- shader-pack early path. */
     public void drawModelCutout() {
         GL43.glMultiDrawElementsIndirect(GL11.GL_TRIANGLES, GL11.GL_UNSIGNED_INT,
                 2L * INDIRECT_STRIDE, 1, INDIRECT_STRIDE);
     }
 
-    /** Draws ONLY the GHOST MODEL sub-draw (command 3) -- shader-pack early path. */
-    public void drawModelGhost() {
+    /** Draws ONLY the held-item CARRIER segment (command 3) -- shader-pack early path. */
+    public void drawModelCarrier() {
         GL43.glMultiDrawElementsIndirect(GL11.GL_TRIANGLES, GL11.GL_UNSIGNED_INT,
                 3L * INDIRECT_STRIDE, 1, INDIRECT_STRIDE);
+    }
+
+    /** Draws ONLY the GHOST MODEL segment (command 4) -- shader-pack early path. */
+    public void drawModelGhost() {
+        GL43.glMultiDrawElementsIndirect(GL11.GL_TRIANGLES, GL11.GL_UNSIGNED_INT,
+                4L * INDIRECT_STRIDE, 1, INDIRECT_STRIDE);
     }
 
     public void bindVao() {

@@ -32,6 +32,12 @@ public class CMIHexActions {
                             HexPattern.fromAngles("qwawq", HexDir.NORTH_EAST),
                             OpLightBurner.INSTANCE));
 
+    public static final DeferredHolder<ActionRegistryEntry, ActionRegistryEntry> PLAYERS_IN_CIRCLE =
+            ACTIONS.register("players_in_circle", () ->
+                    new ActionRegistryEntry(
+                            HexPattern.fromAngles("eaqwqaewa", HexDir.SOUTH_WEST),
+                            OpPlayersInCircle.INSTANCE));
+
     public static void register(IEventBus modEventBus) {
         ACTIONS.register(modEventBus);
     }

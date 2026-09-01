@@ -22,6 +22,7 @@ import com.iridium126.createmanaindustry.network.ServerboundStormWaveContactPack
 
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -30,9 +31,11 @@ import net.minecraft.sounds.SoundSource;
 import net.minecraft.stats.Stats;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageType;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.animal.allay.Allay;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -671,12 +674,25 @@ public final class AllayStormManager {
         // live inside hurtAndBreak. A REJECTED report never reaches here (the
         // vanilla analog is hurt() returning false — no durability either);
         // a KILLING hit consumes like any other landed hit. The throwaway
-        // proxy mirrors the client's proxyFor: vanilla implementations never
-        // read the target, but modded items may.
+        // proxy mirrors the client's proxyFor: vanilla durability
+        // implementations never read the target, but modded items and the
+        // POST_ATTACK effects below may.
         ItemStack weapon = player.getWeaponItem();
         ItemStack weaponCopy = weapon.copy();
         Allay proxyTarget = new Allay(EntityType.ALLAY, level);
+        proxyTarget.setPos(hitX, hitY, hitZ);
         boolean hurtEnemyResult = weapon.hurtEnemy(proxyTarget, player);
+        // vanilla Player.attack:1380 — POST_ATTACK enchantment effects fire
+        // SERVER-side only, in exactly this slot (after hurtEnemy, before
+        // postHurtEnemy). This is what makes Wind Burst work on a landed
+        // mace smash: its effect is ATTACKER-affected, explodes at the
+        // ATTACKER's own position behind the fall-distance ≥ 1.5 gate, and
+        // the knockback-only blast launches the player like a real-entity
+        // hit. Victim-side effects (Fire Aspect's ignite) reach only the
+        // throwaway proxy, which is not in the world and cannot burn
+        // anything.
+        EnchantmentHelper.doPostAttackEffects(level, proxyTarget,
+                player.damageSources().playerAttack(player));
         if (!weapon.isEmpty()) {
             if (hurtEnemyResult)
                 weapon.postHurtEnemy(proxyTarget, player);
@@ -793,6 +809,19 @@ public final class AllayStormManager {
      * {@code player.hurt} with the data-driven {@code storm_peck} type, so
      * vanilla i-frames/armor/absorption/totems and the hurt sound all apply
      * with zero extra code — concurrent divers cannot burst the i-frame gate.
+     * <p>
+     * The source is POSITION-ONLY ({@code new DamageSource(holder, contact)}):
+     * {@code isDamageSourceBlocked} runs its horizontal direction check off
+     * {@code getSourcePosition()} and fails unconditionally when it is null,
+     * so the old entity-less source made shields unable to block a diver.
+     * With the contact point as the source position, blocking, shield
+     * durability, the {@code DAMAGE_BLOCKED_BY_SHIELD} stat, the SHIELD_BLOCK
+     * sound broadcast and the {@code LivingShieldBlockEvent} all ride the
+     * vanilla {@code hurt} pipeline for free — and its internal 0.4 knockback
+     * derives from the SAME source position (the vanilla melee shape), which
+     * is why the old custom {@code knockback(0.5)} is gone (it would
+     * double-push now). Near-vertical centered dives keep vanilla's overhead
+     * edge case: the horizontal-only check yields NaN → unblocked, by design.
      */
     public static void handleWaveContact(ServerboundStormWaveContactPacket packet, IPayloadContext ctx) {
         if (!(ctx.player() instanceof ServerPlayer player))
@@ -831,12 +860,14 @@ public final class AllayStormManager {
         if (player.distanceToSqr(contact) > reach * reach)
             return;
 
-        DamageSource source = player.damageSources().source(CMIDamageTypes.STORM_PECK);
-        if (player.hurt(source, (float) ServerConfig.stormWaveDamage)) {
-            // vanilla Player.attack knockback shape: push the target AWAY from
-            // the contact point (pass the offset (from - to) like the attacker does)
-            player.knockback(0.5, contact.x - player.getX(), contact.z - player.getZ());
-        }
+        // position-only source: the contact point feeds isDamageSourceBlocked's
+        // direction check (null source position = shield can never block) and
+        // hurt's own 0.4 positional knockback — no entity, no custom push
+        DamageSource source = new DamageSource(
+                level.registryAccess().registryOrThrow(Registries.DAMAGE_TYPE)
+                        .getHolderOrThrow(CMIDamageTypes.STORM_PECK),
+                contact);
+        player.hurt(source, (float) ServerConfig.stormWaveDamage);
     }
 
     // ---- command surface -------------------------------------------------------

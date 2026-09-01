@@ -9,8 +9,10 @@ import com.samsthenerd.inline.api.client.InlineClientAPI;
 import com.simibubi.create.content.decoration.copycat.CopycatBlock;
 
 import net.createmod.ponder.foundation.PonderIndex;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.world.phys.EntityHitResult;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;
@@ -93,6 +95,34 @@ public class CreateManaIndustryClient {
     private static void onAttackKey(InputEvent.InteractionKeyMappingTriggered event) {
         if (event.isAttack() && CMIParticleEngine.INSTANCE.handlePlayerAttack())
             event.setCanceled(true);
+    }
+
+    /**
+     * Use-key fall-through for the synthetic crosshair pick: {@code
+     * CMIParticleEngine.injectCrosshairPick} surfaces an ENTITY hit on the
+     * client-side proxy ({@code proxyFor}), and vanilla {@code startUseItem}
+     * would run the proxy's {@code Allay.mobInteract} as client-side
+     * prediction — handing the held item to a throwaway object (count
+     * desyncs, ITEM_GIVEN plays, the server never sees an entity). The storm
+     * allay is not an entity: the click is cancelled and replayed against
+     * the pre-injection vanilla pick result ({@code
+     * CMIParticleEngine.replayVanillaUse}) exactly as if the particle weren't
+     * there — items stay in hand, real entities and blocks behind the allay
+     * respond normally. Real allay entities never match this gate (plain
+     * engine object identity, and vanilla picking always outranks the
+     * injected proxy when one is nearer).
+     */
+    @SubscribeEvent
+    private static void onUseKey(InputEvent.InteractionKeyMappingTriggered event) {
+        if (!event.isUseItem())
+            return;
+        Minecraft mc = Minecraft.getInstance();
+        if (!(mc.hitResult instanceof EntityHitResult hit)
+                || !CMIParticleEngine.INSTANCE.isSyntheticPickTarget(hit.getEntity()))
+            return;
+        event.setCanceled(true);
+        event.setSwingHand(false);
+        CMIParticleEngine.INSTANCE.replayVanillaUse(mc);
     }
 
     @SubscribeEvent

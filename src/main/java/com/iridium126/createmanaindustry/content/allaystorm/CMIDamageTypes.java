@@ -17,6 +17,9 @@ public final class CMIDamageTypes {
      * Dive-wave contact damage from the Allay Storm ({@code storm_peck.json}):
      * exhaustion and hurt effects live in the JSON; the death message keys are
      * {@code death.attack.storm_peck} / {@code death.attack.storm_peck.player}.
+     * Applied as a POSITION-ONLY {@code DamageSource} ({@code new
+     * DamageSource(holder, contact)} — {@code AllayStormManager.handleWaveContact})
+     * so the shield block direction check has a source position.
      */
     public static final ResourceKey<DamageType> STORM_PECK = ResourceKey.create(
             Registries.DAMAGE_TYPE, CreateManaIndustry.modLoc("storm_peck"));

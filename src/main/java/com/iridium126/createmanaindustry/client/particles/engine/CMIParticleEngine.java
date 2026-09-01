@@ -13,6 +13,7 @@ import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.client.particles.allaystorm.AllayStormRuntime;
 import com.iridium126.createmanaindustry.client.particles.emitter.EmitterSpec;
 import com.iridium126.createmanaindustry.config.ClientConfig;
+import com.iridium126.createmanaindustry.mixin.vanilla.MinecraftInvoker;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Camera;
@@ -24,6 +25,7 @@ import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
 import net.minecraft.core.component.DataComponentType;
 import net.minecraft.core.component.DataComponents;
@@ -34,6 +36,7 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.ai.attributes.Attribute;
@@ -271,6 +274,15 @@ public final class CMIParticleEngine {
      */
     private Allay proxyTarget = null;
     private ClientLevel proxyLevel = null;
+    /**
+     * The vanilla crosshair pick result as it stood BEFORE the last synthetic
+     * injection ({@link #injectCrosshairPick} only overwrites it when an allay
+     * particle is strictly closer) — exactly what a world without the particle
+     * would have produced. The use-key fall-through ({@link #replayVanillaUse})
+     * re-runs the click against it; refreshed every injection, so it is never
+     * stale beyond one frame while the crosshair sits on the proxy.
+     */
+    private HitResult vanillaPickResult = null;
 
     /**
      * Uniform-location cache (program id -> name -> location). Locations are
@@ -1810,9 +1822,15 @@ public final class CMIParticleEngine {
      * The injected entity is the client-side proxy ({@link #proxyFor}): a
      * stray vanilla attack on it (possible only when the click snapshot was
      * just consumed) sends an unknown-entity interact packet the server
-     * ignores, and {@code LivingEntity.hurt} early-returns on the client.
-     * The read is NON-consuming ({@link #crosshairHitKey}), so the crosshair
-     * never flickers in the frame between a click and the next fence poll.
+     * ignores, and {@code LivingEntity.hurt} early-returns on the client. A
+     * vanilla USE on it would be far worse — {@code startUseItem} runs the
+     * proxy's {@code Allay.mobInteract} as client-side prediction and hands
+     * the held item to a throwaway object — so the pre-injection result is
+     * kept ({@code vanillaPickResult}) and the use key replays against it
+     * ({@link #replayVanillaUse}); real entities never route through the
+     * gate. The read is NON-consuming ({@link #crosshairHitKey}), so the
+     * crosshair never flickers in the frame between a click and the next
+     * fence poll.
      */
     public void injectCrosshairPick(Minecraft mc) {
         if (!this.available() || !ClientConfig.particleEnabled
@@ -1837,10 +1855,43 @@ public final class CMIParticleEngine {
                 : current.getLocation().distanceToSqr(eye);
         if ((double) t * (double) t >= currentDistSq)
             return; // a nearer vanilla result (real entity or wall) keeps winning
+        this.vanillaPickResult = current;
         Allay proxy = this.proxyFor(mc.level);
         proxy.setPos(hitPos.x, hitPos.y, hitPos.z);
         mc.hitResult = new EntityHitResult(proxy, hitPos);
         mc.crosshairPickEntity = proxy;
+    }
+
+    /**
+     * True when {@code entity} is the client-side crosshair proxy — the only
+     * entity {@link #injectCrosshairPick} can ever surface to vanilla
+     * consumers (real entities never pass through here; the check is plain
+     * object identity).
+     */
+    public boolean isSyntheticPickTarget(Entity entity) {
+        return entity != null && entity == this.proxyTarget;
+    }
+
+    /**
+     * Use-key fall-through for the synthetic crosshair pick. The injection
+     * makes vanilla consumers see an ENTITY hit on the client-side proxy, and
+     * {@code Minecraft.startUseItem} would run the proxy's vanilla
+     * {@code Allay.mobInteract} as client-side prediction — handing the held
+     * item to a throwaway object (count desyncs, ITEM_GIVEN plays, the
+     * server never knows). The storm allay is NOT an entity: the click is
+     * re-run against the pre-injection vanilla result ({@code
+     * vanillaPickResult}) exactly as if the particle weren't there — real
+     * entities and blocks behind the allay respond normally, and a null
+     * result degrades to a plain item use (a vanilla-shaped MISS). The
+     * re-entrant {@code startUseItem} never re-enters this path: the
+     * restored result is never the proxy (vanilla pick cannot see it — it is
+     * not in the level's entity list).
+     */
+    public void replayVanillaUse(Minecraft mc) {
+        HitResult vanilla = this.vanillaPickResult;
+        mc.hitResult = vanilla != null ? vanilla
+                : BlockHitResult.miss(Vec3.ZERO, Direction.UP, BlockPos.ZERO);
+        ((MinecraftInvoker) (Object) mc).createmanaindustry$invokeStartUseItem();
     }
 
     /**
@@ -1900,9 +1951,12 @@ public final class CMIParticleEngine {
      * hurtEnemy/postHurtEnemy, DAMAGE_DEALT stat) runs in
      * {@code StormManager.handleHit} — vanilla consumes durability
      * server-side only. Documented deviations: sweep absent (no multi-target
-     * hit reports); POST_ATTACK enchantment effects (fire aspect etc.)
-     * absent (particles have no burn state); no invulnerability frames
-     * (snapshot-paced hits are the boss design).
+     * hit reports); POST_ATTACK enchantment effects absent HERE by design —
+     * vanilla runs them server-side only ({@code doPostAttackEffects} is
+     * ServerLevel-gated), and the storm's server half applies them in
+     * {@code StormManager.handleHit} (Wind Burst launches the attacker
+     * there); no invulnerability frames (snapshot-paced hits are the boss
+     * design).
      */
     private boolean syntheticAttack(Minecraft mc, LocalPlayer player, int idx, Vec3 hitPos, int memberIdx) {
         Allay target = proxyFor(mc.level);
@@ -2113,6 +2167,7 @@ public final class CMIParticleEngine {
         if (this.proxyTarget == null || this.proxyLevel != level) {
             this.proxyTarget = new Allay(EntityType.ALLAY, level);
             this.proxyLevel = level;
+            this.vanillaPickResult = null;
         }
         return this.proxyTarget;
     }

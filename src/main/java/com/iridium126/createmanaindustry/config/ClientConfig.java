@@ -32,6 +32,7 @@ public final class ClientConfig {
     private static ModConfigSpec.BooleanValue PARTICLE_AUTO_THROTTLE;
     private static ModConfigSpec.IntValue PARTICLE_FADE_DISTANCE;
     private static ModConfigSpec.BooleanValue PARTICLE_SHADER_PACK_INTEGRATION;
+    private static ModConfigSpec.BooleanValue PARTICLE_HEX_SPRAY_REDIRECT;
 
     static {
         BUILDER.comment("Volumetric mist rendering options.").push("rendering");
@@ -75,6 +76,12 @@ public final class ClientConfig {
                 .comment("unaffected and keep the self-drawn path. Falls back automatically when no pack")
                 .comment("is in use or the merged program fails to build. true = auto-enable when possible.")
                 .define("shaderPackIntegration", true);
+        PARTICLE_HEX_SPRAY_REDIRECT = BUILDER
+                .comment("Redirect Hexcasting's cast/conjure particle sprays (ParticleSpray -> MsgCastParticleS2C) "
+                        + "to the GPU particle engine's conjure replication (additive hexagonal wisps, pigment "
+                        + "colors preserved via spawn-time sampling). Falls back to the vanilla particle path "
+                        + "automatically when the engine is unavailable. Default true.")
+                .define("hexSprayRedirect", true);
         BUILDER.pop();
     }
 
@@ -89,6 +96,7 @@ public final class ClientConfig {
     public static boolean particleAutoThrottle = true;
     public static int particleFadeDistance = 96;
     public static boolean shaderPackIntegration = true;
+    public static boolean hexSprayRedirect = true;
 
     private ClientConfig() {}
 
@@ -105,6 +113,7 @@ public final class ClientConfig {
             particleAutoThrottle = PARTICLE_AUTO_THROTTLE.get();
             particleFadeDistance = PARTICLE_FADE_DISTANCE.get();
             shaderPackIntegration = PARTICLE_SHADER_PACK_INTEGRATION.get();
+            hexSprayRedirect = PARTICLE_HEX_SPRAY_REDIRECT.get();
         }
     }
 }

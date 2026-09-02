@@ -165,12 +165,19 @@ void main() {
     vec2 cornerUn = quadCorner(gl_VertexID) - 0.5;
     float roll;
     if (emitters.u[hb + 7u].w > 0.5) {
+        // Vanilla CherryParticle rolls by rotSpeed/20 per tick (rotSpeed starts
+        // at ±30 DEG — the roll RATE is ±1.5 deg/tick = ±30 deg/s) and rotSpeed
+        // grows by spinAcceleration/20 per tick (±5 DEG/20 = ±0.25 deg/t per
+        // tick), i.e. the roll rate accelerates by ±5 deg/s per second:
+        //   roll(t) = ±30 deg/s · t + 2.5 deg/s² · t²
+        // (300 ticks: 30·15 + 2.5·225 ≈ 1012 deg total, matching the per-tick
+        // sum 1.5·300 + 0.25/2·300² ≈ 1011 deg). The earlier conversion read
+        // the 30/5 as the per-tick rate/acceleration and scaled ×20/×400 — a
+        // 20x/400x overshoot that turned the petals into a spin blur.
         float t = p3.x;
-        float v0 = (hash1(p3.z * 1.31) > 0.5 ? 30.0 : -30.0); // deg/tick
-        float a0 = (hash1(p3.z * 2.47) > 0.5 ? 5.0 : -5.0);   // deg/tick^2
-        float v0r = radians(v0 * 20.0);                       // deg/tick -> rad/s (x20)
-        float a0r = radians(a0 * 400.0);                      // deg/tick^2 -> rad/s^2 (x20^2)
-        roll = p1.w + v0r * t + 0.5 * a0r * t * t;
+        float v0 = (hash1(p3.z * 1.31) > 0.5 ? 30.0 : -30.0); // deg/s
+        float a0 = (hash1(p3.z * 2.47) > 0.5 ? 5.0 : -5.0);   // deg/s^2
+        roll = p1.w + radians(v0) * t + 0.5 * radians(a0) * t * t;
     } else {
         roll = p1.w;
     }
@@ -188,7 +195,10 @@ void main() {
     vec2 localUv = vec2(cornerUn.x + 0.5, 0.5 - cornerUn.y);
     vUv = frameOrigin + localUv * frameSize;
     vDist = length(worldPos - uCamPos);
-    // constant alpha over life (vanilla petals do not fade); sprite alpha in fsh
-    vAlpha = p2.w * keyA;
+    // constant alpha over life (vanilla petals do not fade); sprite alpha in fsh.
+    // lightMode particles carry the PACKED LIGHT in p2.w (not an intensity) —
+    // OPAQUE cutout ignores vAlpha entirely, but keep ALPHA-mode math honest
+    // in case a blended emitter ever opts into the lightmap.
+    vAlpha = (lightMode > 0.5 ? 1.0 : p2.w) * keyA;
     vColor = col;
 }

@@ -18,6 +18,8 @@ out vec2 vUv;
 out vec3 vColor;
 out float vAlpha;
 out float vDist;
+// colorMode 4 (Hexcasting pigment) marker for the fsh: hexagonal cloud shape
+flat out float vHex;
 
 vec2 quadCorner(int v) {
     switch (v) {
@@ -67,6 +69,35 @@ void main() {
         col = mix(c0.rgb, c1.rgb, f);
         keyA = mix(c0.a, c1.a, f);
     }
+    float hexShape = 0.0;
+    // colorMode (header 17.x): 4 = Hexcasting pigment wheel. The 8 keyframe
+    // slots hold a WHEEL sampled from the caster's pigment at spray time (not
+    // a life gradient): the phase is the particle's velocity direction
+    // projected on the fixed gradient axis, cubic-eased between adjacent
+    // wheel colors exactly like ADPigment.morphBetweenColors. The per-spray
+    // time phase is baked into the samples (vanilla freezes each particle's
+    // color at its spawn instant, so direction is the only live dimension
+    // within one spray). Plus the exact ConjureParticle shrink: quadSize
+    // ×= 0.96 per tick = e^(-ln(1/0.96)·20·age).
+    float colorMode = emitters.u[hb + 17u].x;
+    if (colorMode > 3.5) {
+        vec3 v = p1.xyz;
+        float vlen = length(v);
+        vec3 n = vlen > 1e-5 ? v / vlen : vec3(0.0, 1.0, 0.0);
+        // MUST match HexSpecs.GRADIENT_DIR = normalize(0.3, 0.8, 0.5)
+        float g = dot(n, normalize(vec3(0.3, 0.8, 0.5))) * 0.5 + 0.5;
+        float fIdx = g * 8.0;
+        int wbase = min(7, int(floor(fIdx)));
+        float tRaw = fract(fIdx);
+        float t = tRaw < 0.5 ? 4.0 * tRaw * tRaw * tRaw
+                : 1.0 - pow(-2.0 * tRaw + 2.0, 3.0) / 2.0;
+        vec4 c0 = emitters.u[hb + 8u + uint(wbase)];
+        vec4 c1 = emitters.u[hb + 8u + uint((wbase + 1) & 7)];
+        col = mix(c0.rgb, c1.rgb, t);
+        keyA = mix(c0.a, c1.a, t);
+        hexShape = 1.0;
+        size *= exp(-0.816432 * p3.x);
+    }
     col *= p2.rgb;
 
     // per-emitter glow multiplier (header u[hb+6].w) — the additive brightness
@@ -92,4 +123,5 @@ void main() {
     // (additive allows >1.0 here; brightness is trimmed per-emitter in the headers)
     vAlpha = p2.w * keyA * (1.0 - life) * emitterGlow;
     vColor = col;
+    vHex = hexShape;
 }

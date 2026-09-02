@@ -88,12 +88,18 @@ public final class EmitterPresets {
      * <p>
      * Matches {@code CherryParticle}: lifetime 300 ticks (= 15 s of our real
      * seconds), gravity 7.5e-4 blocks/tick² (= 0.3 blocks/s²), spawn velocity 0,
-     * random pick of 12 atlas frames, a life-gated spiral flutter (amplitude 2.0
-     * blocks at full life, growing as age^1.25) and a random billboard spin
-     * (velocity ±30°/t, acceleration ±5°/t², both derived per-particle from the
-     * seed). Removed on ground contact just like vanilla (DIE_ON_GROUND).
-     * The sprites are pure 0/255 alpha, so the emitter uses the OPAQUE
-     * material (cutout + depth write) and never enters the sorted path.
+     * random pick of 12 atlas frames, a life-gated spiral flutter (peak
+     * horizontal acceleration 2.0 blocks/s² at full life, growing as
+     * age^1.25 along a per-particle fixed direction) and a random billboard
+     * spin (rate ±30°/s = vanilla rotSpeed/20, accelerating ±5°/s² =
+     * spinAcceleration/400, both derived per-particle from the seed), and the
+     * world lightmap sampled at the spawn point (lightmap flag → header 17.z,
+     * the combat-particle mechanism). Vanilla's 50/50 quadSize pick of
+     * 0.05/0.075 lives in emit.comp, keyed on flutter > 0 (this preset is the
+     * only flutter user). Removed on ground contact just like vanilla
+     * (DIE_ON_GROUND). The sprites are pure 0/255 alpha, so the emitter uses
+     * the OPAQUE material (cutout + depth write) and never enters the sorted
+     * path.
      */
     public static final EmitterSpec CHERRY_LEAVES = EmitterSpec.builder()
             .shape(EmitterShape.POINT)
@@ -107,6 +113,7 @@ public final class EmitterPresets {
             .flutter(2.0)
             .spin(true)
             .spriteCount(12)
+            .lightmap(true)
             .glow(1.0)
             .color(1f, 1f, 1f, 1f)
             .build();

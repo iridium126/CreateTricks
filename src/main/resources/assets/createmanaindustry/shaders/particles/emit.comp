@@ -84,6 +84,32 @@ vec2 gaussian2(float s) {
     return vec2(r * cos(6.2831853 * u2), r * sin(6.2831853 * u2));
 }
 
+// CritParticle's base-random velocity, layered UNDER the spawner's ×0.4
+// pass-through: the 7-arg Particle ctor draws a uniform cube, normalizes it
+// (vanilla's own corner-clustered direction), scales to (r+r+1)·0.15·0.4
+// b/tick and adds +0.1 up; CritParticle then scales that whole base ×0.1.
+// Final = direction·(r+r+1)·0.04 + 0.01 up (b/tick) — returned in b/s.
+// Seed slots 61.1..65.1 stay clear of both styles' existing ranges
+// (style 1 ≤ ~26.2; style 2 consumes {31.7, 48.87, 41.3, 58.47, 83.1, 100.27}).
+vec3 critBaseJitter(float seed) {
+    vec3 cu = vec3(hash1(seed + 61.1), hash1(seed + 62.1), hash1(seed + 63.1)) * 2.0 - 1.0;
+    vec3 n = cu / max(length(cu), 1e-5);
+    float mag = (hash1(seed + 64.1) + hash1(seed + 65.1) + 1.0) * 0.15 * 0.04;
+    return (n * mag + vec3(0.0, 0.01, 0.0)) * 20.0;
+}
+
+// Wide-magnitude per-particle hash seed. The CPU base seed spans [0,1)
+// (1e-6 steps, plus inner·1e-4) where hash1's fract(p*0.1031) never folds —
+// every hash of it varies SMOOTHLY with inner, so multi-particle commands
+// arrange their particles along a spiral/clump instead of a uniform volume.
+// Scaling base ×1e5 + inner·307 lands in [0, ~7e5] → ~72k folds. One
+// FMA-able expression: cross-client bit-equality is a storm-identity
+// requirement ONLY (the storm branch builds its own mseed and never reads
+// this) — every other path takes the contracted form.
+float wideSeed(float seed, float inner) {
+    return seed * 100000.0 + float(inner) * 307.0;
+}
+
 // Source allay metrics for the combat styles: bbWidth/bbHeight from the
 // referenced particle's emitter header (corpse/alive life clamps to 1, so
 // sizeEnd is the operative size — same formula as hit.comp).
@@ -129,16 +155,25 @@ void main() {
         return; // defensive: g past the last entry's count
 
     uint eid = uint(emitCmd.entries[eb + 4u]);
-    float seed = emitCmd.entries[eb + 5u] + float(inner) * 0.0001;
+    // wide per-particle hash seed (see wideSeed) — the stored p3.z carries the
+    // wide value too, so update/render hash consumers decorrelate within
+    // multi-particle commands as well
+    float seed = wideSeed(emitCmd.entries[eb + 5u] + float(inner) * 0.0001, inner);
     float originRef = emitCmd.entries[eb + 7u]; // 0 = absolute origin.xyz, else particle index + 1
-    float lightPacked = emitCmd.entries[eb + 8u]; // blockLight + 16*skyLight (combat styles)
+    float lightPacked = emitCmd.entries[eb + 8u]; // blockLight + 16*skyLight (combat styles + lightmap specs)
     float spawnStyle = emitters.u[eid * VEC4_PER_EMITTER + 17u].y;
 
     vec3 pos;
     vec3 velDir;
-    float rot = (hash1(seed + 14.1) - 0.5) * 6.2831853;
+    // Vanilla particles spawn at billboard roll 0 (cherry petals start
+    // upright; the per-particle spin then diverges them — textured.vsh). The
+    // old ±π roll jitter is gone with the cherry alignment.
     float lightOut = 0.0;
-    if (spawnStyle > 2.5) {
+    // style 3 ONLY — the gate must not swallow the later style-4 (hex spray)
+    // branch (a hex command's c slots are spray params, not storm fields, and
+    // its header carries no storm anchor: caught here it spawned every mote at
+    // the zero anchor instead of the spray origin)
+    if (spawnStyle > 2.5 && spawnStyle < 3.5) {
         // ---- storm member: deterministic identity + analytic spawn -------
         uint memberIdx = uint(emitCmd.entries[eb + 9u] + 0.5) + inner;
         uint hbS = eid * VEC4_PER_EMITTER;
@@ -222,6 +257,61 @@ void main() {
         writeBuf.data[wb + 3u] = vec4(0.0, 20.0, mseed, uintBitsToFloat(eid));
         return;
     }
+    if (spawnStyle > 3.5) {
+        // ---- hex spray (style 4): Hexcasting ParticleSpray replication -----
+        // MsgCastParticleS2C.Handler's exact sampling. Spawn position = the
+        // spray origin + a uniform-sphere offset of radius u·fuzziness/2 —
+        // the radius is LINEAR in u, vanilla's own quirk (not sqrt-scaled).
+        // Velocity = velUnlen·|vel| where velUnlen is drawn around the spray
+        // axis with the acos-uniform cone trick (phi = acos(1 - u·(1-cos
+        // spread)) samples the cone uniformly by solid angle). Motion/roll/
+        // life/size replicate ConjureParticle (see HexSpecs).
+        // Command c slots (this style uses NO light/member/ring fields):
+        //   c.xyz = spray velocity, blocks/s
+        //   c.w   = intBitsToFloat(fuzz16 | spread16 << 16), fuzz/2 and
+        //           spread/π each quantized to 16 bits
+        vec3 sprayVel = vec3(emitCmd.entries[eb + 8u], emitCmd.entries[eb + 9u],
+                emitCmd.entries[eb + 10u]);
+        uint packedP = floatBitsToUint(emitCmd.entries[eb + 11u]);
+        float fuzz = float(packedP & 0xFFFFu) / 65535.0 * 2.0;
+        float spread = float((packedP >> 16u) & 0xFFFFu) / 65535.0 * 3.14159265;
+        // hex commands are always absolute-origin (originRef 0); the classic
+        // path's `origin` local is declared further down, so read the command
+        // word here
+        // `seed` is already the wide per-particle value (wideSeed at the top
+        // of main) — every hash below decorrelates across inner
+        vec3 origin = vec3(emitCmd.entries[eb + 0u], emitCmd.entries[eb + 1u],
+                emitCmd.entries[eb + 2u]);
+        pos = origin + randomDir(seed) * (hash1(seed + 71.1) * fuzz * 0.5);
+        vec3 axis = sprayVel / max(length(sprayVel), 1e-5);
+        float cs = clamp(1.0 - hash1(seed + 72.1) * (1.0 - cos(spread)), -1.0, 1.0);
+        float phi = acos(cs);
+        float theta = 6.2831853 * hash1(seed + 73.1);
+        vec3 k = cross(axis, vec3(0.0, 0.0, 1.0));
+        // vanilla guards the axis ∥ +Z case by swapping to (1,0,0)
+        if (dot(k, k) < 1e-6)
+            k = vec3(1.0, 0.0, 0.0);
+        k = normalize(k);
+        vec3 k2 = cross(axis, k);
+        float sp = sin(phi);
+        vec3 velUnlen = axis * cs + k * (sp * cos(theta)) + k2 * (sp * sin(theta));
+        vec3 vel = velUnlen * length(sprayVel); // blocks/s (spray vel is b/s)
+        float roll = hash1(seed + 74.1) * 6.2831853; // ConjureParticle: fixed random roll
+        // lifetime 64/((r+3)·0.25) ticks, continuous (no integer-tick cast)
+        float maxLife = max(64.0 / ((hash1(seed + 75.1) + 3.0) * 0.25), 0.1) / 20.0;
+        // quadSize = SingleQuadParticle default [0.1, 0.2) × 0.9 = [0.09, 0.18)
+        // — the 0.135 spec base × this exact [2/3, 4/3] hash range
+        float baseSize = mix(2.0 / 3.0, 4.0 / 3.0, hash1(seed + 13.1));
+        uint slot = atomicAdd(counter.writeSlot, 1u);
+        if (slot >= uCapacity)
+            return;
+        uint wb = slot * 4u;
+        writeBuf.data[wb + 0u] = vec4(pos, baseSize);
+        writeBuf.data[wb + 1u] = vec4(vel, roll);
+        writeBuf.data[wb + 2u] = vec4(1.0, 1.0, 1.0, 1.0);
+        writeBuf.data[wb + 3u] = vec4(0.0, maxLife, seed, uintBitsToFloat(eid));
+        return;
+    }
     if (spawnStyle > 0.5) {
         // ---- combat styles: origin resolves against the committed pool ----
         // c.z = memberIdx+1 selects MEMBER addressing through the identity
@@ -270,8 +360,11 @@ void main() {
                        feet.z + sw * (d.z / 4.0));
             velDir = vec3(d.x, d.y + 0.2, d.z); // vel = dir * 0.4 b/tick = dir * 8 b/s
             float speed = 8.0;
-            vec3 vel = velDir * speed;
-            float baseSize = mix(0.7, 1.3, hash1(seed + 13.1));
+            vec3 vel = velDir * speed + critBaseJitter(seed);
+            // CritParticle quadSize = SingleQuadParticle default [0.1, 0.2)
+            // × 0.75 = [0.075, 0.15) — the 0.1125 spec base × this exact
+            // [2/3, 4/3] hash range (the old 0.7..1.3 narrowed both ends ~5%)
+            float baseSize = mix(2.0 / 3.0, 4.0 / 3.0, hash1(seed + 13.1));
             float maxLife = max(mix(emitters.u[eid * VEC4_PER_EMITTER + 5u].x,
                                     emitters.u[eid * VEC4_PER_EMITTER + 5u].y,
                                     hash1(seed + 12.1)), 0.1);
@@ -295,8 +388,9 @@ void main() {
             pos = vec3(feet.x + g1.x * 0.1,
                        feet.y + sh * 0.5,
                        feet.z + g1.y * 0.1);
-            vec3 vel = vec3(g2.x * 0.2, g2.y * 0.2 + 1.0, g3.x * 0.2) * 8.0;
-            float baseSize = mix(0.7, 1.3, hash1(seed + 13.1));
+            vec3 vel = vec3(g2.x * 0.2, g2.y * 0.2 + 1.0, g3.x * 0.2) * 8.0
+                    + critBaseJitter(seed);
+            float baseSize = mix(2.0 / 3.0, 4.0 / 3.0, hash1(seed + 13.1));
             float maxLife = max(mix(emitters.u[eid * VEC4_PER_EMITTER + 5u].x,
                                     emitters.u[eid * VEC4_PER_EMITTER + 5u].y,
                                     hash1(seed + 12.1)), 0.1);
@@ -364,14 +458,26 @@ void main() {
     float maxLife = isModel
             ? 20.0
             : max(mix(lifeMin, lifeMax, hash1(seed + 12.1)), 0.1);
-    // Per-particle scale jitter (+/-30%) suits organic sprites, but MODEL
-    // particles stand in for a vanilla ENTITY -- vanilla allays are uniform,
-    // so they render at the exact spec scale (material check mirrors keygen).
-    float baseSize = isModel ? 1.0 : mix(0.7, 1.3, hash1(seed + 13.1));
+    // Per-particle size. MODEL particles stand in for a vanilla ENTITY --
+    // vanilla allays are uniform, so they render at the exact spec scale
+    // (material check mirrors keygen). The only classic-path size variance
+    // left is vanilla CherryParticle's 50/50 quadSize pick of 0.05 / 0.075 --
+    // a spec base of 0.075 x {1.0, 2/3} -- keyed on flutter > 0 (the cherry
+    // spec is the only flutter user); every other classic preset renders at
+    // the exact spec scale (the old +/-30% jitter is gone with the cherry
+    // alignment).
+    float baseSize = 1.0;
+    if (!isModel && emitters.u[hb + 7u].z > 0.0 && hash1(seed + 13.1) < 0.5)
+        baseSize = 2.0 / 3.0;
     // MODEL: p2.w is the per-particle HURT-FLASH timer (0 = not hurt), decayed
     // by update.comp; the model path never reads intensity, and the additive
-    // path never sees MODEL particles.
-    float intensity = isModel ? 0.0 : mix(0.7, 1.0, hash1(seed + 15.1));
+    // path never sees MODEL particles. Textured non-MODEL: p2.w carries the
+    // spawn-time packed light when the spec opts into the lightmap (vanilla
+    // cherry leaves; header 17.z, the material-split slot -- the CPU samples
+    // it per emit command into lightPacked, word c.x) or 1.0 fullbright
+    // (vanilla particles spawn at alpha 1).
+    float spawnLight = isModel ? 0.0
+            : (emitters.u[hb + 17u].z > 0.5 ? max(lightPacked, 0.0) : 1.0);
 
     uint slot = atomicAdd(counter.writeSlot, 1u);
     if (slot >= uCapacity)
@@ -379,7 +485,7 @@ void main() {
 
     uint wb = slot * 4u;
     writeBuf.data[wb + 0u] = vec4(pos, baseSize);
-    writeBuf.data[wb + 1u] = vec4(vel, rot);
-    writeBuf.data[wb + 2u] = vec4(1.0, 1.0, 1.0, intensity);
+    writeBuf.data[wb + 1u] = vec4(vel, 0.0);
+    writeBuf.data[wb + 2u] = vec4(1.0, 1.0, 1.0, spawnLight);
     writeBuf.data[wb + 3u] = vec4(0.0, maxLife, seed, uintBitsToFloat(eid));
 }

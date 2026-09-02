@@ -9,7 +9,7 @@ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /**
- * Melee hit report, client → server (~13 bytes). The server cannot validate
+ * Melee hit report, client → server (~14 bytes). The server cannot validate
  * hits (member positions are client-side GPU state), so the attacking client
  * reports its local hit — the server applies rate limits, a damage cap and
  * dead-member checks, then decrements its authoritative HP and broadcasts a
@@ -21,10 +21,14 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  * the pre-multiplied kb direction × strength, range ~±1.5), light the packed
  * {@code blockLight + 16·skyLight} (0..255 by construction), hit position
  * relative to the storm anchor at 1/16-block steps (shorts; members stay
- * within ~±300 blocks of the anchor).
+ * within ~±300 blocks of the anchor). The {@code visuals} byte relays the
+ * attacker's client-side combat-particle verdict (vanilla derives these
+ * server-side: bit0 crit, bit1 enchanted-hit, bits 2-7 the damage-indicator
+ * heart count ≤ 31) so every client draws the same hit visuals.
  */
 public record ServerboundStormHitPacket(
         int memberIdx, float damage, float kbX, float kbZ, float light,
+        boolean crit, boolean magic, int hearts,
         double relX, double relY, double relZ) implements CustomPacketPayload {
 
     public static final CustomPacketPayload.Type<ServerboundStormHitPacket> TYPE =
@@ -39,6 +43,7 @@ public record ServerboundStormHitPacket(
         buffer.writeByte(clamp(Math.round(p.kbX * 64), -128, 127));
         buffer.writeByte(clamp(Math.round(p.kbZ * 64), -128, 127));
         buffer.writeByte(clamp(Math.round(p.light), 0, 255));
+        buffer.writeByte((p.crit ? 1 : 0) | (p.magic ? 2 : 0) | (clamp(p.hearts, 0, 63) << 2));
         buffer.writeShort((short) clamp((int) Math.round(p.relX * 16), Short.MIN_VALUE, Short.MAX_VALUE));
         buffer.writeShort((short) clamp((int) Math.round(p.relY * 16), Short.MIN_VALUE, Short.MAX_VALUE));
         buffer.writeShort((short) clamp((int) Math.round(p.relZ * 16), Short.MIN_VALUE, Short.MAX_VALUE));
@@ -50,10 +55,15 @@ public record ServerboundStormHitPacket(
         float kbX = buffer.readByte() / 64.0f;
         float kbZ = buffer.readByte() / 64.0f;
         float light = (buffer.readByte() & 0xFF) / 1.0f;
+        int visuals = buffer.readByte() & 0xFF;
+        boolean crit = (visuals & 1) != 0;
+        boolean magic = (visuals & 2) != 0;
+        int hearts = (visuals >>> 2) & 0x3F;
         double relX = buffer.readShort() / 16.0;
         double relY = buffer.readShort() / 16.0;
         double relZ = buffer.readShort() / 16.0;
-        return new ServerboundStormHitPacket(memberIdx, damage, kbX, kbZ, light, relX, relY, relZ);
+        return new ServerboundStormHitPacket(memberIdx, damage, kbX, kbZ, light,
+                crit, magic, hearts, relX, relY, relZ);
     }
 
     private static int clamp(int v, int lo, int hi) {

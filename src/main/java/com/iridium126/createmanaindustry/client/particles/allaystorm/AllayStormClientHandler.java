@@ -40,6 +40,14 @@ public final class AllayStormClientHandler {
         Vec3 rel = new Vec3(packet.relX(), packet.relY(), packet.relZ());
         e.applyStormDamage(packet.memberIdx(), packet.damage(), packet.kbX(), packet.kbZ(),
                 packet.light(), packet.died(), rel, gameClock());
+        // Combat visuals relay: everyone EXCEPT the attacker spawns the crit /
+        // enchanted stars + damage hearts from the broadcast (vanilla parity —
+        // the attacker drew its own instantly at click time and skips here to
+        // avoid a double burst).
+        var local = net.minecraft.client.Minecraft.getInstance().player;
+        if (local == null || local.getId() != packet.attackerId())
+            e.spawnCombatVisuals(packet.memberIdx(), packet.light(),
+                    packet.crit(), packet.magic(), packet.hearts());
     }
 
     /** {@link ClientboundStormPositionsPacket}: relayed authority snapshot. */

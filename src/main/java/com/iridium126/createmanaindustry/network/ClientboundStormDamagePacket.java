@@ -9,7 +9,7 @@ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /**
- * Storm member damage broadcast, server → clients (~14 bytes), sent to every
+ * Storm member damage broadcast, server → clients (~20 bytes), sent to every
  * ACTIVE player including the attacker. Carries the authoritative death bit —
  * clients must never decide death from their local HP mirror (a client that
  * joined mid-fight has a 20 HP baseline and does not know past damage) — plus
@@ -20,10 +20,17 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  * Knockback rides the same packet: every client applies the identical impulse
  * to the same member, which keeps post-hit divergence small during the death
  * animation window without any position traffic.
+ * <p>
+ * The {@code attackerId} plus the {@code visuals} byte (bit0 crit, bit1
+ * enchanted-hit, bits 2-7 heart count) relay the vanilla combat-particle set:
+ * every client EXCEPT the attacker spawns the crit/enchanted tracking stars
+ * and the damage hearts from it (the attacker drew its own visuals instantly
+ * at click time; vanilla draws everyone's through the same server relay).
  */
 public record ClientboundStormDamagePacket(
         int memberIdx, float damage, float kbX, float kbZ, float light,
-        boolean died, double relX, double relY, double relZ) implements CustomPacketPayload {
+        boolean died, int attackerId, boolean crit, boolean magic, int hearts,
+        double relX, double relY, double relZ) implements CustomPacketPayload {
 
     public static final CustomPacketPayload.Type<ClientboundStormDamagePacket> TYPE =
             new CustomPacketPayload.Type<>(CreateManaIndustry.modLoc("storm_damage"));
@@ -38,6 +45,8 @@ public record ClientboundStormDamagePacket(
         buffer.writeByte(clamp(Math.round(p.kbZ * 64), -128, 127));
         buffer.writeByte(clamp(Math.round(p.light), 0, 255));
         buffer.writeByte(p.died ? 1 : 0);
+        ByteBufCodecs.VAR_INT.encode(buffer, p.attackerId);
+        buffer.writeByte((p.crit ? 1 : 0) | (p.magic ? 2 : 0) | (clamp(p.hearts, 0, 63) << 2));
         buffer.writeShort((short) clamp((int) Math.round(p.relX * 16), Short.MIN_VALUE, Short.MAX_VALUE));
         buffer.writeShort((short) clamp((int) Math.round(p.relY * 16), Short.MIN_VALUE, Short.MAX_VALUE));
         buffer.writeShort((short) clamp((int) Math.round(p.relZ * 16), Short.MIN_VALUE, Short.MAX_VALUE));
@@ -50,10 +59,16 @@ public record ClientboundStormDamagePacket(
         float kbZ = buffer.readByte() / 64.0f;
         float light = (buffer.readByte() & 0xFF) / 1.0f;
         boolean died = buffer.readByte() != 0;
+        int attackerId = ByteBufCodecs.VAR_INT.decode(buffer);
+        int visuals = buffer.readByte() & 0xFF;
+        boolean crit = (visuals & 1) != 0;
+        boolean magic = (visuals & 2) != 0;
+        int hearts = (visuals >>> 2) & 0x3F;
         double relX = buffer.readShort() / 16.0;
         double relY = buffer.readShort() / 16.0;
         double relZ = buffer.readShort() / 16.0;
-        return new ClientboundStormDamagePacket(memberIdx, damage, kbX, kbZ, light, died, relX, relY, relZ);
+        return new ClientboundStormDamagePacket(memberIdx, damage, kbX, kbZ, light,
+                died, attackerId, crit, magic, hearts, relX, relY, relZ);
     }
 
     private static int clamp(int v, int lo, int hi) {

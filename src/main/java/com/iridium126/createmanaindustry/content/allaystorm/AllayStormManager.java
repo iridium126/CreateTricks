@@ -721,7 +721,8 @@ public final class AllayStormManager {
                 died ? SoundEvents.ALLAY_DEATH : SoundEvents.ALLAY_HURT,
                 SoundSource.NEUTRAL, 1.0F, 1.0F);
         ClientboundStormDamagePacket out = new ClientboundStormDamagePacket(idx, packet.damage(),
-                packet.kbX(), packet.kbZ(), packet.light(), died,
+                packet.kbX(), packet.kbZ(), packet.light(), died, player.getId(),
+                packet.crit(), packet.magic(), packet.hearts(),
                 packet.relX(), packet.relY(), packet.relZ());
         // pure server circuit: the attacker receives the broadcast like everyone
         for (var entry : rt.tracks.entrySet()) {

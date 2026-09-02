@@ -4,6 +4,7 @@ import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.client.particles.emitter.EmitterPresets;
 import com.iridium126.createmanaindustry.client.particles.emitter.EmitterSpec;
 import com.iridium126.createmanaindustry.client.particles.engine.CMIParticleEngine;
+import com.iridium126.createmanaindustry.client.particles.engine.HexSpecs;
 import com.iridium126.createmanaindustry.config.ClientConfig;
 
 import com.mojang.brigadier.Command;
@@ -33,6 +34,8 @@ import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
  *   /cmip spawn &lt;preset&gt; [count]        burst at the player's feet
  *   /cmip stream &lt;preset&gt; &lt;rate&gt; [sec]  streaming (sec &lt;= 0 = until /cmip clear)
  *   /cmip anim &lt;preset&gt; &lt;animation&gt;     live-switch MODEL animation (fly/dance/hold)
+ *   /cmip spray &lt;pigment&gt; [count]       Hexcasting conjure spray at the player
+ *                                       (amethyst / uuid / rainbow)
  *   /cmip allaystorm [count ≤4096] [radius]  MOVED to the server command (storm.StormCommand)
  *   /cmip bench &lt;count&gt;                 unthrottled stress test
  *   /cmip clear                          drop all particles and streams
@@ -51,6 +54,10 @@ public final class CMIParticleCommand {
 
     private static final SuggestionProvider<CommandSourceStack> ANIMATIONS = (ctx, builder) ->
             SharedSuggestionProvider.suggest(EmitterPresets.animationNames(), builder);
+
+    private static final SuggestionProvider<CommandSourceStack> PIGMENTS = (ctx, builder) ->
+            SharedSuggestionProvider.suggest(java.util.Arrays.stream(HexSpecs.Pigment.values())
+                    .map(p -> p.name().toLowerCase(java.util.Locale.ROOT)).toList(), builder);
 
     @SubscribeEvent
     public static void register(RegisterClientCommandsEvent event) {
@@ -78,6 +85,13 @@ public final class CMIParticleCommand {
                                         .then(Commands.argument("animation", StringArgumentType.word())
                                                 .suggests(ANIMATIONS)
                                                 .executes(CMIParticleCommand::anim))))
+                        .then(Commands.literal("spray")
+                                .then(Commands.argument("pigment", StringArgumentType.word())
+                                        .suggests(PIGMENTS)
+                                        .executes(ctx -> spray(ctx, 30))
+                                        .then(Commands.argument("count", IntegerArgumentType.integer(1, 2000))
+                                                .executes(ctx -> spray(ctx,
+                                                        IntegerArgumentType.getInteger(ctx, "count"))))))
                         .then(Commands.literal("bench")
                                 .then(Commands.argument("count", IntegerArgumentType.integer(1, 8_000_000))
                                         .executes(CMIParticleCommand::bench)))
@@ -160,6 +174,39 @@ public final class CMIParticleCommand {
         CMIParticleEngine.INSTANCE.setAnimation(spec, anim);
         tell(ctx, "Animation switch queued: " + presetName + " -> " + animName
                 + " (live particles switch next frame).");
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int spray(CommandContext<CommandSourceStack> ctx, int count) {
+        String name = StringArgumentType.getString(ctx, "pigment");
+        HexSpecs.Pigment pigment;
+        try {
+            pigment = HexSpecs.Pigment.valueOf(name.toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            pigment = null;
+        }
+        if (pigment == null) {
+            tell(ctx, "Unknown pigment. Try: amethyst, uuid, rainbow");
+            return 0;
+        }
+        if (!engine(ctx)) {
+            return 0;
+        }
+        // vanilla StaffCastEnv caster spray: origin = the player's position,
+        // velocity straight up 1.5 b/s, fuzziness 0.4, spread π/3, 30 motes.
+        // NeoForge client-command sources carry no player entity, so the
+        // local player comes straight off Minecraft.
+        var player = net.minecraft.client.Minecraft.getInstance().player;
+        if (player == null) {
+            tell(ctx, "A player is required (the uuid pigment keys off the caster's UUID).");
+            return 0;
+        }
+        at.petrak.hexcasting.api.pigment.ColorProvider provider =
+                HexSpecs.pigment(pigment, player.getUUID());
+        Vec3 pos = player.position();
+        CMIParticleEngine.INSTANCE.spawnHexSpray(pos, new Vec3(0.0, 1.5, 0.0),
+                0.4, Math.PI / 3, count, HexSpecs.sampleWheel(provider));
+        tell(ctx, "Hex spray: " + count + " conjure motes, pigment " + name + ".");
         return Command.SINGLE_SUCCESS;
     }
 

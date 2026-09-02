@@ -306,13 +306,13 @@ vec3 cmiStormWhisker(vec3 pos, vec3 dir) {
 // makePoofParticles distribution: position uniform inside the allay bounding
 // box (getRandomX/Z(1.0) = ±bbWidth, getRandomY = 0..bbHeight), velocity =
 // gaussian*0.02 + uniform*±0.05 blocks/tick = gaussian*0.4 + uniform*±1.0 b/s.
-// The poof emitter's spec (life/drag/gravity/sprites) is read from its own
-// header; lighting comes from the light stash the damage queue left in p1.w.
+// Lifetime = the vanilla ExplodeParticle distribution (computed below, not the
+// header's range fields); drag/gravity/sprites ride the poof emitter's header;
+// lighting comes from the light stash the damage queue left in p1.w.
 void spawnDeathPoof(uint hb, vec4 p0, vec4 p1, vec4 p3) {
     float chain = emitters.u[hb + 16u].x; // deathEmitId (0 = none)
     if (chain < 0.5)
         return;
-    uint cb = uint(chain) * VEC4_PER_EMITTER;
     // storm members carry their IDENTITY in p0.w (memberIdx+1, up to 131073)
     // -- the size multiplier for them is a constant 1.0 (header storm slot
     // 18.x > 0.5), or the poof metrics would scale with the member index
@@ -323,7 +323,11 @@ void spawnDeathPoof(uint hb, vec4 p0, vec4 p1, vec4 p3) {
     float sh = 0.6 * sscale;  // vanilla Allay bbHeight × render scale
     float light = p1.w;       // packed light stashed by the damage queue
     for (int i = 0; i < 20; i++) {
-        float s = p3.z * 91.7 + float(i) * 7.31;
+        // stride 7.31 ≈ 0.75 hash folds/step — adequate decorrelation for the
+        // storm's [0,1) mseed, and for the WIDE non-storm seeds too (the old
+        // ·91.7 pre-scale pushed the input to ULP 8 where the stride itself
+        // rounded away, clumping the burst)
+        float s = p3.z + float(i) * 7.31;
         vec2 ga = cmiGauss2(s + 21.0);
         vec2 gb = cmiGauss2(s + 41.0);
         vec3 pos = vec3(p0.x + (cmiHash1(s) * 2.0 - 1.0) * sw,
@@ -332,15 +336,22 @@ void spawnDeathPoof(uint hb, vec4 p0, vec4 p1, vec4 p3) {
         vec3 vel = vec3(ga.x * 0.4 + (cmiHash1(s + 3.0) * 2.0 - 1.0),
                         ga.y * 0.4 + (cmiHash1(s + 4.0) * 2.0 - 1.0),
                         gb.x * 0.4 + (cmiHash1(s + 5.0) * 2.0 - 1.0));
-        float maxLife = max(mix(emitters.u[cb + 5u].x, emitters.u[cb + 5u].y,
-                                cmiHash1(s + 12.1)), 0.1);
+        // Lifetime = the vanilla ExplodeParticle distribution 16/(0.8r+0.2)+2
+        // ticks, continuous (no integer-tick quantization — the engine
+        // integrates continuous ages). Range (0.9, 4.1] s, biased short like
+        // vanilla; the POOF header's life min/max are range documentation only.
+        float maxLife = max((16.0 / (0.8 * cmiHash1(s + 12.1) + 0.2) + 2.0) / 20.0, 0.1);
         uint slot = atomicAdd(counter.writeSlot, 1u);
         if (slot >= uCapacity)
             return;
         uint wb = slot * 4u;
-        // p0.w: ExplodeParticle quadSize 0.1*(r²*6+1) → 0.1..0.7 half-extent via
-        // the 0.30 spec size × this 0.333..2.333 multiplier
-        writeBuf.data[wb + 0u] = vec4(pos, 0.333 + 2.0 * cmiHash1(s + 13.1));
+        // p0.w: exact vanilla ExplodeParticle quadSize 0.1*(r1*r2*6+1) — the
+        // product of two INDEPENDENT uniforms (mean 0.25, pdf -ln-shaped, not
+        // a single r²) — via the 0.30 spec size × this ((r1*r2*6+1)/3)
+        // multiplier. Range [0.1, 0.7] half-extent; the distribution shape is
+        // biased low exactly like vanilla.
+        writeBuf.data[wb + 0u] = vec4(pos,
+                (cmiHash1(s + 13.1) * cmiHash1(s + 13.7) * 6.0 + 1.0) / 3.0);
         writeBuf.data[wb + 1u] = vec4(vel, 0.0);
         writeBuf.data[wb + 2u] = vec4(1.0, 1.0, 1.0, light);
         writeBuf.data[wb + 3u] = vec4(0.0, maxLife, s, uintBitsToFloat(uint(chain)));
@@ -479,7 +490,10 @@ void main() {
         if (flutter > 0.0) {
             // hp holds maxLife for non-MODEL materials (flutter is sprite-only)
             float fr = clamp(age / max(hp, 1e-5), 0.0, 1.0);
-            float ang = radians(p3.z * 60.0);
+            // flutter phase: vanilla uses nextFloat·60°. The stored seed is the
+            // WIDE per-particle value (emit.comp wideSeed), so the phase rides a
+            // hash fold — a raw ×60° at ~7e5 would trash float sin/cos precision
+            float ang = radians(cmiHash1(p3.z) * 60.0);
             float acc = flutter * pow(fr, 1.25);
             vel.x += cos(ang) * acc * uDt;
             vel.z += sin(ang) * acc * uDt;
@@ -868,11 +882,14 @@ void main() {
         pos += vel * uDt;
     age += uDt;
 
-    // DIE_ON_GROUND (cherry): draw the landing frame once, gone next tick.
-    // hp holds maxLife for non-MODEL materials; MODEL never uses DIE_ON_GROUND
-    // (corpses expire through the countdown instead).
+    // DIE_ON_GROUND (cherry): vanilla removes the particle in the same tick it
+    // touches ground — BEFORE the frame renders, so the landing position is
+    // never drawn (the last rendered frame is the one before touchdown).
+    // Skipping the output write below does exactly that: the particle compacts
+    // out this frame. hp holds maxLife for non-MODEL materials; MODEL never
+    // uses DIE_ON_GROUND (corpses expire through the countdown instead).
     if (!isModel && collideMode > 1.5 && landed)
-        age = hp;
+        return;
     // corpse countdown advances AFTER the age bookkeeping; the hurt overlay
     // decays over vanilla's hurtTime (10 ticks = 0.5 s)
     if (isModel) {

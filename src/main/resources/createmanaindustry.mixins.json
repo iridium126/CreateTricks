@@ -63,7 +63,8 @@
     "iris.IrisRenderingPipelineTargetsAccessor",
     "iris.IrisIdMapMixin",
     "iris.IncludeGraphMixin",
-    "iris.MixinProgramDirectives"
+    "iris.MixinProgramDirectives",
+    "hexcasting.HexSprayRedirectMixin"
   ],
   "injectors": {
     "defaultRequire": 1

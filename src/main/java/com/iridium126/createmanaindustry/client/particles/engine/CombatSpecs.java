@@ -44,7 +44,10 @@ import com.iridium126.createmanaindustry.client.particles.emitter.EmitterSpec;
  *  17.y  spawnStyle: 0 default shape-based emit | 1 tracking crit star |
  *        2 damage-indicator heart
  *  17.z  lightMode: p2.w carries blockLight + 16·skyLight sampled at spawn
- *        (textured.vsh samples the real lightmap with it); 0 = legacy intensity
+ *        (textured.vsh samples the real lightmap with it); 0 = fullbright.
+ *        Combat specs post-pack 1 here; emitter specs opt in via
+ *        {@code EmitterSpec.Builder.lightmap} (vanilla cherry leaves) — the
+ *        slot is material-split, MODEL reads it as heldItem instead
  *  17.w  frameBase: fixed atlas frame for single-frame combat sprites (0 = the
  *        legacy random-pick path used by cherry)
  * </pre>
@@ -97,16 +100,16 @@ final class CombatSpecs {
     /** CritParticle lifetime 6/(r·0.8+0.6) ticks → 4.3..10 ticks → 0.21..0.5 s (uniform shape approx). */
     private static final double CRIT_LIFE_MIN = 0.21;
     private static final double CRIT_LIFE_MAX = 0.5;
-    /** CritParticle quadSize 0.1·(0.5+0.5r)·2·0.75 half-extent → mean 0.1125 (engine p0.w jitter 0.7..1.3 spans the vanilla range). */
+    /** CritParticle quadSize 0.1·(0.5+0.5r)·2·0.75 half-extent → mean 0.1125 (the emit-path [2/3, 4/3] p0.w range spans the vanilla [0.075, 0.15) exactly). */
     private static final double CRIT_SIZE = 0.1125;
     /** ExplodeParticle friction 0.9/tick → −ln(0.9)·20 1/s. */
     private static final double POOF_DRAG = -Math.log(0.9) * 20.0;
     /** ExplodeParticle gravity field −0.1 → gentle UPWARD drift +1.6 b/s² (see the sign note above). */
     private static final double POOF_GRAVITY = -0.04 * -0.1 * 400.0;
-    /** ExplodeParticle lifetime 16/(r·0.8+0.2)+2 ticks → 18..82 ticks → 0.9..4.1 s. */
+    /** ExplodeParticle lifetime 16/(r·0.8+0.2)+2 ticks → 18..82 ticks → (0.9, 4.1] s. RANGE DOCUMENTATION ONLY: the death chain computes the shaped continuous distribution directly (uniform-collapse deviation retired). */
     private static final double POOF_LIFE_MIN = 0.9;
     private static final double POOF_LIFE_MAX = 4.1;
-    /** ExplodeParticle quadSize 0.1·(r²·6+1) → 0.1..0.7 half-extent, mean 0.3 (death chain writes p0.w 0.333+2u for the range). */
+    /** ExplodeParticle quadSize 0.1·(r1·r2·6+1) → 0.1..0.7 half-extent (product of two INDEPENDENT uniforms, mean 0.25); the death chain writes p0.w = (r1·r2·6+1)/3 for the exact shape. */
     private static final double POOF_SIZE = 0.30;
 
     /** Vanilla crit star ({@code ParticleTypes.CRIT}). */

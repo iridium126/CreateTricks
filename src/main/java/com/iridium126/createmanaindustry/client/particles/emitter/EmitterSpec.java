@@ -31,8 +31,10 @@ import net.minecraft.world.phys.Vec3;
  *      GPU — the header deliberately carries no world-position state),
  *      spriteCount, 0, 0
  *  17:  animation(0 FLY..3 DEATH, MODEL only), spawnStyle (storm members
- *      write 3 post-pack), heldItem (0 none, 1..6 sword tier — see
- *      {@link HeldItem}), 0
+ *      write 3 post-pack), .z is MATERIALLY SPLIT — MODEL reads it as
+ *      heldItem (0 none, 1..6 sword tier — see {@link HeldItem}) while
+ *      textured (ALPHA/OPAQUE) reads it as lightMode (1 = p2.w carries the
+ *      spawn-time packed light, e.g. vanilla cherry leaves), 0
  *  18..19: reserved (storm parameters + anchor for storm specs)
  * </pre>
  */
@@ -240,6 +242,16 @@ public final class EmitterSpec {
      * uniforms instead, and the two paths must never stack.
      */
     public final HeldItem heldItem;
+    /**
+     * Lightmap flag for textured (ALPHA/OPAQUE) emitters (header 17.z — the
+     * same slot MODEL reads as heldItem, split by material): 1 = the CPU
+     * samples {@code LevelRenderer.getLightColor} at the spawn origin into the
+     * emit command and the shader multiplies the sprite by the real vanilla
+     * lightmap (vanilla {@code Particle.getLightColor} behaviour, e.g. the
+     * cherry leaves). 0 = fullbright (vanilla petals are NOT fullbright — this
+     * is the cherry-alignment switch).
+     */
+    public final boolean lightmap;
 
     private final float[] packed;
 
@@ -272,6 +284,7 @@ public final class EmitterSpec {
         this.spriteCount = Math.max(1, Math.min(64, b.spriteCount));
         this.animation = Objects.requireNonNull(b.animation, "animation");
         this.heldItem = Objects.requireNonNull(b.heldItem, "heldItem");
+        this.lightmap = b.lightmap;
         this.packed = pack();
     }
 
@@ -326,9 +339,10 @@ public final class EmitterSpec {
         f[16 * 4 + 1] = spriteCount;
         f[16 * 4 + 2] = 0f;
         f[16 * 4 + 3] = 0f;
-        // 17: animation (MODEL only), spawnStyle (storm writes post-pack), heldItem, 0
+        // 17: animation (MODEL only), spawnStyle (storm writes post-pack),
+        // heldItem (MODEL) / lightMode (textured) — material split, 0
         f[17 * 4 + 0] = animation.index();
-        f[17 * 4 + 2] = heldItem.index();
+        f[17 * 4 + 2] = material == Material.MODEL ? heldItem.index() : (lightmap ? 1f : 0f);
         // 18..19 stay zero
         return f;
     }
@@ -395,6 +409,7 @@ public final class EmitterSpec {
         private int spriteCount = 1;
         private Animation animation = Animation.FLY;
         private HeldItem heldItem = HeldItem.NONE;
+        private boolean lightmap = false;
 
         public Builder shape(EmitterShape v) { this.shape = v; return this; }
         public Builder size(double v) { this.size = v; return this; }
@@ -446,6 +461,13 @@ public final class EmitterSpec {
         public Builder animation(Animation v) { this.animation = v; return this; }
         /** Held item rendered at the vanilla hand anchor (default NONE). */
         public Builder heldItem(HeldItem v) { this.heldItem = v; return this; }
+        /**
+         * Textured emitters only: multiply the sprite by the real vanilla
+         * lightmap sampled at the spawn point (vanilla {@code Particle
+         * .getLightColor} behaviour). Reserved header slot 17.z, shared with
+         * heldItem — which is itself MODEL-only, so the two never collide.
+         */
+        public Builder lightmap(boolean v) { this.lightmap = v; return this; }
 
         public EmitterSpec build() {
             return new EmitterSpec(this);

@@ -207,6 +207,10 @@ public final class CMIParticleEngine {
     private final int[] emitMemberKey = new int[ParticleBuffers.MAX_EMIT_COMMANDS];
     /** Per-command ring-spawn flag (storm growth members; emit command word c.w). */
     private final boolean[] emitRingSpawn = new boolean[ParticleBuffers.MAX_EMIT_COMMANDS];
+    /** Hex-spray command marker: c slots carry {vel.xyz b/s, packed fuzz/spread} instead of light/member fields. */
+    private final boolean[] emitHex = new boolean[ParticleBuffers.MAX_EMIT_COMMANDS];
+    private final Vec3[] emitHexVel = new Vec3[ParticleBuffers.MAX_EMIT_COMMANDS];
+    private final float[] emitHexParams = new float[ParticleBuffers.MAX_EMIT_COMMANDS];
 
     // ---- vanilla combat particles (crit / enchanted-hit / heart / poof) ----
     /**
@@ -244,6 +248,36 @@ public final class CMIParticleEngine {
 
     /** One-shot combat burst (damage-indicator hearts), drained next compute. */
     private record CombatBurst(int emitId, int sourceIdx, int memberIdx, float light, int count) {
+    }
+
+    /** One-shot Hexcasting conjure spray (spawnStyle 4), drained next compute. */
+    private record HexSpray(float x, float y, float z, float vx, float vy, float vz,
+            float fuzz, float spread, int count, float[] wheel) {
+    }
+
+    private final List<HexSpray> hexSprays = new ArrayList<>();
+
+    /**
+     * Client-side Hexcasting conjure spray (spawnStyle 4): the vanilla
+     * {@code MsgCastParticleS2C.Handler} distribution — {@code vel} in
+     * blocks/s, {@code fuzziness} the spawn-sphere radius, {@code spread} the
+     * cone half-angle in radians, {@code wheelRGBA} one wheel of 8 sampled
+     * pigment colors ({@link HexSpecs#sampleWheel}). The exact per-particle
+     * sampling happens GPU-side in emit.comp at the next frame packing.
+     */
+    public void spawnHexSpray(Vec3 pos, Vec3 vel, double fuzziness, double spread, int count, float[] wheelRGBA) {
+        if (!this.available() || count <= 0)
+            return;
+        this.hexSprays.add(new HexSpray((float) pos.x, (float) pos.y, (float) pos.z,
+                (float) vel.x, (float) vel.y, (float) vel.z,
+                (float) fuzziness, (float) spread, count, wheelRGBA));
+    }
+
+    /** fuzz (÷2) and spread (÷π), each 16-bit, packed into one float. */
+    private static float packHexParams(double fuzz, double spread) {
+        int f = Math.max(0, Math.min(0xFFFF, (int) Math.round(fuzz * 0.5 * 0xFFFF)));
+        int s = Math.max(0, Math.min(0xFFFF, (int) Math.round(spread / Math.PI * 0xFFFF)));
+        return Float.intBitsToFloat(f | (s << 16));
     }
 
     private final List<TrackingBurst> trackings = new ArrayList<>();
@@ -904,6 +938,12 @@ public final class CMIParticleEngine {
         // below append with plain locals. See AllayStormRuntime for the
         // scheduling semantics (dead-member run splitting, ~60-frame drain,
         // atlas + bake-quadrant upkeep).
+        // Hex-spray markers MUST reset every frame: only the hex drain writes
+        // them, and a stale true would re-interpret the next frame's reuse of
+        // that slot (combat/classic/storm) as hex — its c slots would be
+        // overwritten with stale spray params (combat light = vel.x ≈ 0 →
+        // blacked-out particles).
+        java.util.Arrays.fill(this.emitHex, false);
         var schedule = new AllayStormRuntime.EmitSchedule(this.emitIds, this.emitCounts, this.emitOrigins,
                 this.emitTranslucent, this.emitOriginRef, this.emitLight, this.emitMemberBase, this.emitMemberKey,
                 this.emitRingSpawn);
@@ -930,7 +970,7 @@ public final class CMIParticleEngine {
             this.emitOrigins[entryCount] = b.origin;
             this.emitTranslucent[entryCount] = isTranslucent(b.spec);
             this.emitOriginRef[entryCount] = 0f;
-            this.emitLight[entryCount] = 0f;
+            this.emitLight[entryCount] = specSpawnLight(b.spec, b.origin);
             this.emitMemberKey[entryCount] = 0;
             this.emitRingSpawn[entryCount] = false;
             totalSpawn += n;
@@ -1005,12 +1045,48 @@ public final class CMIParticleEngine {
             this.emitOrigins[entryCount] = s.origin;
             this.emitTranslucent[entryCount] = isTranslucent(s.spec);
             this.emitOriginRef[entryCount] = 0f;
-            this.emitLight[entryCount] = 0f;
+            this.emitLight[entryCount] = specSpawnLight(s.spec, s.origin);
             this.emitMemberKey[entryCount] = 0;
             this.emitRingSpawn[entryCount] = false;
             totalSpawn += n;
             entryCount++;
         }
+        // Hexcasting conjure sprays (spawnStyle 4): ONE emit command per
+        // spray — the per-particle cone/fuzz sampling is GPU-side (emit.comp).
+        // Each distinct pigment wheel is a distinct spec (the colors ride the
+        // packed header's keyframe slots), so emitter dedupe collapses
+        // identical pigments; fresh ids get the style/colorMode header patch.
+        for (HexSpray hs : this.hexSprays) {
+            if (entryCount >= ParticleBuffers.MAX_EMIT_COMMANDS)
+                break;
+            EmitterSpec spec = HexSpecs.specForWheel(hs.wheel());
+            int id;
+            Integer existing = this.emitterIds.get(spec);
+            if (existing != null) {
+                id = existing;
+            } else {
+                id = ensureEmitter(spec);
+                if (id < 0)
+                    continue;
+                this.gpu.setEmitterHeader(id, HexSpecs.packedHeader(spec));
+            }
+            Vec3 origin = new Vec3(hs.x(), hs.y(), hs.z());
+            ensureEmitterRuntime(id, spec, origin);
+            this.emitIds[entryCount] = id;
+            this.emitCounts[entryCount] = hs.count();
+            this.emitOrigins[entryCount] = origin;
+            this.emitTranslucent[entryCount] = false; // additive
+            this.emitOriginRef[entryCount] = 0f;
+            this.emitLight[entryCount] = 0f;
+            this.emitMemberKey[entryCount] = 0;
+            this.emitRingSpawn[entryCount] = false;
+            this.emitHex[entryCount] = true;
+            this.emitHexVel[entryCount] = new Vec3(hs.vx(), hs.vy(), hs.vz());
+            this.emitHexParams[entryCount] = packHexParams(hs.fuzz(), hs.spread());
+            totalSpawn += hs.count();
+            entryCount++;
+        }
+        this.hexSprays.clear();
 
         this.streamCount = this.streams.size();
 
@@ -1075,9 +1151,16 @@ public final class CMIParticleEngine {
                 // c: spawn-time packed light (combat), storm member index base
                 // (storm style 3), combat member key (c.z: memberIdx+1, 0 =
                 // legacy pool-index source; consumed only by combat styles 1/2),
-                // ring-spawn flag (c.w: storm growth members spawn on the ring)
-                this.emitFront.put(this.emitLight[i]).put(this.emitMemberBase[i])
-                        .put((float) this.emitMemberKey[i]).put(this.emitRingSpawn[i] ? 1f : 0f);
+                // ring-spawn flag (c.w: storm growth members spawn on the ring).
+                // Hex sprays (style 4) reuse all four: {vel.xyz b/s,
+                // intBitsToFloat(fuzz16 | spread16<<16)} — see emit.comp.
+                if (this.emitHex[i]) {
+                    this.emitFront.put((float) this.emitHexVel[i].x).put((float) this.emitHexVel[i].y)
+                            .put((float) this.emitHexVel[i].z).put(this.emitHexParams[i]);
+                } else {
+                    this.emitFront.put(this.emitLight[i]).put(this.emitMemberBase[i])
+                            .put((float) this.emitMemberKey[i]).put(this.emitRingSpawn[i] ? 1f : 0f);
+                }
                 // b.z carries the exclusive prefix offset so the shader can
                 // binary-search its command instead of scanning linearly
                 prefix += this.emitCounts[i];
@@ -2004,10 +2087,12 @@ public final class CMIParticleEngine {
             mc.level.playLocalSound(player.getX(), player.getY(), player.getZ(),
                     SoundEvents.PLAYER_ATTACK_CRIT, SoundSource.PLAYERS, 1.0F, 1.0F, false);
         } else {
-            // vanilla: STRONG on a full charge, WEAK otherwise (sweep is
-            // absent, so its branch of the vanilla if never applies here)
+            // vanilla: STRONG on a full charge, WEAK otherwise (the gate is
+            // !crit && !sweep — the sweep branch never applies here, and a
+            // sprint-knockback hit still falls through to STRONG/WEAK)
             mc.level.playLocalSound(player.getX(), player.getY(), player.getZ(),
-                    SoundEvents.PLAYER_ATTACK_STRONG, SoundSource.PLAYERS, 1.0F, 1.0F, false);
+                    fullCharge ? SoundEvents.PLAYER_ATTACK_STRONG : SoundEvents.PLAYER_ATTACK_WEAK,
+                    SoundSource.PLAYERS, 1.0F, 1.0F, false);
         }
 
         float total = damage + enchBonus;
@@ -2022,20 +2107,22 @@ public final class CMIParticleEngine {
         // (the map in emit.comp resolves it per dispatch); non-storm sources
         // keep the legacy pool-index path.
         float light = lightSample(mc.level, hitPos);
+        boolean magic = enchBonus > 0.0F;
+        int hearts = total > 2.0F ? (int) (total * 0.5F) : 0;
         if (crit) {
             int cid = ensureCombatEmitter(CombatSpecs.CRIT);
             if (cid >= 0)
                 this.trackings.add(new TrackingBurst(cid, idx, memberIdx, light));
         }
-        if (enchBonus > 0.0F) {
+        if (magic) {
             int mid = ensureCombatEmitter(CombatSpecs.MAGIC);
             if (mid >= 0)
                 this.trackings.add(new TrackingBurst(mid, idx, memberIdx, light));
         }
-        if (total > 2.0F) {
+        if (hearts > 0) {
             int hid = ensureCombatEmitter(CombatSpecs.HEART);
             if (hid >= 0)
-                this.combatBursts.add(new CombatBurst(hid, idx, memberIdx, light, (int) (total * 0.5F)));
+                this.combatBursts.add(new CombatBurst(hid, idx, memberIdx, light, hearts));
         }
 
         // vanilla knockback (LivingEntity.knockback, airborne target: y is
@@ -2076,7 +2163,7 @@ public final class CMIParticleEngine {
             // spot before playing hurt-flash / corpse / poof there.
             net.neoforged.neoforge.network.PacketDistributor.sendToServer(
                     new com.iridium126.createmanaindustry.network.ServerboundStormHitPacket(
-                            memberIdx, total, kbVecX, kbVecZ, light,
+                            memberIdx, total, kbVecX, kbVecZ, light, crit, magic, hearts,
                             hitPos.x - this.storm.center().x, hitPos.y - this.storm.center().y,
                             hitPos.z - this.storm.center().z));
         } else {
@@ -2097,6 +2184,21 @@ public final class CMIParticleEngine {
     private static float lightSample(ClientLevel level, Vec3 pos) {
         int packed = LevelRenderer.getLightColor(level, BlockPos.containing(pos));
         return LightTexture.block(packed) + 16f * LightTexture.sky(packed);
+    }
+
+    /**
+     * Spawn-time packed light for one classic (style-0) emit command: specs
+     * carrying the lightmap flag (vanilla cherry leaves, same mechanism as the
+     * combat particles) sample {@code LevelRenderer.getLightColor} at the
+     * spawn origin; everything else keeps 0. Sampled HERE rather than at spawn
+     * call time because emit commands are packed per frame on the render
+     * thread, where the ClientLevel is guaranteed valid.
+     */
+    private float specSpawnLight(EmitterSpec spec, Vec3 origin) {
+        if (!spec.lightmap || origin == null)
+            return 0f;
+        ClientLevel level = Minecraft.getInstance().level;
+        return level == null ? 0f : lightSample(level, origin);
     }
 
     /**
@@ -2345,6 +2447,36 @@ public final class CMIParticleEngine {
     public float ensurePoofEmitter() {
         int id = ensureCombatEmitter(CombatSpecs.POOF);
         return id >= 0 ? (float) id : 0f;
+    }
+
+    /**
+     * Relay-side combat visuals: a storm hit broadcast whose attacker is
+     * someone else spawns the same vanilla set the attacker drew locally —
+     * crit / enchanted-hit tracking stars (the 3-tick window) and the
+     * one-shot damage hearts. Source resolution rides the MEMBER identity
+     * (emit.comp drops the spawn when the member is absent from this
+     * client's pool); the light is the attacker's spawn-time sample riding
+     * the broadcast. The ATTACKER skips this path — its own visuals spawned
+     * instantly at click time (vanilla draws everyone's through the same
+     * server relay; local-instant on the attacking client is the documented
+     * deviation, matching its local attack sounds).
+     */
+    public void spawnCombatVisuals(int memberIdx, float light, boolean crit, boolean magic, int hearts) {
+        if (crit) {
+            int cid = ensureCombatEmitter(CombatSpecs.CRIT);
+            if (cid >= 0)
+                this.trackings.add(new TrackingBurst(cid, -1, memberIdx, light));
+        }
+        if (magic) {
+            int mid = ensureCombatEmitter(CombatSpecs.MAGIC);
+            if (mid >= 0)
+                this.trackings.add(new TrackingBurst(mid, -1, memberIdx, light));
+        }
+        if (hearts > 0) {
+            int hid = ensureCombatEmitter(CombatSpecs.HEART);
+            if (hid >= 0)
+                this.combatBursts.add(new CombatBurst(hid, -1, memberIdx, light, hearts));
+        }
     }
 
     /**

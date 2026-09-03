@@ -1,10 +1,14 @@
-# Allay Dimension（allay_dimension）— ±3000 万 Y 轴维度分析与开发文档
+# Allay Dimension（allay_dimension）— ±3000 万 Y 轴维度 + 现代体素渲染重写 开发文档
 
 > 模组：CreateManaIndustry（机械动力：魔法工业）
 > 版本基线：1.21.1 / NeoForge 21.1.227 / Java 21 / Mixin（已有 `createmanaindustry.mixins.json` + `CMIMixinPlugin`）
-> 参考实现：`.refs/CubicChunks3`（NeoForge 21.6.4-beta / MC 1.21.6，**作者声明"Not yet usable"，未完成重写**）、`.refs/voxy`（Fabric 0.2.19-beta / MC 26.2 dev，**Fabric 独占**）、`.refs/neoforge-21.1.227`（原版反编译源）
-> 状态：**分析完成，未开始实现**（2026-09-02）
-> 目标：注册自定义维度 `createmanaindustry:allay_dimension`；Y 轴支持 −30,000,000 ~ +30,000,000；XZ 与默认世界边界一致（±29,999,984）；兼容 voxy 地图
+> 参考实现：`.refs/CubicChunks3`（NeoForge 21.6.4-beta / MC 1.21.6，作者声明"Not yet usable"，未完成重写）、`.refs/voxy`（Fabric 0.2.19-beta——**仅作为 GPU-Driven 体素渲染架构参考**，兼容性明确搁置）、`.refs/neoforge-21.1.227`（原版反编译源）、`.refs/sodium` / `.refs/Iris`（禁用目标与 mixin 目标核对）
+> 状态：**分析完成 + 决策定稿，未开始实现**（2026-09-03 决策评审定稿；实施目标 = 阶段 3 ALLVR V0）
+> 目标：
+> 1. 注册自定义维度 `createmanaindustry:allay_dimension`（**阶段 1 前置任务，无独立可玩里程碑**）；Y 轴支持 −30,000,000 ~ +30,000,000；XZ 与默认世界边界一致（±29,999,984）；
+> 2. **仅在该维度内**重写区块数据结构与渲染：Cube（32³）体素管线、Mesh Shader、延迟着色 + G-Buffer、GPU-Driven 视锥/遮挡剔除与 LOD 选择、draw call 合并、阴影贴图 + 光照探针**完全取代原版光照引擎**、预烘焙光照/阴影/LOD；
+> 3. 维度内禁用 sodium/iris 等不兼容渲染路径（无需兼容其他 mod）；**voxy 兼容明确搁置**（§12）；
+> 4. **暂不接入玩法**：游戏性光照、传送内容、自定义群系/天空统一后置阶段 7；进入维度只用原版命令。
 
 ---
 
@@ -12,20 +16,38 @@
 
 | 目标 | 可行性 | 路线 |
 |---|---|---|
-| 注册维度 `allay_dimension` | ✅ 立即可做 | 原版数据包 JSON（`dimension_type` + `dimension`），阶段 0 |
-| Y 轴 ±3000 万 | ⚠️ 原版**完全不可能**，必须自建加载层 | 借鉴 CubicChunks3 的 Cube（立方区块）架构，阶段 1–3 |
+| 注册维度 `allay_dimension` | ✅ 立即可做 | 原版数据包 JSON（§4），阶段 1 前置任务（原"阶段 0 可玩窗口"已取消） |
+| Y 轴 ±3000 万 | ⚠️ 原版**完全不可能**，必须自建加载层 | 借鉴 CubicChunks3 的 Cube（立方区块）架构，阶段 1–2 |
 | XZ ±29,999,984 | ✅ 原生支持 | `BlockPos` X/Z 各 26 bit（±33,554,432），CC3 `CubePos` 21 bit/轴（±33,554,431），均覆盖 |
-| 兼容 voxy | ⚠️ 有硬限制，需窗口化策略 | voxy 内部 Y 仅 8 bit（**±4096 格**），超界**静默数据混叠**；见 §7 三条路线，推荐路线 A（可视窗口折叠） |
+| 空岛世界生成 | ✅ 自研密度场 | `AllvrIslandFieldGenerator`（§5.3），阶段 1 |
+| Cube 体素数据结构 + GPU 渲染 | ✅ 可行，有 voxy 全套先例 | 页化体素纹理 + 八叉树 LOD + 8B/quad 网格流，阶段 3 |
+| GPU-Driven 剔除/LOD/draw call 合并 | ✅ 可行，voxy 已验证 | GPU 遍历 + HiZ 遮挡 + 屏幕面积下钻 + MDIC 零回读，阶段 4 |
+| 延迟着色 + G-Buffer + Mesh Shader | ✅ 可行（EXT/NV_mesh_shader 探测 + MDI 回退） | 阶段 5–6 |
+| 取代原版光照（CSM + 探针 + 预烘焙） | ✅ 可行且**大幅简化**原计划 | 服务端零光照 BFS：客户端 GPU 烘焙，阶段 5 |
+| 游戏性玩法接入 | ⛔ **暂缓** | 阶段 7（游戏性光照/传送内容/自定义群系与天空） |
+| 兼容 voxy | ⛔ **明确搁置** | §12：不投入、不主动污染；窗口外数据不进原版列 chunk |
 
-**核心结论（三道数学硬墙）**：
+**核心结论**：
 
-1. **原版墙**：1.21.1 `BlockPos` 打包 X/Z 各 26 bit、Y 仅 12 bit → `DimensionType` 硬约束 `min_y ∈ [−2032, 2031]`、`height ≤ 4064`（见 §2.1）。维度 JSON 写再大也解析报错。±3000 万 Y 必须像 CubicChunks 一样**绕开整个"列区块 + 统一高度"模型**。
-2. **CC3 能力墙**：CC3 的 `CubePos` 每轴 21 bit（方块 ±33,554,431）**恰好覆盖 ±3000 万**，其 Cube/CloPos/DASM/SurfaceTracker 架构是现成蓝图；但 CC3 面向 1.21.6 且自身未完成（光照、存档 IO、地形生成均为 TODO），**只能参考架构，不能依赖或直接移植**。
-3. **voxy 墙**：voxy 的 64 bit section key 中 Y 仅 8 bit 有符号（section 粒度 32 格 → **Y ≈ ±4096 格**），超出部分被 `y & 0xFF` **静默截断混叠**（无报错、数据库被污染）；且其 ingest 触发链 100% 依赖"原版列区块 + 原版光照 + Sodium 渲染管线"，Cube 世界中会**静默失效**。此外 voxy **没有 NeoForge 版本**（§7.4）。
+1. **原版墙**：1.21.1 `BlockPos` 打包 X/Z 各 26 bit、Y 仅 12 bit → `DimensionType` 硬约束 `min_y ∈ [−2032, 2031]`、`height ≤ 4064`（§2.1）。±3000 万 Y 必须像 CubicChunks 一样**绕开整个"列区块 + 统一高度"模型**。
+2. **CC3 能力墙**：CC3 的 `CubePos` 每轴 21 bit（方块 ±33,554,431）**恰好覆盖 ±3000 万**，其 Cube/CloPos/SurfaceTracker 架构是现成蓝图；但 CC3 面向 1.21.6 且自身未完成（光照、存档 IO、地形生成均为 TODO），**只能参考架构，不能依赖或直接移植**——尤其它躺平的光照问题，本计划用"客户端 GPU 光照"彻底绕开（§11）。
+3. **渲染路线**：原版/Sodium 的"列 chunk → CPU 网格化 → 逐 section 提交"管线在 ±3000 万 Y + 无限高度下既装不下也跑不动。客户端采用 voxy 已验证的 **GPU-Driven 体素管线**（数据全驻显存、剔除/LOD/命令生成全在 GPU、整场地形 1 次 draw call），并按本项目需求升级为**延迟着色 + Mesh Shader + 预烘焙光照**（voxy 是前向着色 + 无阴影）。
+4. **voxy 墙（存档为据，指导搁置决策）**：voxy 的 64 bit section key 中 Y 仅 8 bit（±4096 格），超界静默混叠污染数据库；其 ingest 链 100% 依赖"原版列 chunk + 原版光照 + Sodium 渲染"，在 allay 维度（无列 chunk 方块数据、无原版光照、Sodium 已禁用）中**自然得不到数据**——既无法兼容也不会污染（§12）。
+
+**已定决策（2026-09-03 评审定稿，全文按此执行）**：
+
+1. **原阶段 0 取消**——窗口内地形数据与 cube 存档不兼容、玩法暂不接入，"4064 窗口可玩"没有独立发布价值；JSON 三件套降级为阶段 1 的第一个前置任务（§4）。
+2. **世界生成 = 自定义空岛密度场**：单岛 ≈ 2000×2000×200（长宽×厚），3D 格点阵列贯穿全高度；无结构、无 feature、无洞穴（V0），单步生成（§5.3）。
+3. **进入维度只用原版命令**（`/execute in ... run tp`），不注册命令、不做出生点安全处理（开发期创造模式测试）。
+4. **Java 命名 `Allvr` 前缀**：`Allay` 仅存于注册名/资源 id，避免与既有 18 个 `Allay*` 实体/燃烧器类混淆（§0 命名约定见各节）。
+5. **持久化后移至阶段 6**：阶段 1–5 cube 纯内存态，重启按种子确定性重生成空岛。
+6. **本次实施终点 = 阶段 3（ALLVR V0）**：Tier B MDI + 前向着色 + CPU 视锥 + 禁用器 + 合成光照；GPU 剔除/延迟着色/CSM/探针/Mesh Shader 属阶段 4–6。
+
+**命名约定（全文生效）**：Java 类一律 `Allvr` 前缀（`AllvrCubePos`、`AllvrBuffers`……新增类同样带前缀）；包结构：服务端 `com.iridium126.createmanaindustry.dimension.{cube,gen,heightmap,net}`，客户端 `com.iridium126.createmanaindustry.client.dimension.{render,light}`（GL 代码不进 common 包）；shader 资源 `assets/createmanaindustry/shaders/allvr/`（平行于 `shaders/particles/`）；子系统代号 **ALLVR**。
 
 ---
 
-## 2. 三道数学硬墙的源码证据
+## 2. 数学硬墙的源码证据
 
 ### 2.1 原版 1.21.1：Y 只有 12 bit
 
@@ -61,7 +83,7 @@ public static final int MIN_Y = MAX_Y - Y_SIZE + 1;                 // -2032
 - API 理论界（`CubicChunksBase`）：`MAX_SUPPORTED_HEIGHT = Integer.MAX_VALUE/2`，实际受打包位宽限制为 ±33.5M。
 - XZ 无需额外处理：原版世界边界 ±29,999,984 本就来自 26 bit X/Z 打包（3000 万取整），Cube 的 X/Z 21 bit（±33.5M 方块）与之一致。
 
-### 2.3 voxy：section key 中 Y 仅 8 bit
+### 2.3 voxy：section key 中 Y 仅 8 bit（搁置决策的依据）
 
 `.refs/voxy/src/main/java/me/cortex/voxy/common/world/WorldEngine.java`（第 91–108 行）：
 
@@ -73,19 +95,18 @@ public static int getY(long id) { return (int)((id<<4)>>56); } // 符号扩展 �
 ```
 
 - key 布局：`lvl(4) | y(8) | z(24) | x(24) | spare(4)`。section 粒度 32 格（lvl0 section = 2×2×2 个 16³ chunk section）。
-- **Y 表达范围 = ±127 section × 32 格 ≈ ±4096 格**。XZ 24 bit/轴（±8,388,608 section = ±2.68 亿格，充裕）。
-- 超界不报错：`y & 0xFF` 截断后 Y=+4096 与 Y=0 共用同一 key，**数据互相覆盖**（渲染错误 LoD + 数据库永久污染）。
-- 该布局**贯穿全链路**：磁盘格式（`SaveLoadSystem3.serialize` 把 key 原样写盘）、GPU（`NodeStore.writeNode` 写 SSBO）、GLSL（`assets/voxy/shaders/lod/pos_util.glsl` 的 `getLoDPosition` 同样 8 bit Y 解包）、邻接 remesh（`AsyncNodeManager` 按 `section.y±1`）。
+- **Y 表达范围 = ±127 section × 32 格 ≈ ±4096 格**。超界不报错：`y & 0xFF` 截断后数据互相覆盖（数据库永久污染）。
+- 该布局贯穿全链路（磁盘 SSBO GLSL 邻接 remesh），且 voxy **没有 NeoForge 版本**。详见 §12。
 
 ---
 
-## 3. CubicChunks3 技术体系综述（我们借鉴什么）
+## 3. CubicChunks3 技术体系综述（服务端 Cube 层借鉴什么）
 
-CC3 = `io.github.opencubicchunks/cubicchunks`（根项目，NeoForge mod）+ `CubicChunksCore`（loader 无关库：CubePos/Coords/CubicConstants/SurfaceTracker）。构建期依赖 `regionlib`（自研 3D region 存档库）与 **DASM**（字节码变换，见 §4.4）。**当前状态：地形为占位正弦波、光照 `getRawBrightness` 恒满亮、存档 `cc_read` 返回 empty——全部标注 TODO**。`src_old/` 是上一代（≈1.21.1 时期）实现，保留了 regionlib IO、旧 mixin，参考价值高。
+CC3 = `io.github.opencubicchunks/cubicchunks`（根项目，NeoForge mod）+ `CubicChunksCore`（loader 无关库：CubePos/Coords/CubicConstants/SurfaceTracker）。构建期依赖 `regionlib`（自研 3D region 存档库）与 **DASM**（字节码变换，见 §3.4）。**当前状态：地形为占位正弦波、光照 `getRawBrightness` 恒满亮、存档 `cc_read` 返回 empty——全部标注 TODO**。`src_old/` 是上一代（≈1.21.1 时期）实现，保留了 regionlib IO、旧 mixin，参考价值高。
 
 ### 3.1 核心思想：不做"更高的柱"，做"垂直堆叠的 Cube"
 
-CC3 **不**篡改 `LevelHeightAccessor.getMinY()/getHeight()`（`MixinLevelHeightAccessor` 仅是方法改名兼容），而是：
+CC3 **不**篡改 `LevelHeightAccessor.getMinY()/getHeight()`，而是：
 
 - 世界 = XZ 上的**列 chunk**（保留，承载结构引用、POI 等 2D 数据）+ 垂直方向**独立加载的 Cube**（承载方块/方块实体/流体）。
 - `MixinLevel` 把 `Level` 的方块访问（`getBlockState/setBlockState/getBlockEntity/getFluidState/...`）用 `@WrapOperation` 重定向到 `cc_getCubeAt(blockPos)` —— **方块读写根本不经过列 chunk 的 sections 数组**。
@@ -107,26 +128,25 @@ CC3 **不**篡改 `LevelHeightAccessor.getMinY()/getHeight()`（`MixinLevelHeigh
 | 距离/票据 | `MixinDistanceManager`、`MixinTicketStorage`、`MixinPlayerTicketTracker`、`MixinFixedPlayerDistanceChunkTracker`、`MixinChunkTracker` | 垂直视距（`verticalViewDistance` 默认 8） |
 | 网络 | `network/CCNetworkHandler`：`CCClientboundLevelCubeWithLightPacket`、`CCClientboundForgetLevelCloPacket`、`CCClientboundSetCubeCacheCenterPacket`；`server/network/MixinPlayerChunkSender` | 21 bit/轴 long 直写，规避原版 Y/section 窄类型 |
 | 客户端缓存 | `client/multiplayer/ClientCubeCache.Storage`（**3D** 环形缓存 `viewRange³`）、`MixinClientChunkCache`、`MixinClientLevel` | cube 版 ClientChunkCache |
-| 客户端渲染 | `MixinViewArea`（cubic 时 `sectionGridSizeY = renderDistance*2+1`，Y 与 XZ 对等；摄像机相对定位）、`MixinSectionRenderDispatcher$RenderSection`、`MixinSectionOcclusionGraph`、`MixinRenderRegionCache`、`MixinSectionCopy` | 3D 渲染网格 |
-| 实体/出生点 | `world/entity/MixinEntity`（`cc_cubePosition` 字段随 `setPosRaw` 更新）、`MixinMinecraftServer`（`SpawnPlaceFinder` 二分找地表、出生区块半径换算） | 垂直实体跟踪 |
+| 实体/出生点 | `world/entity/MixinEntity`（`cc_cubePosition` 字段随 `setPosRaw` 更新）、`MixinMinecraftServer`（`SpawnPlaceFinder` 二分找地表、出生区块半径换算） | 垂直实体跟踪（出生点部分本项目已砍，见 §5.2） |
 | 高度图 | Core 的 `SurfaceTrackerNode/Branch/Leaf`（16 叉树，`MAX_SCALE=6` 覆盖 ±2^28；格雷码增量编码，`InterleavedHeightmapStorage` 按位交织存 `.str` 文件） | **Core 中已完成的部分**，无限高度 heightmap |
-| 存档 | `src_old/.../world/storage/RegionCubeIO.java`：`region2d/`（列 NBT）+ `region3d/`（cube NBT），512B 扇区 + zlib | 新代码 TODO，旧实现可参考 |
+| 存档 | `src_old/.../world/storage/RegionCubeIO.java`：`region2d/`（列 NBT）+ `region3d/`（cube NBT），512B 扇区 + zlib | 新代码 TODO，旧实现阶段 6 参考 |
 
-注意：**没有** `BlockPos/ChunkPos/Heightmap/GameRules` 的 mixin——坐标本身不动，动的是"谁持有方块数据"。
+注意：**没有** `BlockPos/ChunkPos/Heightmap/GameRules` 的 mixin——坐标本身不动，动的是"谁持有方块数据"。**客户端渲染 mixin（CC3 的 `MixinViewArea` 等）与 CC3 的九步 3D 生成金字塔本计划均不采用**——前者被 ALLVR 完全替代（§6 起），后者因空岛生成无结构/无 feature 而退化为单步填充（§5.3），mixin 面积比 CC3 方案小一个数量级。
 
 ### 3.4 DASM：为什么不用纯 Mixin
 
-Cube 管线需要的是"原版 Chunk 管线方法的完整复制 + 类型批量替换"（`ChunkPos→CubePos`、`ChunkAccess→CubeAccess`、`StaticCache2D→StaticCache3D`……），`@Inject/@Redirect` 表达不了"复制整个方法并换 20 个类型"。CC3 用 `io.github.notstirred:dasm:3.2.0` 构建期完成（`mixin/dasmsets/ChunkToCubeSet`、`ChunkToCloSet` 等 6 个重定向集），并在 `ASMConfigPlugin` 里后处理 `@Public/@FactoryFromConstructor`。**对本项目的启示**：allay_dimension 的 cube 管线规模若小于 CC3，可先用 Mixin `@Inject + 手写复制`（维护性差但无构建魔法），规模上来再引 DASM；两条路在文档 §8 的阶段 1 定夺。
+Cube 管线需要的是"原版 Chunk 管线方法的完整复制 + 类型批量替换"（`ChunkPos→CubePos`、`ChunkAccess→CubeAccess`、`StaticCache2D→StaticCache3D`……），`@Inject/@Redirect` 表达不了"复制整个方法并换 20 个类型"。CC3 用 `io.github.notestirred:dasm` 构建期完成。**对本项目的启示**：本项目砍掉生成金字塔、光照、出生点后，剩余 mixin 面（§5.2）以手写 `@Inject + @WrapOperation` 为预计路线；若个别类（如 `ChunkMap` 的 holder 管理）复制量失控，再单独评估 DASM。
 
 ### 3.5 CC3 给 mod 生成器的适配守则（`ModOverworldChunkGeneratorsandCC.md` 要点）
 
-地形生成器不得硬编码 Y 界；用 `chunk.getMinBuildHeight()/getMaxBuildHeight()`；`SectionPos.of(chunkPos, chunk.getMinSection())` 收集结构 feature；JigsawJunction 过滤加 Y 边界；`LevelChunkSection + LocalY(yCoord & 15)` 放方块；检测到 CC 时不放基岩。**allay_dimension 的自定义 NoiseGeneratorSettings 必须遵守同样守则**（§4.2）。
+地形生成器不得硬编码 Y 界；用 `chunk.getMinBuildHeight()/getMaxBuildHeight()`；`SectionPos.of(chunkPos, chunk.getMinSection())` 收集结构 feature；JigsawJunction 过滤加 Y 边界；`LevelChunkSection + LocalY(yCoord & 15)` 放方块；检测到 CC 时不放基岩。**`AllvrIslandFieldGenerator` 虽为自研（密度场逐 voxel 求值，天然无界），仍遵守其中"不硬编码 Y 界、cube 内用局部坐标放方块"的纪律。**
 
 ---
 
-## 4. 阶段 0：allay_dimension 维度本体（数据驱动，立即可做）
+## 4. 维度注册（阶段 1 前置任务，非独立里程碑）
 
-即使最终 cube 化，也需要先有一个"正常注册的维度"作为容器——CC3 的 HYBRID/CUBIC 也是挂在普通维度上切换 WorldStyle。**本阶段产出的 JSON 在阶段 1 后语义变化：`min_y/height` 从"真实边界"退化为"原版管线可见的窗口"（§4.4）。**
+> 2026-09-03 决策：原"阶段 0（4064 窗口可玩）"取消——窗口内地形数据（原版列 chunk 存档）与 cube 存档不兼容、会被完全覆盖，玩法又暂不接入，独立发布没有意义。JSON 三件套是 Cube 层的**永久容器**，作为阶段 1 的第一个任务落地；不带任何可玩性承诺、不写传送命令、不做出生点处理。
 
 ### 4.1 注册名与资源布局
 
@@ -135,10 +155,10 @@ Cube 管线需要的是"原版 Chunk 管线方法的完整复制 + 类型批量�
 ```
 src/main/resources/data/createmanaindustry/
 ├── dimension_type/allay.json                 # 维度类型（id: createmanaindustry:allay）
-├── dimension/allay_dimension.json            # 维度本体（id: createmanaindustry:allay_dimension）
-├── worldgen/noise_settings/allay.json        # 噪声设置（可选：先用原版引用，后自定义）
-└── worldgen/biome/allay_*.json               # 自定义生物群系（可选）
+└── dimension/allay_dimension.json            # 维度本体（id: createmanaindustry:allay_dimension）
 ```
+
+自定义 biome / noise_settings JSON **不引入**（biome_source 引用 `minecraft:plains`，noise settings 引用原版占位——见 §4.3）；自定义群系与天空随玩法后置阶段 7。
 
 ### 4.2 dimension_type JSON（1.21.1 字段集）
 
@@ -161,9 +181,9 @@ src/main/resources/data/createmanaindustry/
 ```
 
 要点：
-- `min_y=-2032, height=4064` 是 1.21.1 合法**最大窗口**（§2.1）；这就是阶段 1 之前玩家可用的实际范围。
-- `natural=false`：避免指南针乱指、床爆炸语义差异按需调整；`effects` 先用 overworld（天空渲染），后续可注册自定义 `DimensionSpecialEffects`（本项目已有 Iris/Veil 兼容层，见 `client/render/`）。
-- 若希望窗口先聚焦地表带，可改 `min_y=0, height=2032` 等；窗口位置在阶段 1 变为可动态配置项。
+- `min_y=-2032, height=4064` 是 1.21.1 合法**最大窗口**（§2.1）。cube 化后这是纯**形式声明**——只为让原版管线（实体处理、`LevelHeightAccessor` 假设等）有合法容差；实际可玩范围由 cube 层的 ±30,000,000 决定。
+- `natural=false`：避免指南针乱指；`effects=minecraft:overworld`：先用原版天空渲染，自定义 `DimensionSpecialEffects` 后置阶段 7。
+- `has_skylight=true` / 怪物生成字段：仅剩游戏性语义，消费方在阶段 7；渲染光照与本字段无关（§11 客户端自建）。
 
 ### 4.3 dimension JSON
 
@@ -172,40 +192,41 @@ src/main/resources/data/createmanaindustry/
   "type": "createmanaindustry:allay",
   "generator": {
     "type": "minecraft:noise",
-    "settings": "createmanaindustry:allay",
+    "settings": "minecraft:overworld",
     "biome_source": {
       "type": "minecraft:fixed",
-      "biome": "createmanaindustry:allay_plains"
+      "biome": "minecraft:plains"
     }
   }
 }
 ```
 
-阶段 1 后 `generator` 在 cubic 模式下走自定义路径（列生成 passThrough + cube 生成，见 §5.2），但 JSON 仍需合法——generator 只负责窗口内地形，垂直扩展由 cube 层接手。
+说明：declared generator **从不实际产生地形**——阶段 1 起 allay 维度的列生成全 passThrough（§5.2 P0 mixin），地形由 `AllvrIslandFieldGenerator` 在 cube 层生成（§5.3）。此 JSON 只为维度解析合法；noise settings/biome 的占位引用因此无所谓具体内容。
 
-### 4.4 世界边界与传送入口
+### 4.4 进入方式与边界
 
-- XZ 边界：世界边界是**每个维度独立**的 `WorldBorder`，默认继承 overworld（±29,999,984）。无需额外代码即可满足"与 XZ 默认世界边界一致"；若要显式钉死，在 `ServerLevel` 创建后（`LevelEvent.Load`）`level.getWorldBorder().setSize(5.9999968E7)`。
-- Y ±3000 万的"软件边界"：cube 化后由 `AllayDimensionLimits`（§5.5）在方块放置/实体移动/出生点查找三处 clamp，值取 `30_000_000`（余量内于 CubePos 的 ±33,554,431）。
-- 传送入口（建议后续独立文档）：`/cmi dimension allay` 命令 + Allay Burner 相关传送方块；出生 Y 用 `SpawnPlaceFinder` 二分策略（§3.3）。
+- **进入/离开 = 原版命令**：`/execute in createmanaindustry:allay_dimension run tp @s <x> <y> <z>`（离开同理 `execute in minecraft:overworld`）。**不做任何安全处理**（开发期创造模式测试，掉虚空/卡岛体自行飞出）；不注册自定义命令、不做出生点锚定岛、不做传送方块（均后置阶段 7）。
+- XZ 边界：世界边界每维度独立，默认继承 overworld（±29,999,984）——**正确，不写钉死代码**。
+- Y ±3000 万的"软件边界"：由 `AllvrDimensionLimits` 在方块放置与实体移动两处 clamp（§5.6），值取 `30_000_000`（余量内于 CubePos 的 ±33,554,431）。
 
 ---
 
-## 5. 阶段 1–2：Cube 加载层（allay 版"CubicChunks-lite"）
+## 5. 阶段 1–2：Cube 加载层（服务端）
 
-> 设计原则：**只对本维度生效**（WorldStyle 门控），不污染主世界/下界/末地；不引入 DASM 前先评估手写量；CC3 已验证的编码与数据结构直接复用（抄 Core 的纯逻辑类，MIT 协议保留署名）。
+> 设计原则：**只对本维度生效**（WorldStyle 门控），不污染主世界/下界/末地；CC3 已验证的编码与数据结构直接复用（抄 Core 的纯逻辑类，MIT 协议保留署名）。
+> **与本计划渲染目标的关系**：服务端 cube 层只负责"权威方块数据 + 增量下发"；**光照数据完全不生成、不下发**（§11.6）——这是对 CC3 最大坑（光照躺平）的正面回答。**存档 IO 后移阶段 6**（§5.4），本阶段纯内存态。
 
 ### 5.1 位置与常量（从 CubicChunksCore 移植的纯逻辑类）
 
 | 类（CC3 源路径 `CubicChunksCore/src/main/java/io/github/opencubicchunks/cc_core/`） | 移植为 | 说明 |
 |---|---|---|
-| `api/CubePos.java` | `com.iridium126.createmanaindustry.dimension.allay.cube.AllayCubePos` | 21 bit/轴打包；cube/chunk long 用高位奇偶区分（本模没有 chunk long 冲突可简化，但保留以便对齐 CC 生态） |
-| `utils/Coords.java` | `...cube.AllayCoords` | block↔cube↔section 换算；**固定 diameter=2（32 格 cube）**，不做 CC 的 1/2/4/8 可配（砍掉 EarlyConfig） |
-| `api/CubeAccess.java` 骨架 | `...cube.AllayCube`（接口） | 镜像 `ChunkAccess`：`LevelChunkSection[8]`、结构引用、方块实体；heightmap 方法走 SurfaceTracker |
-| `world/level/CloPos.java` | `...cube.AllayCloPos`（可选，阶段 2） | 若决定让 holder 双态复用原版类则需要；若自建独立 `CubeMap` 则可砍 |
-| `world/heightmap/surfacetrackertree/*` | `...heightmap/*`（**直接移植，Core 已完成**） | 无限高度高度图：16 叉树 + 格雷码 + `.str` 交织存储，覆盖 ±2^28 |
+| `api/CubePos.java` | `dimension.cube.AllvrCubePos` | 21 bit/轴打包；cube/chunk long 用高位奇偶区分（本模没有 chunk long 冲突可简化，但保留以便对齐 CC 生态） |
+| `utils/Coords.java` | `dimension.cube.AllvrCoords` | block↔cube↔section 换算；**固定 diameter=2（32 格 cube）**，不做 CC 的 1/2/4/8 可配（砍掉 EarlyConfig） |
+| `api/CubeAccess.java` 骨架 | `dimension.cube.AllvrCube`（接口） | 镜像 `ChunkAccess`：`LevelChunkSection[8]`、结构引用、方块实体；heightmap 方法走 SurfaceTracker |
+| `world/level/CloPos.java` | `dimension.cube.AllvrCloPos`（可选，阶段 2） | 若决定让 holder 双态复用原版类则需要；若自建独立 `AllvrCubeMap` 则可砍 |
+| `world/heightmap/surfacetrackertree/*` | `dimension.heightmap.*`（**直接移植，Core 已完成**） | 无限高度高度图：16 叉树 + 格雷码 + `.str` 交织存储。⚠️ 消费方（游戏性天光近似）已后移阶段 7，阶段 1–3 无硬需求；因其为已完成纯逻辑、后续必需且移植成本低，随阶段 1 顺带移植（可再后移） |
 
-常量（`AllayDimensionLimits`）：
+常量（`dimension.AllvrDimensionLimits`）：
 
 ```java
 public static final int Y_BOUND = 30_000_000;            // 软件边界，±
@@ -220,164 +241,489 @@ static { assert Y_BOUND <= Coords.blockToCube(33_554_431) * 32; }
 
 | 优先级 | Mixin 目标（1.21.1） | 职责 |
 |---|---|---|
-| P0 | `Level`（`getBlockState/setBlockState/getBlockEntity/getFluidState` 等） | allay 维度内重定向到 `AllayCubeMap`；等价 CC3 `MixinLevel` |
-| P0 | `ServerLevel` + `ServerChunkCache` | `AllayCubeCache`（环形缓存）+ `AllayCubeMap`（cube 的 ChunkMap 等价物，ticket 驱动） |
+| P0 | `Level`（`getBlockState/setBlockState/getBlockEntity/getFluidState` 等） | allay 维度内重定向到 `AllvrCubeMap`；等价 CC3 `MixinLevel` |
+| P0 | `ServerLevel` + `ServerChunkCache` | `AllvrCubeCache`（环形缓存）+ `AllvrCubeMap`（cube 的 ChunkMap 等价物，ticket 驱动） |
 | P0 | `ChunkMap`（1.21.1：`chunkMap` 内部 holder 管理） | cube holder 生命周期；列 chunk 在 allay 维度退化为"2D 元数据列"（结构引用/POI），生成步骤 passThrough |
 | P1 | `DistanceManager`/ticket 系统 | 垂直视距：每玩家 `(xzViewDist, yViewDist)` 两个圆雉（复用 CC3 `MixinPlayerTicketTracker` 思路，常量默认 yViewDist=8） |
-| P1 | `PlayerChunkSender` + 新增 `ClientboundAllayCubePacket` | cube 下发；网络编码用 `AllayCubePos.asLong()` 直写 long（21 bit/轴，规避原版 section 窄类型）——**必须自带协议版本**，与 §7 voxy 无关但同理由 |
-| P1 | `MinecraftServer`（出生点）+ `PlayerRespawnLogic` | `AllaySpawnPlaceFinder`：给定 (x,z) 在 [−Y_BOUND, Y_BOUND] 二分/步进找地表（surface 查询走 SurfaceTracker） |
+| P1 | `PlayerChunkSender` + 新增 `ClientboundAllvrCubePacket`（`dimension.net`） | cube 下发；网络编码用 `AllvrCubePos.asLong()` 直写 long（21 bit/轴，规避原版 section 窄类型）；**包内只有方块数据 + 方块实体 + 光源事件表，无任何光照 DataLayer**（§11.6）；自带协议版本号 |
 | P2 | `Entity`（`cc_cubePosition` 字段） | 实体按 cube 分区跟踪、`cubeTickets` |
-| P2 | 光照：`LevelLightEngine`/`LightEngine` | **最大坑**。CC3 未完成（恒满亮占位）。务实方案：cube 内 16³ section 用原版 `LightEngine` 逐 cube 实例化（列光照的组织假设被打散）；天空光按 cube Y 递推近似。见 §6.3 |
 
-### 5.3 数据持久化
+**已砍 mixin（2026-09-03 决策，相对 CC3 清单）**：
+- 出生点查找（CC3 `SpawnPlaceFinder`/`MixinMinecraftServer`/`PlayerRespawnLogic` 一族）——不做出生点安全，进入只用原版 `execute in + tp`；
+- 服务端游戏性光照近似（`LevelLightEngine`/`getRawBrightness` server 侧）——随玩法后移阶段 7（机制预案见 §11.6）；
+- 原版九步生成金字塔（`ChunkStep/ChunkPyramid` 的 cube 变换）——空岛生成无结构/无 feature，单步填充替代（§5.3）。
 
-阶段 2 采纳 CC3 旧实现（`src_old/.../RegionCubeIO.java`）的布局，或其依赖库 `io.github.opencubicchunks:regionlib`（Maven 可得）：
+### 5.3 空岛世界生成（`dimension.gen.AllvrIslandFieldGenerator`，阶段 1）
 
+**形态（决策定稿）**：单岛 ≈ **2000×2000×200**（长宽×厚）的大型空岛，以 **3D 格点阵列**遍布整个世界——XZ 间隔约 2500–3000（岛宽 + 飞行空隙），Y 间隔约 400–600（岛厚 + 层间空隙），**层间 XZ 错位**（半格偏移，缝隙漏光物理正确），从 −Y_BOUND 到 +Y_BOUND 贯穿。垂直飞行永远有下一层岛，垂直探索即维度核心玩法，立方架构物尽其用。
+
+**密度场（纯函数、种子确定性——阶段 6 前无存档，重启重生成依赖此性质）**：
+
+```text
+// 每个格点必生成一岛（位置/尺寸抖动），任意坐标 ~3000 格内必有岛面
+islandStateAt(p):                                    // p 世界坐标
+  cellXZ = floor(p.xz / SPACING_XZ); layer = floor(p.y / SPACING_Y)
+  density = 0
+  对 (cellXZ ± 1, layer ± 1) 的 27 个候选格点:        // 岛半径 < 间隔，±1 邻域足够
+    h = hash(cellXZ, layer, worldSeed)               // 稳定哈希
+    center = 格点中心 + 抖动(h)                       // xz ±300, y ±80；奇数层 xz 半格偏移
+    size   = (2000±20%, 200±20%)                     // 由 h 决定
+    local  = (p - center) / size                     // 归一化坐标
+    d = smax(|local.x|,|local.z|,|local.y|) + edgeFBM(p, h)   // 平滑max + 边缘锯齿(±40)
+    density = max(density, 1 - d)                   // 岛体并集
+  return density                                     // >0 = 实体
+
+// 表层规则：density ∈ (0, 0.05) → 草；(0.05, 0.25) → 土；其余 → 石（底面渐缩由 smax 自然形成）
 ```
-saves/<world>/dimensions/createmanaindustry/allay_dimension/
-├── region/          # 列 chunk（2D 元数据：结构引用、POI）——原版 anvil 格式，兼容工具链
-├── region3d/        # cube NBT（自定义 3D region，8×8×8 cube/文件）
-└── heightmaps/      # SurfaceTracker .str 文件（格雷码交织位图）
-```
 
-cube NBT 结构对齐原版 chunk section NBT（`block_states/skylight/blocklight/biomes`）以最大化 §7 voxy 导入器的可复用性。
+**生成管线（单步）**：票据触发 cube 加载 → 对 32³ 每 voxel 求 `islandStateAt` → 写入 `AllvrCube` 的 `LevelChunkSection[8]`（局部坐标 + `LocalY(y&15)`，§3.5 守则）→ 完成。**无结构起点、无 feature、无九步 status 依赖**；候选格点集（27 个）每 cube 求一次缓存在生成上下文，避免逐 voxel 重算哈希。均匀性：岛内部大片纯石 → `PalettedContainer` 单值调色板天然近零成本（§7.1 客户端简写的服务端侧前提）。
 
-### 5.4 与 mod 生态的兼容边界（本项目相关）
+**V0 明确不做**（保护均匀 cube 简写 + 控制范围）：岛屿内部洞穴雕刻、小岛点缀、尺寸/材质变体——全部后置为密度场参数。
 
-- **Create 传动网络**：`RotationPropagator` 跨 cube 的轴连接需在 `AllayCubeMap` 上做跨 cube 查询——本模内容优先，阶段 2 末验证。
-- **Iris/Veil 光影（本模已有 `irisveil` mixin 组）**：自定义维度的 `effects` 若注册自定义天空，需走 `DimensionSpecialEffects` 扩展点而非 mixin。
-- **存档兼容承诺**：allay_dimension 是新维度，无历史包袱；`region3d` 格式 v1 定版前加 `DataVersion` 头。
+### 5.4 数据持久化（后移至阶段 6）
 
-### 5.5 防越界（软件边界的三处强制）
+- **阶段 1–5：cube 纯内存态**。世界重启后空岛按种子**确定性重生成**（§5.3 纯函数性质），玩家放置/破坏的方块丢失——已知限制，开发期创造测试可接受。
+- **阶段 6 定版存档格式**：届时采纳 CC3 旧实现（`src_old/.../RegionCubeIO.java`）布局或 `io.github.opencubicchunks:regionlib`；目录规划 `region/`（列 2D 元数据，原版 anvil）+ `region3d/`（cube NBT，含届时已存在的光照缓存/mesh 缓存一并序列化）+ `heightmaps/`。**数据结构稳定前不定格式**——阶段 4–5 会给 cube 增加探针/LPV/mesh 缓存内容，提前定版等于自找版本迁移。
+- cube NBT 字段名届时对齐原版 chunk section NBT（`block_states/biomes`；不写光照字段）。
 
-1. 方块放置：`ServerLevel.setBlock` 的 allay 分支前置 `AllayDimensionLimits.isInBounds(pos)`；
-2. 实体移动：实体 tick 中 `y` clamp（弹回而非 teleport，避免卡虚空的补偿抖动）；
-3. 出生/传送：目标 Y 必须经 `AllaySpawnPlaceFinder` 解析。
+### 5.5 与 mod 生态的兼容边界
+
+- **Create 传动网络**：`RotationPropagator` 跨 cube 的轴连接需在 `AllvrCubeMap` 上做跨 cube 查询——远期（阶段 7）验证。
+- **渲染 mod（sodium/embeddium/iris/flywheel）**：见 §6.4，维度内禁用其地形/光影路径，实体路径保留。
+- **voxy**：§12 搁置。
+
+### 5.6 防越界（软件边界的两处强制）
+
+1. 方块放置：`ServerLevel.setBlock` 的 allay 分支前置 `AllvrDimensionLimits.isInBounds(pos)`；
+2. 实体移动：实体 tick 中 `y` clamp（弹回而非 teleport，避免卡虚空的补偿抖动；`tp` 跨维度亦走实体移动路径被覆盖）。
 
 ---
 
-## 6. 阶段 3：客户端（缓存/渲染/网络）
+## 6. 客户端总体架构：ALLVR 体素渲染器
 
-1. **`ClientAllayCubeCache`**：对齐 CC3 `ClientCubeCache.Storage` 的 3D 环形缓存（`AtomicReferenceArray<LevelCube>`，容量 = `(2·xzViewDist+1)² · (2·yViewDist+1)`），`ClientboundSetCubeCacheCenterPacket` 语义照搬（玩家跨 cube 移动时整体重定位）。
-2. **渲染网格**：对齐 CC3 `MixinViewArea` 思路 —— allay 维度内 `sectionGridSizeY` 改为 `2·yRenderDist+1`、以摄像机 cube 为原点相对定位；本模已有 Flywheel/Embeddium 生态（`.refs/sodium`、`Flywheel` 在 refs 中），**Embeddium 的 `RenderSectionManager` 恰是 voxy 的 ingest 触发点（§7.2），渲染改造与 voxy 兼容必须同盘棋**。
-3. **光照**：分两步——阶段 3a 客户端仅消费服务端随 cube 包下发的光照 DataLayer（对齐 CC3 包名 `LevelCubeWithLightPacket` 的承诺）；阶段 3b 客户端本地增量重算（对齐原版 `LightEngine` 接口逐 section 粒度）。
-4. **网络**：`ClientboundAllayCubePacketData` 镜像原版 `ClientboundLevelChunkPacketData`（含 heightmap 字段则填 SurfaceTracker 序列化或置空+随包补发）。
+> 目标只有一句：**在 allay_dimension 内，把"列 chunk + CPU 网格化 + 前向逐 section 提交"整条管线，替换为"GPU 驻留体素 + GPU 剔除/LOD/命令生成 + 延迟着色"**，且渲染线程 CPU 负载与视距/高度近似解耦。
 
----
+### 6.1 设计目标与性能预算
 
-## 7. voxy 兼容性专项分析
-
-### 7.1 voxy 工作方式（决定兼容面的四个事实）
-
-1. **纯客户端数据源**：实时 LoD 100% 来自客户端内存 `LevelChunk`——通过 mixin Sodium 的 `RenderSectionManager.onChunkAdded/onChunkRemoved` + `ClientLevel.setBlocksDirty` + `ClientChunkCache.drop` 触发 `VoxelIngestService.enqueueIngest`（从 `chunk.getMinSectionY()-1` 遍历 `chunk.getSections()`，从客户端 `LightEngine` 拷贝 block/sky DataLayer；**光照状态非 `LIGHT_AND_DATA` 的 chunk 直接跳过**）。**不读 region 文件做实时渲染**。
-2. **维度识别全自动**：mixin `Level.<init>` 捕获维度 key 构造 `WorldIdentifier`（`SHA-256(biomeSeed + dimensionKey)`），每维度独立 `WorldEngine` 与存储目录 `{saves/<world>/voxy}/<hash>/storage/`（RocksDB+ZSTD 默认）。**allay_dimension 无需任何 voxy 侧适配即被识别**。
-3. **Y 硬限制如 §2.3**：±4096 格、静默混叠、布局贯穿 Java/GLSL/磁盘。voxy **没有 Y 切片 UI**，也没有任何高度 clamp 代码。
-4. **无服务端协议、无公开 API**：无 C→S/S→C 同步；唯一可用注入点是 public static 的 `VoxelIngestService.rawIngest(...)` 与 `WorldUpdater.insertUpdate(...)`；`/voxy import` 有插件式 `IDataImporter` 接口（内置 anvil/DH/Bobby 导入器）。
-
-### 7.2 Cube 世界中 voxy 的失效模式（不做适配时的实际表现）
-
-| voxy 依赖 | allay cube 维度中的表现 | 后果 |
+| 指标 | 目标 | 手段 |
 |---|---|---|
-| Sodium `RenderSectionManager.onChunkAdded` 收到**列 chunk** | 列 chunk 在 allay 维度是 2D 元数据壳，sections 空/窗口错位 | ingest 到空数据或错位窗口数据 |
-| `chunk.getSections()` + `getMinSectionY()`（维度高度数组） | 只覆盖 §4.2 的 4064 窗口，窗口外 cube 不经过列 chunk | 窗口外区域 voxy **永远为空**（静默） |
-| `LightEngine` `LIGHT_AND_DATA` 检查 | 若光照走 cube 包自定义下发，列光照状态不满足 | **整个维度 LoD 为空**（静默不 ingest） |
-| 8 bit section Y key | 窗口内地形若超出 ±4096 格（窗口中心若在 Y>0 高空） | 数据混叠污染数据库（不可逆，需删库重来） |
-| `RenderDistanceTracker.add`：每 XZ 列为 `minSec..maxSec` 每层建 lvl4 节点 | 若向 voxy 呈现超大 `getMaxSectionY()` | 每列百万级空节点，内存/GPU 爆炸 |
+| 不透明地形 draw call | **整场 1 次**（+ 阴影 4 级联 × 1） | MDIC（`glMultiDrawElementsIndirectCountARB`），命令由 GPU compute 生成 |
+| 渲染线程 CPU 每帧开销 | 稳态 < 1 ms（与视距无关） | 剔除/LOD/排序/命令全 GPU；CPU 只发 ~10 个 dispatch + 少量 upload |
+| CPU↔GPU 每帧数据 | 只有"变更集"：新 cube 的体素页 + 脏 cube 列表 | 持久映射环形上传（`glBufferStorage` + `GL_MAP_PERSISTENT_BIT`），预算 ≤ 2 MB/帧 |
+| 回读 | **零阻塞回读**（fence + N 帧延迟） | 复用粒子引擎 fence/回读纪律（§6.5） |
+| 光照更新 | **零原版光照更新**；变更 cube 触发 GPU 增量重烘焙（预算/帧） | §11 探针 + LPV + CSM |
+| 内存 | 体素页 ≤ ~320 MB、quad arena ≤ ~512 MB、G-Buffer ~12 B/px（见 §7.4） | LRU 逐出 + **均匀 cube 零页**（§7.1） |
+| 兼容性 | GL 4.6 起步；Mesh Shader 按扩展探测；无扩展自动回退 MDI | §6.2 能力分层 |
 
-结论：**不做适配 = allay_dimension 在 voxy 上"看起来正常但地图全空"（最轻）或数据库被污染（最重，若窗口外数据进入 ingest）**。
+约束（优先级从高到低）：
+1. 只改 allay 维度——其它维度走原版/Sodium 路径，零影响；
+2. 维度内禁用 sodium/iris 的修改（§6.4），不追求与其兼容；
+3. 不兼容其它渲染 mod 的地形/光影路径，实体类路径尽量保留（vanilla forward）。
 
-### 7.3 三条兼容路线
+### 6.2 GPU 能力分层
 
-**路线 A（推荐）：可视 Y 窗口 + 需要时窗口重定位（零 voxy 改动）**
+| Tier | 条件 | 路径 |
+|---|---|---|
+| A | GL 4.6 + `GL_EXT_mesh_shader` 或 `GL_NV_mesh_shader`（NVIDIA Turing+ / AMD RDNA2+ 新驱动） | task+mesh shader 绘制（§9.5）；剔除仍在 compute |
+| B | GL 4.5/4.6（有 `ARB_indirect_parameters`，无 mesh shader 扩展） | MDI + 无属性 VAO 顶点拉取（voxy `quads3.vert` 模式，§9.4） |
+| C | 低于上述 | 不进维度渲染：聊天栏提示；维度内地形不可见（列 chunk 是空壳，本就没有原版地形可退回），实体/粒子照常 |
 
-把"voxy/原版管线可见的世界"限制为一个 ≤±4096 格（实操取 ±2048 更稳，见下）的**动态窗口**：
+探测在管线初始化时一次完成（`AllvrRenderCaps`，缓存 `Capabilities` 引用的模式抄 voxy `gl/Capabilities`）。Tier A/B 共享全部数据结构，仅 draw 路径不同。
 
-- allay_dimension 逻辑上 ±3000 万，但 `LevelHeightAccessor`（即维度 JSON 的 `min_y/height` + `ClientLevel` 呈现）始终是一个 4064 高的窗口；窗口随"主流柱"（玩家聚集团/风暴事件）的活跃 Y 缓慢重定位（下边界取 4096 的倍数，避免 key 混叠边界）。
-- 玩家在窗口外的垂直探索照常进行（cube 层不感知窗口），但**窗口外不承诺 voxy 可见**——它本来就是 LoD 地图而非全息存档。
-- 这正是 CC3 对原版管线"窗口化"策略与 voxy 自带 `IS_MINE_IN_ABYSS` hack（`WorldUpdater`/`IBoundStore.transformBeforeStore`/`VoxyRenderSystem` 三处成对坐标重映射，把超大世界折叠进 8 bit Y 窗口）的同构思路；MiB hack 是编译期常量不可用，但证明该模式在 voxy 数据模型内成立。
-- 代价：窗口重定位时旧窗口 LoD 与新窗口不连续（key 坐标重叠）——需要服务端/本模在重定位时提示玩家 `/voxy` 数据按窗口分库（或接受少量脏数据）。**建议窗口步长与 voxy key 对齐（4096 格整数倍）以避免混叠**。
+### 6.3 帧结构与渲染挂载点
 
-**路线 B：fork voxy 扩展 key（中成本）**
+沿用粒子引擎验证过的**帧拆分双阶段**模式（`CreateManaIndustryClient.onRenderLevelStage`）：
 
-key 改分段式：`yWindow(8bit) + windowId`（利用 4 个 spare bit + 借 lvl 高位可表达 ~4096 个窗口 → Y ≈ ±16.7M；再加 XZ 各让 2 bit 可到 ±30M）。需同步改 `getWorldSectionId/getX/getY/getZ`、`SaveLoadSystem3`（磁盘迁移）、`NodeStore.writeNode`、`pos_util.glsl/node.glsl/quad_util.glsl`、`AsyncNodeManager` 邻居计算、`RenderDistanceTracker`（改为相机 Y 窗口驱动 + 稀疏 section 驱动，解决每列节点爆炸）。适合确定要"全高度 LoD"后再投入。
+```
+帧结构（allay 维度内）：
+AFTER_SKY（原版地形本该渲染的时段）
+  ├─ [compute] 异步烘焙消费：脏 cube 的探针/LPV/mip 更新（预算切片）
+  ├─ [compute] 八叉树遍历：视锥 + HiZ 遮挡 + 屏幕面积下钻 → 可见节点队列（§9.1–9.3）
+  ├─ [compute] 可见列表致密化 → section/meshlet 列表；半透明距离分桶（§9.4）
+  ├─ [compute] cmdgen：生成 MDI 命令缓冲 + dispatch 参数（§9.4）
+  ├─ [draw]   G-Buffer 不透明 pass：Tier A 走 task/mesh、Tier B 走 MDIC —— MRT×3 + 借用 MC 主深度
+  ├─ [compute] HiZ 金字塔构建（供下一帧遮挡剔除）
+  └─ [draw]   延迟光照 pass（全屏）：PBR + CSM + 探针 + LPV + 点光 → RGBA16F HDR → ACES → MC 主颜色
+原版实体/方块实体/粒子（vanilla forward，用 §10.4 合成光照）
+AFTER_TRANSLUCENT_BLOCKS（原版半透明地形时段）
+  └─ [draw]   半透明前向 pass：水面等（GPU 距离桶排序 → 半透明 MDI，§10.3）
+AFTER_LEVEL
+  └─ 粒子引擎照常（其自绘路径；光影包合并路径在 allay 维度自动旁路，§6.4）
+```
 
-**路线 C：绕开 voxy ingest 链，直灌数据（配合 A 或 B）**
+挂载方式：mixin `LevelRenderer#renderSectionLayer`（allay 时 HEAD-cancel 原版地形层并触发上述序列）+ `RenderLevelStageEvent`（`AFTER_TRANSLUCENT_BLOCKS` 半透明、`AFTER_LEVEL` 兜底状态恢复）。维度门控 `AllvrRenderController.isActive()` = `Minecraft.getInstance().level.dimension() == ALLAY_KEY && caps ≥ Tier B`，每帧求值——进出维度即热切换（`LevelEvent.Unload/Load` 同步清理，复用粒子引擎的 `onLevelUnload` 模式：必须过滤 `ClientLevel` 且同步执行）。
 
-对窗口外/自定义光照路径，直接调用 voxy 唯一稳定注入点 `VoxelIngestService.rawIngest(engine, section, x, y, z, blockLight, skyLight)`（或底层 `WorldUpdater.insertUpdate`），从 allay 的 cube 数据自行生成 voxy section——绕开 Sodium/原版光照检查依赖。风险：voxy 无 API 承诺，需 `ModList.isLoaded("voxy")` 反射防护 + 版本探测；且直灌仍受 8 bit key 限制，只解决"触发链失效"不解决"范围"。
+### 6.4 原版/第三方渲染路径的禁用（维度内）
 
-### 7.4 前置现实：voxy 在 NeoForge 1.21.1 的可用性
+统一入口 `AllvrIncompatDisabler`（静态注册表，每项 = 检测旗标 + 禁用 mixin），当前三项：
 
-voxy 全历史无 NeoForge 构建（Fabric + 强依赖 Fabric 版 Sodium + access widener；`IS_MINE_IN_ABYSS` 所在 dev 分支已到 MC 26.2）。玩家侧现状是 **Sinytra Connector 转 Fabric**（若可用）。因此本模的"voxy 兼容"工程含义是：
+| 目标 | 禁用方式 | 依据/模板 |
+|---|---|---|
+| **原版地形** | mixin `LevelRenderer#renderSectionLayer` + `SectionRenderDispatcher/ViewArea`（allay 时跳过网格调度与提交） | 粒子引擎 `LevelRendererBlockEntitiesMixin` 的注入点经验（`popPush("blockentities")` 精确窗口） |
+| **sodium/embeddium 地形** | 条件 mixin 组 `.sodium.`（`CMIMixinPlugin` 按包名分组 + `FMLLoader.getLoadingModList()` 探测）：`DefaultChunkRenderer.render` HEAD-cancel（保留 begin/end 状态机）+ `RenderSectionManager` 在 allay 跳过 ingest/重建；`remap=false`，类名以 `.refs/sodium`（0.6.x for 1.21.1）核对；embeddium 若类路径不同则加 `.embeddium.` 组分别注册 | voxy `MixinDefaultChunkRenderer` 的 HEAD-cancellable 模式；本项目 `CMIMixinPlugin` 已有 `.iris.`/`.trickster.` 等分组先例；build.gradle 需加 sodium `compileOnly` |
+| **iris 光影包** | 条件 mixin 组 `.iris.` 新增 1–2 个：allay 维度内强制 `isShaderPackInUse() == false`（@ModifyReturnValue）+ `ShadowRenderer.renderShadows` 跳过（我们自建 CSM，§11.1）。目标签名以 `.refs/Iris`（1.21.1）核对 | voxy `IrisUtil.disableIrisShaders()/irisShadowActive()` 的语义；本项目已有 5 个 `.iris.` mixin 的成熟分组 |
 
-1. **不主动破坏**：allay_dimension 呈现给原版管线的窗口保持标准 `LevelChunk`/光照语义（路线 A 的窗口即为此服务）——Connector 场景下 voxy 对窗口内地形**开箱即用**；
-2. **文档声明**：窗口外高度不承诺任何第三方地图可见性（voxy/Xaero/JourneyMap 同理，它们同样依赖列 chunk 数组）；
-3. 若后续官方出 NeoForge 版或确定 fork（路线 B/C），以 §7.3 的注入点清单为施工图。
+连带处理：
+- **irisveil 粒子合并路径**：`CMIPackEntityMergeHook` 入口加维度判断——allay 内直接返回 false，粒子引擎自动回退自绘路径（现有"hook 成功→跳过自绘"闩锁机制天然支持）。
+- **Veil 后处理**：不受影响（作用于最终帧，与地形管线正交）；若与我们的 ACES/bloom 双重 tonemap 冲突，allay 内跳过 Veil 的 bloom 类 pass（`VeilEventPlatform` 钩子已有维度上下文）。
+- **flywheel（Create 方块实体 instancing）**：保留——它是 forward + 深度测试路径，与 G-Buffer pass 共用 MC 深度即可正确遮挡；光照来自 §10.4 合成光照。实测异常再入 `AllvrIncompatDisabler`。
+- 上述所有 mixin 方法体**第一行**查静态旗标（`SODIUM_ACTIVE`/`IRIS_ACTIVE` + 维度判断），依赖 mod 缺失时目标类永不加载（`IRISVEIL_ACTIVE` 类加载隔离先例）。
 
-### 7.5 voxy 兼容验收清单
+### 6.5 可复用基础设施（粒子引擎 → ALLVR 映射表）
 
-- [ ] 窗口内地形（≤±2048 格相对窗口原点）在 voxy（Connector 环境）正常渲染 LoD；
-- [ ] 玩家垂直穿越窗口边界（cube 层继续工作，voxy 地图在该处截止，无混叠花屏）；
-- [ ] `/voxy import current` 对 allay_dimension 的 `region/`（列 chunk anvil）可导入，`region3d/` 明确报"不支持的格式"而非静默空导入（必要时提供本模 `IDataImporter`，见 §8 阶段 4）;
-- [ ] 维度切换（overworld ↔ allay_dimension）voxy WorldEngine 正确切换（依赖其 `WorldIdentifier`，预期免适配，需实测）。
+| 粒子引擎资产（`client/particles/engine/`） | ALLVR 复用为 | 说明 |
+|---|---|---|
+| `ParticlePrograms`（自托管 GLSL 编译：`#version 450` + PRELUDE `#define` 注入 + `#pragma cmi_include` + F3+T 热重载） | `AllvrShaderCache` | 全部 compute/traversal/cmdgen/mesh/deferred 程序同一套编译骨架；PRELUDE 由 §7 的绑定常量生成；资源根 `shaders/allvr/` |
+| `ParticleBuffers`（SSBO 绑定号 Java 单源常量、间接命令 20B 步长、环/双缓冲/原子计数管理） | `AllvrBuffers` | 体素页表/节点树/quad arena/命令缓冲的绑定号与布局单源化 |
+| 间接绘制提交（`glDrawArraysIndirect`/`glMultiDrawElementsIndirect` 混排 20B 纪律） | MDIC 提交层 | 升级为 `glMultiDrawElementsIndirectCountARB`（计数在 `GL_PARAMETER_BUFFER`） |
+| GPU 视锥剔除（JOML `frustumPlane()` Gribb–Hartmann 6 平面 + `keygen.comp` 球测试） | 遍历 compute 的视锥段 | 平面提取代码直接搬 |
+| GPU 排序（radix hist/scan/scatter 三件套） | 半透明距离桶排序 | voxy `buildtranslucents` 的近似分桶 + 本模 radix 细化 |
+| fence 零停等回读 + `GL_TIME_ELAPSED` 双计时环 + EMA 节流 | 遍历请求回读/烘焙预算/性能 HUD | `GpuTimerRing`/`ParticleFrameProfiler` 直接复用 |
+| GL 状态离场卫生（分组 try/finally 恢复 program/VAO/SSBO 基/纹理单元/depthMask/blend） | 所有自管 pass | 纪律原文照抄（踩坑 #32） |
+| `ParticleGLUtil.prepareClientUpload()`（PBO/unpack 状态防护） | 体素页纹理上传 | 3D 纹理 `glTexSubImage3D` 前必调（踩坑 #13） |
+| `CollisionBake`（3D 纹理后台烘焙 + LRU） | 体素页管理的 LRU/预算范式 | 模式复用，数据结构换 §7 |
+| 无属性 VAO + SSBO vertex pulling（`model.vsh` 的 `gl_VertexID` 拉取） | Tier B 顶点路径 | 与 voxy `quads3.vert` 同构，二选一 |
+| 帧拆分双阶段（AFTER_SKY compute / AFTER_LEVEL draw + hook 闩锁仲裁） | §6.3 帧结构 | 已验证与光影包/实体窗口共存 |
+
+shader-dev skill（`.agents/skills/shader-dev/`）取材点：
+- `techniques/voxel-rendering.md`：DDA 遍历（初始化/branchless 步进/命中提取）用于 §11.4 体素射线阴影、探针天空可见性烘焙与 §10.4 合成天光的垂直射线；`vertexAo(side, corner)` 邻居 AO（与 MC 平滑光照同构，含防漏光 `side.x*side.y`）用于延迟 pass 逐像素 AO（§10.2）；锥追踪（`lod = log2(diameter)` 的 mip 采样）用于探针烘焙的一弹 GI 评估。
+- `techniques/lighting-model.md`：Cook-Torrance 全套（D_GGX/F_Schlick/V_SmithGGX 高度相关、`F0 = mix(0.04, albedo, metallic)` 能量守恒）直接作为 §10.2 延迟光照内核；三光源模型（太阳直射/半球天光/地面反弹）映射为"CSM 太阳 + SH 天光探针 + 探针反弹"。
+- `techniques/multipass-buffer.md`：G-Buffer 打包/FBO ping-pong/首帧 initPass 红线；`techniques/post-processing.md`：ACES、MIP 金字塔 bloom、TAA YCoCg 邻域 clamp；`techniques/shadow-techniques.md`：软阴影公式（作 CSM PCF 之外的近场 DDA 软影参考）；`techniques/terrain-rendering.md`：距离自适应误差阈值（`0.0015·t`）原则用于 LOD 屏幕误差判定。
+- skill 未覆盖、需自行设计的：CSM（级联矩阵/纹素偏移）、greedy meshing、clipmap 式 LOD 组织——本文档 §8/§9/§11.1 给出。
 
 ---
 
-## 8. 分阶段实施路线图
+## 7. GPU 数据结构设计
 
-| 阶段 | 内容 | 交付物 | 依赖 |
-|---|---|---|---|
-| **0. 维度本体**（可独立发布） | §4 JSON 三件套 + 世界边界钉死 + `/cmi dimension allay` 传送命令 + 自定义 `effects`/噪声设置初版 | `allay_dimension` 可进入、可玩（4064 窗口） | 无 |
-| **1. Cube 内核** | §5.1 纯逻辑类移植（CubePos/Coords/SurfaceTracker）+ `AllayCubeMap/AllayCubeCache` + P0 mixin（Level 重定向、列生成 passThrough）+ 软件边界三处强制 | 窗口外可放置/破坏方块（仅服务端 + 内部状态，客户端暂不可见） | 阶段 0；决定 mixin 手写 vs 引 DASM（评估后预计手写 ~6 个 P0 类可控） |
-| **2. 持久化 + 票据** | `region3d` cube IO + `region/` 列元数据 + 垂直视距票据 + 出生点查找 | 重启存续、多人各自垂直视距 | 阶段 1；regionlib 依赖引入评估 |
-| **3. 客户端** | §6：cube 包 + 3D 客户端缓存 + ViewArea 改造 + 光照下发 | 窗口外**可视**（Embeddium/Flywell 兼容实测） | 阶段 2 |
-| **4. voxy 兼容收口** | §7.3 路线 A 窗口重定位机制 + 验收清单实测 + （可选）`IDataImporter` 从 `region3d` 导入历史 | §7.5 全勾 | 阶段 3；Connector 环境 |
-| **5.（远期）生态** | Create 跨 cube 传动验证、光照本地重算、B/C 路线评估 | — | 按需求 |
+### 7.1 体素存储：页化 3D 纹理 + 材质表 + 均匀 cube 简写
 
-里程碑口径：阶段 0 独立小版本；1–3 为一个大版本（Cube 内核不拆发，拆发会出现"服务端有方块客户端看不见"的中间态）；4 随后热修。
+**服务端 → 客户端**：`ClientboundAllvrCubePacket` 携带调色板压缩的 32³ 体素（`Map<stateId, palette>` + 索引位流，格式同原版 section NBT 的 palette 思路）+ 方块实体列表 + 光源事件（新增/移除的 `getLightEmission>0` 方块，§11.3）。**均匀 cube（岛内部纯石等）单值调色板 → 包仅数字节**。
+
+**客户端 worker 线程**：解包为 34³ 的 **R8UI 页**（32³ 数据 + 1 圈 padding，从 26 邻居 cube 填充；邻居变更时标记对应 padding 重填）→ 持久映射环形缓冲上传。材质索引即"渲染态 id"（`AllvrRenderStateMap`：BlockState → 16 bit 渲染态，资源加载期由 BlockColors/ModelBakery 构建，含 sprite UV、不透明/cutout/translucent 分类、发光强度、金属度/粗糙率默认值、非整块模型 id）。
+
+**均匀 cube 简写（空岛世界的必要扩展）**：巨岛内部大片纯石头，不能每个 32³ 都上传 39 KB 体素页——客户端页表加 `uniform:stateId` 条目：**零页存储、零上传**，体素查询/mesher/G-Buffer AO 对"邻居为 uniform"照常应答（直接返回该 stateId）。没有它，2000×2000×200 空岛的页预算直接爆炸（每岛 XZ 62×62 × Y 6~7 ≈ 2.4 万 cube）；有了它，只有岛屿表面壳层（每岛 ~8–9k cube，近场范围内仅其切片）占页。这也是 V0 不开洞穴的原因（洞穴会把内部打回非均匀，简写失效）。
+
+**GPU 侧**：
+- `uimage3D voxelAtlas`：tiled 3D 图集，`W_pages × 34 × 34` 布局（每页 34×34×34 texel；W=8192 页 → ≈ 320 MB，与 §6.1 预算一致）；页号由自由表分配，LRU 逐出（§7.4）。`texelFetch` 邻居访问天然越页安全（padding 保证单页内自洽）。uniform 条目不占页号（页表项的高位标记）。
+- `samplerBuffer stateTable`：渲染态 id → 材质参数（sprite 原点/尺寸、flags、emissive、roughness/metallic）。
+- **原版方块图集直接复用**：fragment 采样 vanilla `SamplerBlockSheet0`（blocks atlas），动画帧（water/岩浆）由原版 atlas 更新机制免费获得；`stateTable` 提供各自 sprite 的当前帧偏移（动画图集的帧位移在 CPU 侧每 tick 查 `TextureAtlasSprite` 更新一个小的 SSBO）。
+- mip：体素页**不建硬件 mip**（R8UI 不支持）；LOD 用 §7.2 节点的粗粒度 mesh 表达（与 voxy 一致：LOD=合并网格而非体素 mip）。探针烘焙需要粗可见性时用节点 AABB 层级剔除（§11.2）。
+
+### 7.2 LOD 八叉树节点 SSBO（借鉴 voxy NodeStore，Y 扩展）
+
+世界划分为节点八叉树（4 层）：`L0 = 32³ cube`（全分辨率）、`L1 = 64³`、`L2 = 128³`、`L3 = 256³`、顶层 `L4` 可选列式（512×512×全高，按需）。节点 GPU 表示 **16 B/节点**（`std430 uvec4 nodes[]`）：
+
+```
+xy = 打包位置：lvl(4b) | y(有符号 26b) | z(24b) | x(24b)   ← 与 voxy 的 8b y 不同，Y 用 26 bit（±33.5M，对齐 CubePos）
+z  = meshPtr(24b，NULL/EMPTY 哨兵) | flags(8b)
+w  = childPtr(24b，子节点连续 8 个分配) | flags'(8b)
+```
+
+- CPU 侧 `AllvrNodeStore` 用 `HierarchicalBitSet` 连续批量分配（子节点 `childPtr+i`），`writeNode` 压缩为 16 B——**直接照 voxy 实现**，仅 Y 位宽改 26。
+- 顶层的加载/卸载由 `RenderDistanceTracker` 式环形增量驱动（每帧限速 N 个），垂直方向按玩家 Y 圆锥裁剪——CPU 只管理顶层节点（数量 O(环面积)），下层细分由 GPU 遍历驱动请求。
+- 节点写入用 scatter-write compute（避免多次 `glBufferSubData`，voxy `AsyncNodeManager` 模式）。
+
+### 7.3 Mesh 格式：8 B/quad 流 + meshlet 索引
+
+**quad 流**（持久驻留的 `geometryArena` SSBO，8 B/quad，voxy 格式按 32 格 cube 调整）：
+
+```
+uint64 打包：
+  axis(2b) | dir(1b) | uSize-1(5b) | vSize-1(5b) | u(5b) | v(5b) | w(5b)
+  | stateId(16b) | lightSlot(8b) | reserved(12b)
+  （32³ cube 内：pos 0..31 需 5b；size 1..32 → 存 size-1 需 5b；axis+dir+3×pos+2×size = 28b 几何位）
+```
+
+位预算精确核算：`28 + 16 + 8 = 52 bit，余 12 bit`（reserved/未来 AO 粗值）。greedy 合并上限 32（一个 cube 的边长），天然满足。
+
+- **全不透明方块** → greedy 合并 quad（§8.1）；**非整块模型**（楼梯/栏杆/含水等）→ 从烘焙的模型几何 SSBO（`modelData[modelId]`，voxy 同构：faceData 面片表）按方块实例发射模型 quad（同模型相邻可做 run 合并，M1 优化项）。
+- 每 quad 隐含 4 顶点/2 三角；**全局共享索引缓冲**：16380-quad 的 `0,1,2,2,1,3` short 索引 + 末尾一个 byte 立方体索引（遮挡测试 raster 用）——照抄 voxy `SharedIndexBuffer`，`firstIndex=0 + baseVertex=quadStart*4` 定位。
+- **meshlet 表**（Tier A 用）：mesher 顺带按 64 quad（256 顶点上限内）分组，记录 `meshlet{ quadStart, quadCount, aabb }` 到独立 SSBO，task shader 按 meshlet AABB 剔除（§9.5）。
+- 半透明 quad 单独分组流（8 组分类：半透明|双面、down|up、north|south、west|east——照 voxy `SectionMeta` 的 8×16bit 计数布局），天然支持 §10.3 分桶。
+
+### 7.4 内存预算与逐出
+
+| 资源 | 默认预算 | 逐出策略 |
+|---|---|---|
+| 体素页（34³ R8UI × 8192 页；**均匀 cube 零页**） | ≈ 320 MB（空岛世界实际占用 = 表面壳层切片，远低于上限） | 仅 L0 全分辨率节点持有；近场 LRU 逐出（mesh 存活、页回收、重进近场重上传） |
+| quad arena | 512 MB（稀疏缓冲 `ARB_sparse_buffer` 按页提交，voxy 兜底模式） | GPU 端可见性 LRU：`sort_visibility.comp` 找最久未见节点 → 回读驱逐（voxy `NodeCleaner` 模式；几何堆可跨维度复用） |
+| 节点 SSBO | 2²¹ × 16 B = 32 MB | 随节点卸载回收 |
+| G-Buffer（§10.1） | 3 × RGBA8 + 共享深度 ≈ 12 B/px | — |
+| 探针/LPV（§11.2/11.3） | 探针体积 ~64 MB + LPV ~16 MB | 脏区域增量更新 |
+
+### 7.5 上传/回读流
+
+- **上行**：`UploadStream`（持久映射环形缓冲，每帧 ≤ 2 MB 预算，超限 `needsWaitForSync` 背压）——体素页、节点 scatter 写集、mesh 数据、stateTable 更新全走它；提交前 `ParticleGLUtil.prepareClientUpload()`。
+- **下行**：`DownloadStream`（PBO + fence，N 帧延迟消费）——只有两种回读：①遍历产生的"请细分节点"请求（去重后 ≤ 64/帧），②驱逐候选列表。渲染路径零回读。
+- worker 线程与渲染线程交接用"结果集原子引用"（voxy `RESULT_HANDLE` 模式 + 本模粒子引擎的 fence 纪律）。
 
 ---
 
-## 9. 风险清单
+## 8. 网格化（Meshing）
+
+### 8.1 贪心合并网格化（greedy meshing）
+
+标准三轴扫描：对每个轴 × 两个方向，做 32×32 的 2D 面罩动态合并（同 stateId 且同为"暴露面"合并为最大矩形，上限 32）。暴露面判定 = 面邻体素 `stateTable.opaque == false`（cutout 类视作非遮挡，与原版语义一致）。输出 8 B/quad 流 + 8 组计数。复杂度 O(32³/轴)，单 cube 微秒级。
+
+**均匀 cube 的免费收益**：查询走 `uniform:stateId` 简写（§7.1）；全封闭 cube（六面邻居皆不透明）产出**零 quad**——空岛内部大量 cube 走此路径，mesher 与 arena 双双受益。
+
+### 8.2 计算位置：CPU worker 起步，GPU compute 为优化目标
+
+- **M0（起步）**：CPU worker 池 + 优先级队列（近相机、屏占比高者优先），voxy `RenderGenerationService` 模式。读 34³ 页（含 padding，无需跨页查询），产出 quad 流 → `UploadStream`。渲染线程零参与。
+- **M1（优化）**：GPU compute mesher——workgroup 处理一个 cube（34³ 预取 shared memory 放不下 → 分轴 slice 处理），直接写 arena + `meshPtr` 原子发布，省去 CPU mesh 与上行带宽。作为阶段 6 优化项，**M0/M1 输出格式完全一致**，可灰度切换。
+- 网格化触发：新页上传、页 padding 重填、`setBlock` 增量（单方块变更走"标记 cube 脏 → 重mesh 整 cube"，32³ 重mesh 足够便宜；不做逐 face 增量，避免复杂度）。
+
+### 8.3 Meshlet 构建
+
+mesher 尾 pass（或独立 compute）：顺序 quad 按 64/组切分，组 AABB = quad 包围盒并集 → `meshlet` 表。Tier B 不用（MDI 按 section 段提交），Tier A 的 task shader 按它剔除后 emit。
+
+---
+
+## 9. GPU-Driven 剔除、LOD 与 draw call 合并
+
+### 9.1 视锥剔除 + 八叉树遍历（compute，分层 indirect dispatch）
+
+`traversal.comp`（voxy `HierarchicalOcclusionTraverser` 模式）：
+- 第 0 层 dispatch 由 CPU 发（顶层节点数，常量级）；此后**每层 `glDispatchComputeIndirect`**，dispatch 尺寸由上层通过 `queueMetaBuffer` 原子累加（双缓冲 scratchQueue 乒乓）。
+- 每节点判定链：
+  1. 距离（最近点 XZ + 垂直圆锥）；
+  2. 视锥：节点 AABB vs 6 平面（平面来自 §6.5 的 JOML 提取，UBO 上传）；
+  3. HiZ 遮挡：节点屏幕 AABB → 选 mip 层 → 取 max 深度比较（上一帧深度金字塔，§9.2）；
+  4. **LOD 下钻**：投影屏幕面积（8 角点叉积和，voxy `screenspace.glsl`）> `subDivisionSize²` 且有子 → 压子节点入下层队列；否则渲染自身 mesh；
+  5. 无子且需要细分 → `addRequest()`（去重、限量回读 → CPU/mesher 建网格，渲染自身保底防闪）。
+- 输出：可见叶子按 `meshPtr` 原子 append 进 `renderQueue`（首 uint 兼作计数）+ 每节点可见性 `frameId`（供驱逐 LRU）。
+
+### 9.2 HiZ 遮挡剔除与时间复用
+
+- 每帧 G-Buffer pass 后构建深度金字塔（`glGenerateTextureMipmap` 不可用于 MIN/MAX——自写 5 pass compute 下采样取 max depth，~6 级）。
+- **上一帧深度**做遮挡源 + **两阶段时间复用**防闪：`renderQueue` 分"上帧可见段 + 本帧新增段"；上帧可见节点不剔除直接渲染（保证遮挡物先在场），新增节点过 HiZ——标准 two-phase occlusion，同时保留 voxy 的 TEMPORAL 命令段实现（cmdgen 把上帧不可见者排后）。
+- 保守性：HiZ 比较加屏幕空间膨胀（节点 AABB 投影外扩 1 texel），避免边缘闪烁。
+
+### 9.3 LOD 选择小结
+
+近场 L0（32³ 全分辨率）→ 远处按屏幕面积逐级升 L1/L2/L3（64/128/256³ 合并网格，mesher 对低层节点用 2×/4×/8× 体素步进采样父页生成"块状化"mesh——风格与 MC 远景一致）。切换阈值 `subDivisionSize` 可自动平衡（voxy `autoBalanceSubDivSize` 模式：目标帧率下自适应）。远处节点只存 mesh 不存体素页（§7.4）。
+
+### 9.4 Draw call 合并：MDIC + 零回读（Tier B 主路径，Tier A 同样用于阴影 pass）
+
+`cmdgen.comp`（128 线程/组，`glDispatchComputeIndirect`）每可见 section：
+1. 读可见性（`visibilityData[id] == frameId`）；
+2. 按 8 个面方向组生成 `DrawElementsIndirectCommand{count=quadCount*6, firstIndex=0, baseVertex=quadStartPtr*4, baseInstance=drawId}`（顶点着色器用 `gl_BaseInstance`/`gl_BaseVertex`（`ARB_shader_draw_parameters`）取 section 位置——**沿用粒子引擎踩坑 #30 的 20B 统一步长**）；
+3. 命令 `atomicAdd(opaqueDrawCount)` 追加 → `drawCallBuffer`；
+4. 半透明不生成命令，按 `曼哈顿距离 << detail` 分 1024 桶计数 → `prefixsum` + `buildtranslucents.comp` 生成从后往前命令段。
+
+绘制：`glMultiDrawElementsIndirectCountARB(GL_TRIANGLES, GL_UNSIGNED_SHORT, …)`，**实际数量从 `GL_PARAMETER_BUFFER_ARB` 读，CPU 全程不知道数量**。整场不透明地形 = 1 次 draw call；prep/cull/cmdgen 各 1 个 dispatch。Tier B 顶点路径 = 无属性 VAO + SSBO vertex pulling：
+
+```glsl
+// quad 顶点着色（Tier B，M0）
+Quad q = decodeQuad(quadArena[quadIndex]);          // §7.3 的 52bit 解包
+uint corner = gl_VertexID & 3u;
+vec3 worldPos = cubeOrigin(q) + quadCornerOffset(q, corner); // 面轴重排 swizzle
+outUV = quadUV(q, corner); outState = q.stateId; …      // flat 传给 fragment
+```
+
+### 9.5 Mesh Shader 路径（Tier A）
+
+```
+taskEXT（每 workgroup = 1 个 cube 的 meshlet 列表）
+  ├ 读 meshlet 表（§8.3），AABB 视锥 + HiZ 剔除（同 §9.1 判定，GLSL 复用同一 chunk）
+  └ EmitMeshEXT(count) —— 只 emit 存活 meshlet
+meshEXT（local_size 32 = 64 quad × 4 corner / 8；或 64 quad/组 × 每线程 4 顶点布局按扩展上限调）
+  ├ decodeQuad(quadArena[start + gl_GlobalInvocationID …])   // 与 Tier B 同一解码 chunk
+  ├ gl_MeshVerticesEXT[corner].gl_Position = …               // 视锥体拼接，含相机相对浮点精度处理（±30M 坐标！见下）
+  └ gl_PrimitiveIndicesEXT[tri] = kQuadPattern[…]
+```
+
+- 扩展探测：`GL_EXT_mesh_shader` 优先，`GL_NV_mesh_shader` 兜底（两者 GLSL 关键字 `taskEXT/meshEXT` vs `taskNV/meshNV` 用 PRELUDE 宏抹平）。
+- **大坐标浮点精度**（±3000 万下 float32 顶点抖动）：所有 pass 一律"相机相对"坐标——quad 解码在 cube 局部（≤32），世界位置 = `dvec3(cubeOrigin) - dvec3(camPos)` 先在 CPU/GPU 用 double 相减得 `vec3` 相对量（经典 camera-relative rendering，voxy 亦如此）。cubeOrigin 从 21 bit 打包 int 还原为 int64 再转 double，全程不经过 float32 世界坐标。
+- mesh shader 的 dispatch 参数同样由 compute 写（task workgroup 数 = 可见 cube 数，indirect）。
+
+---
+
+## 10. 延迟着色与 G-Buffer
+
+### 10.1 MRT 布局与 FBO
+
+自建 `gbufferFBO`（窗口尺寸变化重建；首帧 initPass 预渲染红线来自 multipass-buffer 教程）：
+
+| 附件 | 格式 | 内容 |
+|---|---|---|
+| RT0 | RGBA8（sRGB 采样） | albedo.rgb（已乘 biome tint 与 vertex color）+ **渲染态 id 低 8 bit**（高 8 bit放 RT2 flags，共 16 bit stateId） |
+| RT1 | RG16_SNORM + B8 + A8 | 八面体编码法线（面法线为主，为未来非轴对齐面预留）+ 粗 AO + 备用 |
+| RT2 | RGBA8 | flags/stateId 高 8 bit + roughness + metallic + emissive 强度（均可由 stateTable 在 deferred 侧查，存这里省一次 SSBO 查询） |
+| Depth | — | **借用 MC 主 RenderTarget 深度附着**（G-Buffer pass 直接绑为主深度 → 后续 vanilla 实体/粒子/方块实体自动正确遮挡） |
+
+延迟光照输出到自管 `hdrColor`（RGBA16F）→ tonemap 后 blit 回 MC 主颜色。MC 主缓冲非 HDR，ACES 在 blit 内完成，与 vanilla 实体的加法混合风格一致。
+
+### 10.2 延迟光照 pass（全屏 quad，fragment 核心）
+
+```glsl
+// 输入：RT0/1/2、MC 深度、体素页、LPV、探针 SH、CSM 阴影、点光 tile 列表、原版方块图集
+GBuffer g = decodeGBuffer(uv);
+vec3 albedo = fetchAtlasAnimated(g.stateId, g.uv);          // 原版图集 + 动画帧偏移
+float ao    = voxelAo(voxelPage, voxelPos, faceAxis(g.N));  // shader-dev vertexAo：4 side+4 corner 邻居占用，
+                                                             // 面内插值 pow(ao,1/3)——greedy quad 无逐顶点 AO 的解法
+vec3 sun    = evaluateCSM(worldPos, g.N) ;                  // §11.1，4 级联 PCF
+vec3 skySH  = evalIrradianceSH(probeVolume, worldPos, g.N); // §11.2
+vec3 blockL = sampleLPV(lpvVolume, worldPos, g.N);          // §11.3
+vec3 pointL = tiledLights(worldPos, g.N, g.rough, g.metal); // §11.3 延迟点光
+// Cook-Torrance（lighting-model.md 原式）：D_GGX / F_Schlick / V_SmithGGX，太阳项跑 BRDF；
+// skySH/blockL 走 diffuse（探针已含方向性）；emissive 直加（HDR，供 bloom）
+color = PBR(albedo, …) * (sun + skySH + blockL) + pointL + emissive;
+```
+
+半透明像素不进 G-Buffer（depth write off 由 mesher 分流保证），延迟 pass 只照亮不透明。
+
+### 10.3 半透明前向 pass（水面/玻璃/含水流）
+
+时机 `AFTER_TRANSLUCENT_BLOCKS`（§6.3）。数据 = §7.3 的半透明分组 quad，经 §9.4 的距离桶排序 → 半透明 MDI（1 次 draw）。着色：前向采样同一套光照资源（CSM/探针/LPV/点光）+ Fresnel + 可选屏幕色折射（折射需 MC 主颜色拷贝一份作纹理，M2 优化）。排序粒度 = cube×面组，近似排序（voxy 同款，视觉足够）。
+
+### 10.4 实体/方块实体/粒子照明（合成 LightTexture）
+
+vanilla 实体着色器只认 16×16 `LightTexture`（sky, block → 颜色）。方案：
+- mixin `LevelRenderer#getLightColor(Level, BlockPos)`：allay 内重定向 `AllvrLightSampler.sample(pos)` → 返回打包 `(sky, block)`：
+  - **sky = 体素页垂直 DDA**（从实体位置向上有界窗口 K≈128 格射线，无遮挡 = 15）× 昼夜因子（vanilla lightmap 曲线自然表达）。**不能用"列最高面"法**——层叠空岛世界每列最上方恒有岛（+30M 附近），列顶法全维度恒 0；有界窗口法下，层间缝隙漏光处天光正确（物理一致）。近场无体素页的远处实体回退 15（误差可接受）；
+  - block = 客户端光源空间哈希（服务端光源事件随 cube 包同步，§11.3 注册表）取最近光源衰减值。
+- 实体阴影（blob shadow）照常工作。粒子引擎同样受益（其光照采样即 LightTexture）。
+- 效果定位：实体用"够用的近似"；地形本体才是全保真（CSM+探针）。后续可把关键实体（玩家/Allay）迁入 G-Buffer（远期）。
+
+### 10.5 后处理（可选增强，阶段 5 末）
+
+Bloom（MIP 金字塔，emissive HDR 输出受益）→ ACES tonemap（blit 内）→ TAA（YCoCg 邻域 clamp 防鬼影，quad 边缘闪烁对症；与 TAA 冲突的 HUD 不受影响因只作用世界层）。默认 bloom+ACES 开，TAA 关（避免与 MC 自身 AA/TAA 叠加）。
+
+---
+
+## 11. 光照系统：完全取代原版光照引擎
+
+> 原版光照 = 服务端 BFS 天空光/方块光逐 block 传播 + LightLayer 网络下发 + 客户端逐 section 存储。本维度**全部废除**：服务端不计算不下发光照（§5.2/§11.6），客户端 GPU 自建三件套——**CSM 阴影贴图（动态）+ SH 天光探针（预烘焙）+ LPV 方块光（预烘焙/增量）**，外加体素 DDA 射线阴影（近场可选）。shader-dev 的 DDA/锥追踪/AO/PBR 公式是着色内核的直接来源。
+
+### 11.1 级联阴影贴图（太阳/月亮）
+
+- 4 级联（如 16/48/128/384 格），2048² D16，每帧重绘（地形 mesh 全在 GPU——阴影 pass = 复用可见集，按级联视锥 GPU 再剔除，4 次 MDI；Tier A 时 4 次 mesh dispatch）。castFace 剔除（背光面不进阴影 pass）。
+- 采样：级联选择按 viewDepth，PCF 3×3 + 级联边界混合；太阳角度由 `level.getTime()` 计算（维度自义昼夜参数）。
+- 阴影 pass 写独立深度目标（不污染 HiZ/MC 深度）。替换 iris 的 ShadowRenderer（已在 §6.4 禁用）——阴影只服务我们的延迟/前向着色。
+- **空岛世界的天然优势**：层间错位 + 缝隙漏光 → CSM 投下班驳光影，正是该视觉主题的核心画面。
+
+### 11.2 天光探针：SH9 辐照度体积（预烘焙）
+
+- 探针网格对齐 cube 坐标（每 32³ cube 角点即探针，稀疏：仅"含非空 cube 的节点"区域烘焙），存储 `3D 纹理 × 7 RGBA16F 切片`（SH9 RGB = 27 系数）。
+- 烘焙（compute，异步预算切片）：
+  1. **天空可见性**：每探针向半球发射 ~64 条 DDA 射线（shader-dev `castShadow` 的体素版，对体素页/粗节点 AABB 遍历）→ 天空遮蔽 + 方向分布 → 拟合 SH；
+  2. **一弹太阳反弹**（增强项）：命中点取 albedo×CSM，再向探针方向 gather（锥追踪近似，采样低层节点 AABB 占用）；
+  3. 输出**方向性可见性 SH**（不乘颜色）——运行时按昼夜/太阳色染色，昼夜循环零重烘焙。
+- 插值：deferred/前向按 worldPos 三线性取 8 探针 SH（法线朝向权重），洞口/室内自然过渡（取代原版 skylight 的传播语义）。
+- 层叠空岛注意事项：探针在岛屿表面下方/缝隙处的方向分布天然表达"侧向漏光"，无需特判。
+
+### 11.3 方块光：LPV + 延迟点光源（预烘焙/增量，零 BFS）
+
+- **光源注册表**：服务端在 cube 生成/`setBlock` 时维护 `getLightEmission>0` 方块集，随 cube 包增量下发（§7.1）→ 客户端 `lightSourceHash`（空间哈希）。
+- **LPV（光传播体积）**：R11F_G11F_B10F 3D 纹理（网格对齐 16³），三步 compute 传播（6 面 + 对角泄漏抑制的经典 LPV；光源注入 = 注册表 → voxel 页发射强度）。**静态光（火把/岩浆）只在变更时重跑局部传播**（脏 16³ 区域级），红石灯切换等动态光走延迟点光。取代原版 blocklight BFS：无逐 block tick、无网络 LightLayer。
+- **延迟点光**：注册表内光源（含动态：手持光源/实体发光）进 `lights[]` SSBO → compute 64×64 屏幕分桶 → deferred 逐像素累加（上限 128/tile）。近场高质量阴影可选：对 K 个最近点光做 16 步体素 DDA 射线阴影（shader-dev `castShadow` 直译，体素页在场即零额外数据）。
+
+### 11.4 体素 DDA 近场软阴影（可选增强）
+
+太阳 CSM 之外，近场（≤ 48 格）可用体素页 DDA 软阴影替代/增强第 1 级联（分辨率不受阴影贴图限制，`k·h/t` 半影风格）——M2 画质选项，默认关。
+
+### 11.5 增量重烘焙与预算
+
+- 脏链：`setBlock` → cube 脏（mesh）+ 探针脏（含 26 邻 cube 边界探针）+ LPV 脏（16³ 区域）。优先级队列（相机距离加权），每帧预算切片（如 0.5 ms GPU + 2 个 cube），大变更分帧消化——**任何时刻无全量重烘焙**。
+- 烘焙 dispatch 在 §6.3 的 AFTER_SKY 计算相头部执行，复用 fence/预算框架（粒子引擎 EMA 节流模式动态调预算）。
+
+### 11.6 服务端游戏性光照（后移至阶段 7，当前零 mixin）
+
+原版游戏逻辑查光处（怪物生成 `getRawBrightness`、作物/树苗生长、雪傀儡存活等）依赖光照值。**决策：暂不接入玩法 ⇒ 阶段 1–3 服务端零光照 mixin**，这些查询在 allay 维度内返回原版空 LightEngine 的默认值（可玩性不承诺）。阶段 7 接入玩法时按以下预案实施：
+- 天光 = **有界窗口向上暴露**（从查询位置向上 K 格内无遮挡 = 15；靠 SurfaceTracker"低于某 Y 的最高面"有界查询实现——**不可用列顶法**，层叠空岛下全维度恒 0，与 §10.4 客户端机制同理）；
+- 方块光 = 光源注册表按距离衰减的 max（无需传播即保守上界，怪物生成判定偏保守 = 安全方向）；
+- 网络含义不变：cube 包无光照位；进入维度时下发一次光源全量快照（按订阅范围），此后纯增量。
+
+---
+
+## 12. voxy 兼容：明确搁置（不投入，不破坏）
+
+决策（2026-09-03）：**暂不考虑 voxy 兼容**。保留事实依据（§2.3）与影响面结论：
+
+1. voxy 无 NeoForge 构建（Fabric + 硬依赖 Fabric Sodium）；玩家侧若经 Sinytra Connector 使用，其 ingest 链（Sodium `RenderSectionManager.onChunkAdded` + 原版光照 `LIGHT_AND_DATA` 检查）在 allay 维度**天然得不到数据**——列 chunk 是 2D 元数据壳、无原版光照、Sodium 地形已被 §6.4 禁用 → **voxy 地图在该维度为空，但不会 ingest 也不会污染数据库**（最重风险自动消解）。
+2. 唯一残余风险：若未来恢复"窗口内原版渲染"形态（当前路线下不存在此状态）。当前路线下列 chunk 从第一天起就是 passThrough 空壳，无窗口地形概念。
+3. 若未来重启兼容（全高 LoD 地图），按旧分析走 fork voxy 扩展 key（Y 8→更多 bit）+ 直灌 `VoxelIngestService.rawIngest` 路线；本节不展开。
+
+---
+
+## 13. 分阶段实施路线图
+
+| 阶段 | 内容 | 交付物 | 验收标准 | 依赖 |
+|---|---|---|---|---|
+| **1. Cube 内核 + 维度注册** | §4 JSON 前置（占位 noise/biome 引用）+ §5.1 纯逻辑类移植（AllvrCubePos/AllvrCoords/SurfaceTracker）+ `AllvrCubeMap/AllvrCubeCache` + P0 mixin（Level 重定向、列生成 passThrough）+ 软件边界两处强制 + **`AllvrIslandFieldGenerator`（§5.3，单步密度场 + 均匀 cube 服务端侧）** | 服务端可用：`/execute in` 进入（创造模式）、窗口外放置/破坏方块 | `/data get block` 越窗读写正确；重启后空岛确定性重生成；其它维度零回归 | 无（mixin 手写路线，复制量失控再评估 DASM） |
+| **2. 票据 + 网络** | 垂直视距票据（P1 mixin）+ `ClientboundAllvrCubePacket`（调色板 + 方块实体 + 光源事件）+ 客户端 cube 接收（`client.dimension` 缓存，尚无渲染） | 客户端内存拿到 cube 数据 | 网络层调试视图可 dump 接收的 cube；多人各自垂直视距 | 阶段 1 |
+| **3. ALLVR V0（本次实施终点）** | §6 框架落地：`AllvrShaderCache/AllvrBuffers`（粒子引擎骨架复用）+ 体素页/**均匀简写**/节点树/quad arena（§7）+ CPU greedy mesher（§8.1）+ Tier B MDI 前向着色（§9.4 简化版：仅 CPU 视锥）+ `AllvrIncompatDisabler`（原版/Sodium/Iris 禁用，§6.4）+ `AllvrLightSampler` 合成光照（§10.4） | allay 维度内：地形由 ALLVR 渲染（无剔除无 LOD 无延迟），实体/粒子正常 | tp 至任意远 Y（如 ±100 万）数秒内空岛可见；其它维度零回归；F3+T 热重载 | 阶段 2；build.gradle 加 sodium `compileOnly` |
+| **4. GPU-Driven 完全体** | §9 全量：八叉树遍历（视锥+HiZ+屏幕面积下钻）+ cmdgen + MDIC 零回读 + LOD L1–L3 + 驱逐/LRU + GPU 请求细分回读 | 剔除/LOD/命令全 GPU；远距块状化 LOD | 整场地形 1 draw call；渲染线程 CPU < 1 ms（粒子引擎计时环验证）；遮挡无穿透/无闪现回归 | 阶段 3 |
+| **5. 延迟着色 + 光照系统** | §10–11：G-Buffer MRT + 延迟 PBR + CSM + SH 探针烘焙 + LPV + 延迟点光 + 半透明前向 + bloom/ACES | 取代原版光照的完整视觉 | 光照更新零卡顿（变更场景帧预算内消化）；洞穴/缝隙漏光/昼夜/水面正确；实体检视无穿帮 | 阶段 4 |
+| **6. 持久化 + Mesh Shader** | §5.4 region3d 存档定版（含光照/mesh 缓存序列化）+ §9.5 Tier A task/mesh 路径 + meshlet 剔除 + GPU mesher（§8.2 M1）+ 近场 DDA 软影（§11.4）+ TAA 选项 | 重启存续；Tier A 硬件最优路径 | 重启后玩家改动存续；Tier A/B 视觉一致；GPU 时间分布达标（计时环出报告） | 阶段 5；regionlib 评估 |
+| **7. 玩法接入 + 远期生态** | 游戏性光照（§11.6 预案）、自定义 biome/`DimensionSpecialEffects` 天空、传送方块/出生点安全、风暴/燃烧器维度内容、Create 跨 cube 传动验证、voxy 兼容重评（§12） | 维度玩法闭环 | 按需求定义 | 按需求 |
+
+里程碑口径：**1–2 服务端与数据通路**（不发布）；**3 第一个可视里程碑**（本次实施终点）；4–5 渲染完全体（一个大版本）；6 收尾（存档落地 + Tier A）；7 按玩法节奏。内存态重启丢改动是阶段 6 前的**已知限制**（确定性重生成缓解）。
+
+---
+
+## 14. 风险清单
 
 | # | 风险 | 等级 | 缓解 |
 |---|---|---|---|
-| R1 | CC3 未完成（光照/IO/地形 TODO），参考代码本身有坑 | 高 | 只移植 Core 中"已完成且纯逻辑"的部分（CubePos/Coords/SurfaceTracker）；管线类只抄**思路**按 1.21.1 重写 |
-| R2 | 1.21.1 与 CC3 目标 1.21.6 管线 API 差异（`GenerationChunkHolder` 拆分等） | 高 | §5.2 已按 1.21.1 类名重列；每条 mixin 动工前对照 `.refs/neoforge-21.1.227` 源码核对签名 |
-| R3 | 光照引擎是最大未验证领域（CC3 直接躺平） | 高 | 阶段 3a 服务端权威光照随包下发（正确性优先）；本地重算放远期 |
-| R4 | voxy 8 bit Y 混叠污染玩家数据库（不可逆） | 高 | 路线 A 窗口对齐 4096 倍数；窗口外数据绝不进入原版列 chunk sections；验收清单 §7.5 |
-| R5 | mixin 面积大，与 Create/Embeddium/Iris（本模 refs 全有）冲突 | 中 | 全部 mixin 挂 `CMIMixinPlugin` 按 WorldStyle 短路；本模已有 `irisveil`/`bnb` 等 mixin 组的共存经验 |
-| R6 | `region3d` 自定义格式无第三方工具支持 | 中 | 列 chunk 保持标准 anvil；cube NBT 字段名对齐原版 section NBT（§5.3） |
-| R7 | Y ±3000 万下实体/寻路/掉落物等原版逻辑的数值假设（重力累积、视锥剔除精度） | 中 | 软件边界内实测；必要时实体 tick 分段（长距离传送拆步） |
-| R8 | 网络包体积/频率（cube 级 32³ 下发） | 低 | 镜像原版 chunk 包的增量机制（仅 dirty section 重发） |
+| R1 | CC3 未完成（光照/IO/地形 TODO），参考代码本身有坑 | 高 | 只移植 Core 纯逻辑类（AllvrCubePos/AllvrCoords/SurfaceTracker）；管线类只抄思路按 1.21.1 重写；光照问题被 §11 整体绕开；地形自研密度场（§5.3） |
+| R2 | 1.21.1 与 CC3 目标 1.21.6 管线 API 差异 | 高 | §5.2 按 1.21.1 类名列表；每条 mixin 动工前对照 `.refs/neoforge-21.1.227` 核对签名 |
+| R3 | mixin 面积大，与 Create/Embeddium/Iris 冲突 | 高 | 决策评审已砍掉出生点/游戏性光照/生成金字塔三块 mixin 面；剩余全部挂 `CMIMixinPlugin` 按 WorldStyle + 维度判定短路；渲染 mixin 集中在 `renderSectionLayer` 等少数入口；离场卫生纪律（粒子引擎踩坑 #32） |
+| R4 | sodium/iris 禁用不彻底（阴影 pass/后处理残留干预） | 高 | §6.4 `AllvrIncompatDisabler` 注册表逐项验收：iris `isShaderPackInUse` 强制 false + ShadowRenderer 跳过；进出维度 `LevelEvent` 同步复位；每项带"维度切换往返"回归用例 |
+| R5 | ±30M 坐标 float32 顶点抖动 | 高 | 全管线相机相对渲染（§9.5）：cube 局部解码 + int→double 相对相机；深度用对数/相机相对（浅景深远处精度实测调整） |
+| R6 | Mesh Shader 扩展覆盖面（EXT/NV 差异、驱动成熟度） | 中 | Tier B MDI 为保底路径且长期保留（阴影 pass 恒用）；PRELUDE 宏抹平两套关键字；能力探测 + 自动回退 |
+| R7 | G-Buffer/延迟与 vanilla 实体/半透明排序穿帮 | 中 | 借用 MC 主深度保证遮挡正确；半透明走原版时段槽位；验收用例：水实体互望、玻璃后实体 |
+| R8 | 探针/LPV 烘焙在超大变更下抖动 | 中 | 脏区域分帧预算 + EMA 自适应（粒子引擎节流模式）；烘焙期间旧值服务渲染 |
+| R9 | `region3d` 自定义格式无第三方工具支持 | 中 | 已后移阶段 6；届时列 chunk 保持标准 anvil、cube NBT 字段名对齐原版 section NBT |
+| R10 | 体素页/arena 内存超预算（多层空岛 + 集束视距/高空俯瞰） | 中 | §7.1 均匀 cube 简写（岛内部零页）+ §7.4 LRU + 稀疏缓冲按页提交 + `RenderResourceReuse` 跨维度复用；预算超限自动收缩视距并提示 |
+| R11 | 均匀简写正确性（mesher/查询/AO 对 uniform 邻居应答） | 中 | §7.1 页表项高位标记，查询路径统一入口；验收用例：uniform-页交界面的 mesh 与 AO 无缝 |
+| R12 | Y ±3000 万下实体/寻路/掉落物等原版数值假设 | 中 | 软件边界内实测；必要时实体 tick 分段（长距离传送拆步） |
+| R13 | 网络包体积/频率（cube 级 32³ 下发） | 低 | 调色板 + 仅 dirty section 重发 + 光源事件化 + 均匀 cube 数字节包 |
+| R14 | 内存态存档：阶段 6 前重启丢玩家改动 | 低 | 已知限制（决策定稿）；密度场确定性保证地形可复现；创造测试可接受 |
+| R15 | voxy（Connector 场景）残余交互 | 低 | §12 分析：ingest 链拿不到数据，自动失效不污染 |
 
 ---
 
-## 10. 附录：参考代码索引
+## 15. 附录：参考代码索引
 
-**CubicChunks3**（`.refs/CubicChunks3/`，MIT，目标 1.21.6 未完成）：
+**CubicChunks3**（`.refs/CubicChunks3/`，MIT，目标 1.21.6 未完成）——服务端 Cube 层蓝本：
 - 位置编码：`CubicChunksCore/src/main/java/io/github/opencubicchunks/cc_core/api/CubePos.java`、`utils/Coords.java`、`api/CubicConstants.java`
 - 双工位置：`cc_core/world/level/CloPos.java`；WorldStyle：`cc_core/world/CubicLevelHeightAccessor.java`
 - 无限高度图（已完成，直接移植）：`cc_core/world/heightmap/surfacetrackertree/{SurfaceTrackerNode,Branch,Leaf}.java`、`storage/InterleavedHeightmapStorage.java`
 - 列 cube 映射：`cc_core/world/ColumnCubeMap.java`
 - 管线 mixin：`src/main/java/io/github/opencubicchunks/cubicchunks/mixin/`（清单见 §3.3；DASM 重定向集 `mixin/dasmsets/`）
-- 旧实现（≈1.21.1，含 regionlib IO）：`src_old/main/java/`
+- 旧实现（≈1.21.1，含 regionlib IO——阶段 6 参考）：`src_old/main/java/`
 - 生成器适配守则：`ModOverworldChunkGeneratorsandCC.md`
-- 常量/配置：`cc_core/config/EarlyConfig.java`、`config/CommonConfig.java`（verticalViewDistance=8）
 
-**voxy**（`.refs/voxy/`，Fabric 0.2.19-beta）：
-- section key 与 Y 限制：`src/main/java/me/cortex/voxy/common/world/WorldEngine.java`（getWorldSectionId/getY）
-- ingest 管线：`common/world/service/VoxelIngestService.java`（enqueueIngest/rawIngest）、`common/voxelization/WorldConversionFactory.java`、`common/world/WorldUpdater.java`（insertUpdate、MiB 折叠 hack）
-- ingest 触发 mixin：`client/mixin/sodium/MixinRenderSectionManager.java`、`client/mixin/minecraft/{MixinClientChunkCache,MixinClientLevel}.java`
-- 顶层节点爆炸点：`client/core/rendering/RenderDistanceTracker.java`；渲染窗口：`client/core/VoxyRenderSystem.java`
-- 维度识别：`commonImpl/mixin/minecraft/MixinWorld.java`、`commonImpl/WorldIdentifier.java`、`commonImpl/VoxyInstance.java`
-- 磁盘格式：`common/world/SaveLoadSystem3.java`；GLSL Y 解包：`src/main/resources/assets/voxy/shaders/lod/pos_util.glsl`
-- 导入框架（可插 `IDataImporter`）：`commonImpl/ImportManager.java`、`commonImpl/importers/{IDataImporter,WorldImporter,DHImporter}.java`
-- MiB 折叠先例：`commonImpl/VoxyCommon.java`（`IS_MINE_IN_ABYSS=false` 编译期常量）
+**voxy**（`.refs/voxy/`，Fabric 0.2.19-beta）——**GPU-Driven 渲染架构蓝本**（兼容性已搁置，§12）：
+- 节点树 SSBO + 写入：`client/core/rendering/hierachial/{NodeStore,AsyncNodeManager,NodeCleaner}.java`；GLSL `assets/voxy/shaders/lod/hierarchical/{node.glsl,traversal_dev.comp,queue.glsl}`、`pos_util.glsl`
+- GPU 遍历：`hierachial/HierarchicalOcclusionTraverser.java` + `screenspace.glsl`/`frustum.glsl`（HiZ 遮挡 + 屏幕面积下钻 + 分层 indirect dispatch）
+- MDI 命令生成与提交：`section/backend/mdic/{MDICSectionRenderer,MDICViewport}.java`、`prep.comp`/`cmdgen.comp`/`buildtranslucents.comp`、`prefixsum/`；`glMultiDrawElementsIndirectCountARB` 零回读
+- quad 格式与顶点解码：`shaders/lod/{quad_format.glsl,quad_util.glsl,gl46/quads3.vert}`（8B/quad + 共享索引 + 无属性 VAO）
+- mesher：`rendering/building/{RenderGenerationService,RenderDataFactory}.java`（贪心面合并 + 邻居面遮挡 + 模型几何）
+- 内存：`section/geometry/BasicSectionGeometryData.java`（巨型 arena + `ARB_sparse_buffer` 兜底）、`RenderResourceReuse`
+- HiZ：`client/core/rendering/HiZBuffer.java`；上/下行流：`UploadStream`/`DownloadStream`
+- sodium 禁用模板：`client/mixin/sodium/MixinDefaultChunkRenderer.java`（HEAD-cancel）；iris 运行时判定：`client/core/util/IrisUtil.java`
+
+**本项目 GPU 粒子引擎**（复用清单见 §6.5）：
+- 编译/常量/绑定管理：`src/main/java/com/iridium126/createmanaindustry/client/particles/engine/{ParticlePrograms,ParticleBuffers}.java`
+- 帧编排/剔除/排序/回读纪律：`...engine/CMIParticleEngine.java`（`extractFrustum`、fence 轮询、计时环）、`...engine/{ParticleFrameProfiler,ParticleGLUtil,CollisionBake}.java`
+- 帧挂载与闩锁：`...CreateManaIndustryClient.java`（AFTER_SKY/AFTER_LEVEL 双阶段）、`...mixin/render/LevelRendererBlockEntitiesMixin.java`
+- 踩坑清单（35 条，全部适用）：`docs/particle-engine-dev.md` §5
+
+**禁用目标源码**（mixin 签名核对）：
+- `.refs/sodium/`（0.6.x for 1.21.1：`DefaultChunkRenderer`/`RenderSectionManager` 实际 FQCN 以此为准）
+- `.refs/Iris/`（1.21.1：`isShaderPackInUse` 所在 API/state 类与 `ShadowRenderer.renderShadows`）
 
 **原版 1.21.1**（`.refs/neoforge-21.1.227/`）：
-- 高度常量链：`net/minecraft/core/BlockPos.java`（PACKED_*_LENGTH）→ `net/minecraft/world/level/dimension/DimensionType.java`（BITS_FOR_Y/Y_SIZE/MAX_Y/MIN_Y + codec 校验）
-- 管线类（mixin 目标核对用）：`net/minecraft/server/level/{ChunkMap,ChunkHolder,ServerChunkCache,DistanceManager,PlayerChunkSender}.java`、`net/minecraft/world/level/chunk/{LevelChunk,ChunkAccess,ChunkStatus}.java`、`net/minecraft/client/multiplayer/ClientChunkCache.java`、`net/minecraft/client/renderer/ViewArea.java`
+- 高度常量链：`net/minecraft/core/BlockPos.java` → `net/minecraft/world/level/dimension/DimensionType.java`
+- 管线类（mixin 目标核对用）：`net/minecraft/server/level/{ChunkMap,ChunkHolder,ServerChunkCache,DistanceManager,PlayerChunkSender}.java`、`net/minecraft/world/level/chunk/{LevelChunk,ChunkAccess,ChunkStatus}.java`、`net/minecraft/client/multiplayer/ClientChunkCache.java`、`net/minecraft/client/renderer/{LevelRenderer,ViewArea,LightTexture}.java`
+
+**shader-dev skill**（`.agents/skills/shader-dev/`，着色内核取材，映射见 §6.5）：
+- `techniques/voxel-rendering.md` + `reference/voxel-rendering.md`（DDA/vertexAo/castShadow/锥追踪）
+- `techniques/{lighting-model,shadow-techniques,multipass-buffer,post-processing,terrain-rendering,ambient-occlusion}.md`
 
 ---
 
-*本文档由 2026-09-02 的源码分析生成：CubicChunks3（含 src_old 与 CubicChunksCore）、voxy（dev@02dfb1b7）全库扫描 + NeoForge 21.1.227 反编译源核对。阶段 0 动工时无需再调研；阶段 1 动工前按 §5.2 表逐条对照 1.21.1 源签名。*
+*本文档由 2026-09-02 的维度/Cube 架构分析与 2026-09-03 的现代体素渲染重写分析合并生成，并于 2026-09-03 经决策评审（grilling）定稿：阶段 0 取消、空岛密度场地形、纯原版传送、`Allvr` 命名、持久化后移阶段 6、实施终点 = 阶段 3。资料来源：CubicChunks3（含 src_old 与 CubicChunksCore）、voxy（渲染架构面）、NeoForge 21.1.227 反编译源、本项目 GPU 粒子引擎（代码 + `docs/particle-engine-dev.md`）与 shader-dev skill 技术库全量扫描。阶段 1 动工前按 §5.2 表逐条对照 1.21.1 源签名；阶段 3 动工前按 §6.5 复用表核对粒子引擎接口。*

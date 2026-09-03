@@ -358,6 +358,13 @@ public final class ShaderPackProgramCompiler {
         this.shadowGtextureUnit = -1;
         this.shadowLastError = "";
         this.owningPipeline = null;
+        // The merged source embeds the allay_pose.glsl chunk text; a resource
+        // reload may have changed it. Keeping the cache would short-circuit
+        // buildMergedSource and silently pin the merged path to pre-reload
+        // chunk text while the self-drawn path (ParticlePrograms rebuild) picks
+        // up the new one.
+        this.mergedVertexSource = null;
+        this.mergedSourceOverlay = false;
     }
 
     /**

@@ -143,6 +143,8 @@ public final class ParticlePrograms {
     private int modelRender;     // instanced allay models via one merged multi-draw
 
     private volatile boolean dirty = true;
+    /** Throttle for the per-frame retry's failure log (epoch millis, 0 = never). */
+    private long lastFailLogMillis;
 
     /** Marks the programs stale; {@link #rebuild()} is safe to call any time. */
     public void requestRebuild() {
@@ -173,12 +175,23 @@ public final class ParticlePrograms {
         this.texturedRender = link(GLSL_DIR + "textured.vsh", GLSL_DIR + "textured.fsh");
         this.modelRender = link(GLSL_DIR + "model.vsh", GLSL_DIR + "model.fsh");
         if (!this.ready()) {
-            CreateManaIndustry.LOGGER.error("[CMI particles] program rebuild FAILED: "
-                    + "reset={} update={} emit={} keygen={} hist={} scan={} scatter={} capture={} grid={} hit={} "
-                    + "stormpos={} wavecontact={} render={} textured={} model={}",
-                    this.reset, this.update, this.emit, this.keygen,
-                    this.radixHist, this.radixScan, this.radixScatter, this.capture, this.grid, this.hit,
-                    this.stormPos, this.waveContact, this.render, this.texturedRender, this.modelRender);
+            // Restore the dirty flag: a transient failure (e.g. first-frame
+            // resources not yet ready) must retry next frame, not latch the
+            // engine dark until a manual F3+T. The log is throttled because
+            // the retry is per-frame — same 5 s idiom as the engine's own
+            // error reporting.
+            this.dirty = true;
+            long now = System.currentTimeMillis();
+            if (now - this.lastFailLogMillis > 5000) {
+                this.lastFailLogMillis = now;
+                CreateManaIndustry.LOGGER.error("[CMI particles] program rebuild FAILED "
+                        + "(will retry): "
+                        + "reset={} update={} emit={} keygen={} hist={} scan={} scatter={} capture={} grid={} hit={} "
+                        + "stormpos={} wavecontact={} render={} textured={} model={}",
+                        this.reset, this.update, this.emit, this.keygen,
+                        this.radixHist, this.radixScan, this.radixScatter, this.capture, this.grid, this.hit,
+                        this.stormPos, this.waveContact, this.render, this.texturedRender, this.modelRender);
+            }
         } else {
             CreateManaIndustry.LOGGER
                     .info("[CMI particles] programs compiled: reset={} update={} emit={} keygen={} "

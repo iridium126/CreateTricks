@@ -130,62 +130,72 @@ public final class ParticleAtlas {
             int texW = cols * maxW;
             int texH = rows * maxH;
             NativeImage canvas = new NativeImage(texW, texH, true);
-            for (int i = 0; i < frames; i++) {
-                int col = i % cols;
-                int row = i / cols;
-                // cell-sized frames copy 1:1; smaller frames (the 8x8 combat
-                // sprites in the 16x16 cherry cells) are nearest-upscaled to
-                // FILL the cell first — the render shaders map a full cell per
-                // frame, so a partially-filled cell would draw the sprite at
-                // the wrong world size
-                if (fw[i] == maxW && fh[i] == maxH) {
-                    // this=img (read), arg=canvas (write) — see NativeImage.copyRect overload
-                    imgs[i].copyRect(canvas, 0, 0, col * maxW, row * maxH,
-                            fw[i], fh[i], false, false);
-                } else {
-                    for (int y = 0; y < maxH; y++) {
-                        int sy = Math.min(fh[i] - 1, y * fh[i] / maxH);
-                        for (int x = 0; x < maxW; x++) {
-                            int sx = Math.min(fw[i] - 1, x * fw[i] / maxW);
-                            canvas.setPixelRGBA(col * maxW + x, row * maxH + y,
-                                    imgs[i].getPixelRGBA(sx, sy));
+            try {
+                for (int i = 0; i < frames; i++) {
+                    int col = i % cols;
+                    int row = i / cols;
+                    // cell-sized frames copy 1:1; smaller frames (the 8x8 combat
+                    // sprites in the 16x16 cherry cells) are nearest-upscaled to
+                    // FILL the cell first — the render shaders map a full cell per
+                    // frame, so a partially-filled cell would draw the sprite at
+                    // the wrong world size
+                    if (fw[i] == maxW && fh[i] == maxH) {
+                        // this=img (read), arg=canvas (write) — see NativeImage.copyRect overload
+                        imgs[i].copyRect(canvas, 0, 0, col * maxW, row * maxH,
+                                fw[i], fh[i], false, false);
+                    } else {
+                        for (int y = 0; y < maxH; y++) {
+                            int sy = Math.min(fh[i] - 1, y * fh[i] / maxH);
+                            for (int x = 0; x < maxW; x++) {
+                                int sx = Math.min(fw[i] - 1, x * fw[i] / maxW);
+                                canvas.setPixelRGBA(col * maxW + x, row * maxH + y,
+                                        imgs[i].getPixelRGBA(sx, sy));
+                            }
                         }
                     }
                 }
+
+                int[] rgba = canvas.getPixelsRGBA();
+                int texelCount = rgba.length;
+                ByteBuffer pixels = ByteBuffer.allocateDirect(texelCount * 4)
+                        .order(ByteOrder.nativeOrder());
+                for (int v : rgba)
+                    pixels.putInt(v);
+                pixels.flip();
+
+                textureId = GL11.glGenTextures();
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureId);
+                GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+                GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+                GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+                ParticleGLUtil.prepareClientUpload(); // guard PBO / unpack-state leftovers
+                GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA8, texW, texH, 0,
+                        GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, pixels);
+                if (this.mipmap) {
+                    // vanilla-entity-atlas-style distance behaviour; a single-frame
+                    // atlas cannot bleed neighbouring sprites at high mip levels
+                    GL30.glGenerateMipmap(GL11.GL_TEXTURE_2D);
+                    GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER,
+                            GL30.GL_NEAREST_MIPMAP_LINEAR);
+                } else {
+                    GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+                }
+
+                CreateManaIndustry.LOGGER.info("[CMI particles] sprite atlas {} ready: {}x{}",
+                        name, texW, texH);
+            } finally {
+                // close on EVERY path — a failure mid-compose/mid-upload must
+                // not leak the canvas or the frame images (the old code only
+                // closed them on the success path)
+                canvas.close();
+                for (NativeImage img : imgs)
+                    img.close();
             }
-
-            int[] rgba = canvas.getPixelsRGBA();
-            int texelCount = rgba.length;
-            ByteBuffer pixels = ByteBuffer.allocateDirect(texelCount * 4)
-                    .order(ByteOrder.nativeOrder());
-            for (int v : rgba)
-                pixels.putInt(v);
-            pixels.flip();
-
-            textureId = GL11.glGenTextures();
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureId);
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
-            ParticleGLUtil.prepareClientUpload(); // guard PBO / unpack-state leftovers
-            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA8, texW, texH, 0,
-                    GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, pixels);
-            if (this.mipmap) {
-                // vanilla-entity-atlas-style distance behaviour; a single-frame
-                // atlas cannot bleed neighbouring sprites at high mip levels
-                GL30.glGenerateMipmap(GL11.GL_TEXTURE_2D);
-                GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER,
-                        GL30.GL_NEAREST_MIPMAP_LINEAR);
-            } else {
-                GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
-            }
-
-            canvas.close();
-            for (NativeImage img : imgs)
-                img.close();
-            CreateManaIndustry.LOGGER.info("[CMI particles] sprite atlas {} ready: {}x{}",
-                    name, texW, texH);
         } catch (RuntimeException | LinkageError e) {
+            // A failure after glGenTextures leaves a half-built texture bound to
+            // textureId: recycle it and reset the id so later frames retry the
+            // upload instead of treating a storage-less texture as loaded.
+            free();
             CreateManaIndustry.LOGGER.error("[CMI particles] failed to build sprite atlas " + name, e);
         }
     }

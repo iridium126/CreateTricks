@@ -1094,6 +1094,11 @@ public final class CMIParticleEngine {
         // pool-usage estimate uses the (possibly stale) snapshot plus spawns
         // since — overspawning is impossible: the GPU-side slot guard drops
         // anything beyond capacity anyway.
+        // Compaction must move EVERY per-command array in lockstep: the c-slot
+        // metadata (light/memberBase/memberKey/ringSpawn or hex vel/params)
+        // selects its meaning per command, so a dropped entry here would pair
+        // surviving commands with stale slots' metadata (wrong member identity,
+        // blacked-out combat light, hex flags leaking across types).
         int free = Math.max(0, cap - this.aliveKnown - this.spawnDelta - SAFETY_MARGIN);
         if (totalSpawn > free) {
             double k = free <= 0 ? 0 : (double) free / totalSpawn;
@@ -1106,6 +1111,14 @@ public final class CMIParticleEngine {
                     this.emitCounts[w] = n;
                     this.emitOrigins[w] = this.emitOrigins[i];
                     this.emitTranslucent[w] = this.emitTranslucent[i];
+                    this.emitOriginRef[w] = this.emitOriginRef[i];
+                    this.emitLight[w] = this.emitLight[i];
+                    this.emitMemberBase[w] = this.emitMemberBase[i];
+                    this.emitMemberKey[w] = this.emitMemberKey[i];
+                    this.emitRingSpawn[w] = this.emitRingSpawn[i];
+                    this.emitHex[w] = this.emitHex[i];
+                    this.emitHexVel[w] = this.emitHexVel[i];
+                    this.emitHexParams[w] = this.emitHexParams[i];
                     totalSpawn += n;
                     w++;
                 }

@@ -27,8 +27,12 @@ import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
  * Debug / benchmark interface for the GPU particle engine.
  * <p>
  * Registered only on the client (client-side commands); every command body
- * first verifies the engine is available (Veil loaded + programs compiled) so
- * nothing touches Veil/heap classes when the dependency is absent.
+ * first verifies the engine is available (GL capable + programs compiled).
+ * The hex-spray command gates on {@code CreateManaIndustry.HEX_ACTIVE}
+ * instead: hexcasting is an optional dependency and {@code HexSpecs} links
+ * its API types, so both the handler and the pigment tab-completion must
+ * stay behind that flag or they throw {@code NoClassDefFoundError} with the
+ * mod absent.
  *
  * <pre>
  *   /cmip spawn &lt;preset&gt; [count]        burst at the player's feet
@@ -55,9 +59,14 @@ public final class CMIParticleCommand {
     private static final SuggestionProvider<CommandSourceStack> ANIMATIONS = (ctx, builder) ->
             SharedSuggestionProvider.suggest(EmitterPresets.animationNames(), builder);
 
+    // Behind HEX_ACTIVE as well: resolving HexSpecs.Pigment loads HexSpecs,
+    // which links hexcasting API types — tab-completing "/cmip spray <tab>"
+    // with the mod absent must not throw before the handler's guard runs.
     private static final SuggestionProvider<CommandSourceStack> PIGMENTS = (ctx, builder) ->
-            SharedSuggestionProvider.suggest(java.util.Arrays.stream(HexSpecs.Pigment.values())
-                    .map(p -> p.name().toLowerCase(java.util.Locale.ROOT)).toList(), builder);
+            CreateManaIndustry.HEX_ACTIVE
+                    ? SharedSuggestionProvider.suggest(java.util.Arrays.stream(HexSpecs.Pigment.values())
+                            .map(p -> p.name().toLowerCase(java.util.Locale.ROOT)).toList(), builder)
+                    : builder.buildFuture();
 
     @SubscribeEvent
     public static void register(RegisterClientCommandsEvent event) {
@@ -178,6 +187,12 @@ public final class CMIParticleCommand {
     }
 
     private static int spray(CommandContext<CommandSourceStack> ctx, int count) {
+        // Hexcasting is optional: HexSpecs (and the ColorProvider below) link
+        // its API types, so the whole handler must return before touching them.
+        if (!CreateManaIndustry.HEX_ACTIVE) {
+            tell(ctx, "Conjure sprays require Hexcasting, which is not loaded.");
+            return 0;
+        }
         String name = StringArgumentType.getString(ctx, "pigment");
         HexSpecs.Pigment pigment;
         try {

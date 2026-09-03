@@ -192,7 +192,7 @@ src/main/resources/data/createmanaindustry/
 
 要点：
 - ⚠️ `bed_works/respawn_anchor_works/piglin_safe/has_raids` 是**必填字段**（`DimensionType` codec 无 orElse），漏写 = 维度解析失败。阶段 1 初版曾漏掉，已修正。
-- `min_y=-2032, height=4064` 是 1.21.1 合法**最大窗口**（§2.1）。cube 化后这是纯**形式声明**——只为让原版管线（实体处理、`LevelHeightAccessor` 假设等）有合法容差；实际可玩范围由 cube 层的 ±30,000,000 决定。
+- `min_y=-2032, height=4064` 是 1.21.1 合法**最大窗口**（§2.1）。cube 化后这是纯**形式声明**——只为让原版管线（光照列、`LevelHeightAccessor` 假设等）有合法容差；实际可玩范围由 cube 层的 ±30,000,000 决定。**边界谓词已被 mixin 放宽**（§5.2 实况：`isOutsideBuildHeight` 在 allay 维度改判 ±30M），否则命令层 `BlockPosArgument` 会以"位置超出世界"拒绝 cube-only Y。
 - `natural=false`：避免指南针乱指；`bed_works=false`：测试维度不需要床逻辑（与 natural=false 语义一致）；`effects=minecraft:overworld`：先用原版天空渲染，自定义 `DimensionSpecialEffects` 后置阶段 7。
 - `has_skylight=true` / 怪物生成字段：仅剩游戏性语义，消费方在阶段 7；渲染光照与本字段无关（§11 客户端自建）。
 
@@ -249,7 +249,9 @@ static { assert Y_BOUND <= Coords.blockToCube(33_554_431) * 32; }
 
 ### 5.2 服务端加载管线（1.21.1 适配的 mixin 目标）
 
-> **阶段 1 实现实况（2026-09-03）**：实际落地的 mixin 只有 3 个，远小于下表规划——`mixin/allvr/AllvrLevelMixin`（`Level` 的 `getBlockState`/`setBlock`(4 参)/`getFluidState`/`getBlockEntity` 四处 HEAD 注入，维度门控）、`AllvrServerLevelMixin`（duck `AllvrServerLevelDuck.allvr$getCubeMap()` 挂 per-level cube map）、`AllvrEntityMixin`（`Entity#tick` HEAD 的 ±Y_BOUND clamp）。**原因**：①列 passThrough 由 §4.3 的 flat 空 layers 方案零 mixin 解决；②cube 加载不走原版 ticket——`AllvrCubeMap` 自驱动（`LevelTickEvent.Post` 逐玩家 shell 加载 + 每帧时间预算 + 传送时 3×3×3 同步环），`ServerChunkCache/ChunkMap/DistanceManager` 的 mixin 在纯内存阶段全部不需要；③方块读对未加载 cube 返回 void air（镜像原版未加载区块语义），写按需生成（镜像原版 `setBlock` 的 `getChunkAt` 创建语义）。下表保留为阶段 2（网络票据）与玩法阶段（7）的规划参照。
+> **阶段 1 实现实况（2026-09-03，含修复）**：实际落地的 mixin 有 4 个，远小于下表规划——`mixin/allvr/AllvrLevelMixin`（`Level` 的 `getBlockState`/`setBlock`(4 参)/`getFluidState`/`getBlockEntity` 四处 HEAD 注入，维度门控）、`AllvrLevelHeightAccessorMixin`（`isOutsideBuildHeight(I)Z` 放宽为 ±Y_BOUND，`instanceof Level` 门控排除 LevelChunk/WorldGenRegion）、`AllvrServerLevelMixin`（duck `AllvrServerLevelDuck.allvr$getCubeMap()` 挂 per-level cube map）、`AllvrEntityMixin`（`Entity#tick` HEAD 的 ±Y_BOUND clamp）。
+>
+> **AllvrLevelHeightAccessorMixin 的由来（客户端测试抓到的第 3 个坑）**：`dimension_type` 的 4064 窗口除了形式声明外，还被原版**边界谓词**消费——`/setblock` 等命令的 `BlockPosArgument` 先查 `Level.isInWorldBounds`（→ `isOutsideBuildHeight`）再执行，cube-only Y 直接报"该位置已超出此世界"。修复 = 该谓词在 allay 维度改判 ±30,000,000（含端点）；随后所有越窗 touch 列区块 section 数组的调用点均已被路由/边界守卫覆盖（`Level` 读写已拦截、`LevelChunk.get/setBlockState` 自带 section 索引越界检查、heightmap/chunk 坐标与 Y 无关、`WorldGenRegion` 被门控排除保持窗口语义）。**残余的命令层拦截**：`getLoadedBlockPos` 还要求**列 chunk 已加载**（列坐标，Y 无关）——测试远 Y 方块时须先让玩家 tp 到目标附近（原版票据加载该列），或对该列 `/forceload`。**原因**：①列 passThrough 由 §4.3 的 flat 空 layers 方案零 mixin 解决；②cube 加载不走原版 ticket——`AllvrCubeMap` 自驱动（`LevelTickEvent.Post` 逐玩家 shell 加载 + 每帧时间预算 + 传送时 3×3×3 同步环），`ServerChunkCache/ChunkMap/DistanceManager` 的 mixin 在纯内存阶段全部不需要；③方块读对未加载 cube 返回 void air（镜像原版未加载区块语义），写按需生成（镜像原版 `setBlock` 的 `getChunkAt` 创建语义）。下表保留为阶段 2（网络票据）与玩法阶段（7）的规划参照。
 
 1.21.1 与 CC3 目标 1.21.6 的管线类名有差异（1.21.1 是 `ChunkProgressListener/ChunkMap/ChunkHolder/ServerChunkCache` 一族，无 1.21.6 的 `GenerationChunkHolder` 拆分），以下按 1.21.1 实际类列出本模需要的 mixin（全部挂 `CMIMixinPlugin`，按 `allay_dimension` 存在与 WorldStyle 判定启用，主世界路径零开销）：
 

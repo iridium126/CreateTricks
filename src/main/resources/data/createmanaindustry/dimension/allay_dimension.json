@@ -1,0 +1,12 @@
+{
+  "type": "createmanaindustry:allay",
+  "generator": {
+    "type": "minecraft:flat",
+    "settings": {
+      "layers": [],
+      "features": false,
+      "lakes": false,
+      "biome": "minecraft:plains"
+    }
+  }
+}

@@ -3,7 +3,7 @@
 > 模组：CreateManaIndustry（机械动力：魔法工业）
 > 版本基线：1.21.1 / NeoForge 21.1.227 / Java 21 / Mixin（已有 `createmanaindustry.mixins.json` + `CMIMixinPlugin`）
 > 参考实现：`.refs/CubicChunks3`（NeoForge 21.6.4-beta / MC 1.21.6，作者声明"Not yet usable"，未完成重写）、`.refs/voxy`（Fabric 0.2.19-beta——**仅作为 GPU-Driven 体素渲染架构参考**，兼容性明确搁置）、`.refs/neoforge-21.1.227`（原版反编译源）、`.refs/sodium` / `.refs/Iris`（禁用目标与 mixin 目标核对）
-> 状态：**分析完成 + 决策定稿，未开始实现**（2026-09-03 决策评审定稿；实施目标 = 阶段 3 ALLVR V0）
+> 状态：**阶段 1 已实现（2026-09-03），待客户端冒烟测试**；阶段 2–3 未开始。实现偏差与新增技术事实见 §4.2/§4.3/§2.4/§5.2 与 §13 阶段 1 行。
 > 目标：
 > 1. 注册自定义维度 `createmanaindustry:allay_dimension`（**阶段 1 前置任务，无独立可玩里程碑**）；Y 轴支持 −30,000,000 ~ +30,000,000；XZ 与默认世界边界一致（±29,999,984）；
 > 2. **仅在该维度内**重写区块数据结构与渲染：Cube（32³）体素管线、Mesh Shader、延迟着色 + G-Buffer、GPU-Driven 视锥/遮挡剔除与 LOD 选择、draw call 合并、阴影贴图 + 光照探针**完全取代原版光照引擎**、预烘焙光照/阴影/LOD；
@@ -98,6 +98,12 @@ public static int getY(long id) { return (int)((id<<4)>>56); } // 符号扩展 �
 - **Y 表达范围 = ±127 section × 32 格 ≈ ±4096 格**。超界不报错：`y & 0xFF` 截断后数据互相覆盖（数据库永久污染）。
 - 该布局贯穿全链路（磁盘 SSBO GLSL 邻接 remesh），且 voxy **没有 NeoForge 版本**。详见 §12。
 
+### 2.4 补充硬墙（阶段 1 实现时确认）：SectionPos 的 Y 只有 20 bit
+
+`net/minecraft/core/SectionPos.java`（1.21.1）：`PACKED_X_LENGTH=22, PACKED_Y_LENGTH=20, PACKED_Z_LENGTH=22`——原版把实体/POI 按 **section 坐标 long** 组织（`EntitySectionStorage`/`PoiManager`），Y 20 bit → section ±524,288 → **方块 ±8,388,592（约 ±840 万）**。±30M 范围内的方块数据不受影响（cube 层自管），但 **实体在 |Y| > ~840 万后会 section 混叠**（实体存储/按 AABB 查询可能失灵；玩家本体移动与直接读取不受影响）。64 bit 的 section long 数学上无法同时满足 26 bit XZ + ±30M Y，CC3 同样存在此限制。阶段 1 接受为已知限制；若远期需要全高实体，需自建实体索引（mixin `ServerLevel` 的 entityManager 或 `Entity` 的 section 跟踪改走 cube key）。
+
+**另一个已踩过的坑**：`BlockPos.asLong()` 的 Y 只有 12 bit（§2.1）——**任何**自定义方块级存储都不能拿它当 key（Y>2048 混叠）。cube 内方块实体一律用 15 bit 局部索引（`AllvrCube.localIndex`）。
+
 ---
 
 ## 3. CubicChunks3 技术体系综述（服务端 Cube 层借鉴什么）
@@ -169,6 +175,10 @@ src/main/resources/data/createmanaindustry/
   "coordinate_scale": 1.0,
   "has_skylight": true,
   "has_ceiling": false,
+  "bed_works": false,
+  "respawn_anchor_works": false,
+  "piglin_safe": false,
+  "has_raids": false,
   "min_y": -2032,
   "height": 4064,
   "logical_height": 4064,
@@ -181,27 +191,29 @@ src/main/resources/data/createmanaindustry/
 ```
 
 要点：
+- ⚠️ `bed_works/respawn_anchor_works/piglin_safe/has_raids` 是**必填字段**（`DimensionType` codec 无 orElse），漏写 = 维度解析失败。阶段 1 初版曾漏掉，已修正。
 - `min_y=-2032, height=4064` 是 1.21.1 合法**最大窗口**（§2.1）。cube 化后这是纯**形式声明**——只为让原版管线（实体处理、`LevelHeightAccessor` 假设等）有合法容差；实际可玩范围由 cube 层的 ±30,000,000 决定。
-- `natural=false`：避免指南针乱指；`effects=minecraft:overworld`：先用原版天空渲染，自定义 `DimensionSpecialEffects` 后置阶段 7。
+- `natural=false`：避免指南针乱指；`bed_works=false`：测试维度不需要床逻辑（与 natural=false 语义一致）；`effects=minecraft:overworld`：先用原版天空渲染，自定义 `DimensionSpecialEffects` 后置阶段 7。
 - `has_skylight=true` / 怪物生成字段：仅剩游戏性语义，消费方在阶段 7；渲染光照与本字段无关（§11 客户端自建）。
 
-### 4.3 dimension JSON
+### 4.3 dimension JSON（阶段 1 实现版：flat 空 layers = 零 mixin 列 passThrough）
 
 ```json
 {
   "type": "createmanaindustry:allay",
   "generator": {
-    "type": "minecraft:noise",
-    "settings": "minecraft:overworld",
-    "biome_source": {
-      "type": "minecraft:fixed",
+    "type": "minecraft:flat",
+    "settings": {
+      "layers": [],
+      "features": false,
+      "lakes": false,
       "biome": "minecraft:plains"
     }
   }
 }
 ```
 
-说明：declared generator **从不实际产生地形**——阶段 1 起 allay 维度的列生成全 passThrough（§5.2 P0 mixin），地形由 `AllvrIslandFieldGenerator` 在 cube 层生成（§5.3）。此 JSON 只为维度解析合法；noise settings/biome 的占位引用因此无所谓具体内容。
+**实现偏差说明（2026-09-03）**：原计划"列生成 passThrough"需要 mixin 原版生成管线（CC3 的 `MixinChunkStatusTasks` 思路）。实现时发现更优解——`FlatLevelGeneratorSettings` 对**空 layers 有原生支持**：`voidGen = layers.stream().allMatch(AIR)`（空列表 → true），`voidGen=true` 时 feature/decoration 全部跳过、flat 生成器无结构（flat 世界本就不带 structure sets）、`buildSurface/fillFromNoise` 对空 layers 天然无操作。这正是原版"虚空"世界类型所用的机制。结果：**列 chunk 从第一天起就是纯空气元数据壳，零 mixin、零地形**，原 P0 mixin 清单中的"列生成 passThrough"项直接删除（§5.2）。唯一方块来源 = cube 层（单一事实源，窗口内外语义一致）。
 
 ### 4.4 进入方式与边界
 
@@ -236,6 +248,8 @@ static { assert Y_BOUND <= Coords.blockToCube(33_554_431) * 32; }
 ```
 
 ### 5.2 服务端加载管线（1.21.1 适配的 mixin 目标）
+
+> **阶段 1 实现实况（2026-09-03）**：实际落地的 mixin 只有 3 个，远小于下表规划——`mixin/allvr/AllvrLevelMixin`（`Level` 的 `getBlockState`/`setBlock`(4 参)/`getFluidState`/`getBlockEntity` 四处 HEAD 注入，维度门控）、`AllvrServerLevelMixin`（duck `AllvrServerLevelDuck.allvr$getCubeMap()` 挂 per-level cube map）、`AllvrEntityMixin`（`Entity#tick` HEAD 的 ±Y_BOUND clamp）。**原因**：①列 passThrough 由 §4.3 的 flat 空 layers 方案零 mixin 解决；②cube 加载不走原版 ticket——`AllvrCubeMap` 自驱动（`LevelTickEvent.Post` 逐玩家 shell 加载 + 每帧时间预算 + 传送时 3×3×3 同步环），`ServerChunkCache/ChunkMap/DistanceManager` 的 mixin 在纯内存阶段全部不需要；③方块读对未加载 cube 返回 void air（镜像原版未加载区块语义），写按需生成（镜像原版 `setBlock` 的 `getChunkAt` 创建语义）。下表保留为阶段 2（网络票据）与玩法阶段（7）的规划参照。
 
 1.21.1 与 CC3 目标 1.21.6 的管线类名有差异（1.21.1 是 `ChunkProgressListener/ChunkMap/ChunkHolder/ServerChunkCache` 一族，无 1.21.6 的 `GenerationChunkHolder` 拆分），以下按 1.21.1 实际类列出本模需要的 mixin（全部挂 `CMIMixinPlugin`，按 `allay_dimension` 存在与 WorldStyle 判定启用，主世界路径零开销）：
 
@@ -651,7 +665,7 @@ Bloom（MIP 金字塔，emissive HDR 输出受益）→ ACES tonemap（blit 内�
 
 | 阶段 | 内容 | 交付物 | 验收标准 | 依赖 |
 |---|---|---|---|---|
-| **1. Cube 内核 + 维度注册** | §4 JSON 前置（占位 noise/biome 引用）+ §5.1 纯逻辑类移植（AllvrCubePos/AllvrCoords/SurfaceTracker）+ `AllvrCubeMap/AllvrCubeCache` + P0 mixin（Level 重定向、列生成 passThrough）+ 软件边界两处强制 + **`AllvrIslandFieldGenerator`（§5.3，单步密度场 + 均匀 cube 服务端侧）** | 服务端可用：`/execute in` 进入（创造模式）、窗口外放置/破坏方块 | `/data get block` 越窗读写正确；重启后空岛确定性重生成；其它维度零回归 | 无（mixin 手写路线，复制量失控再评估 DASM） |
+| **1. Cube 内核 + 维度注册** ✅ **已实现（待客户端冒烟测试）** | §4 JSON（flat 空 layers，零 mixin passThrough）+ §5.1 纯逻辑类（`dimension.cube.AllvrCubePos/AllvrCoords/AllvrCube`、`AllvrDimensionLimits`）+ `AllvrCubeMap`（自驱动加载：tick 预算 shell + 传送同步环 + 会话内不卸载保玩家改动）+ **3 个 mixin**（§5.2 实况）+ **`gen.AllvrIslandFieldGenerator`**（格点 XZ=2816/Y=512、p=8 超椭圆、FBM 边缘、草/土/石带） | 服务端可用：`/execute in` 进入（创造模式）、任意 Y 读写方块 | `/data get block` 越窗读写正确；重启后空岛确定性重生成；其它维度零回归。**测试发现**：维度类型 JSON 曾缺 4 个必填字段（§4.2）；`BlockPos.asLong` 12 bit Y 坑（§2.4） | 无（mixin 手写路线，实际 3 个） |
 | **2. 票据 + 网络** | 垂直视距票据（P1 mixin）+ `ClientboundAllvrCubePacket`（调色板 + 方块实体 + 光源事件）+ 客户端 cube 接收（`client.dimension` 缓存，尚无渲染） | 客户端内存拿到 cube 数据 | 网络层调试视图可 dump 接收的 cube；多人各自垂直视距 | 阶段 1 |
 | **3. ALLVR V0（本次实施终点）** | §6 框架落地：`AllvrShaderCache/AllvrBuffers`（粒子引擎骨架复用）+ 体素页/**均匀简写**/节点树/quad arena（§7）+ CPU greedy mesher（§8.1）+ Tier B MDI 前向着色（§9.4 简化版：仅 CPU 视锥）+ `AllvrIncompatDisabler`（原版/Sodium/Iris 禁用，§6.4）+ `AllvrLightSampler` 合成光照（§10.4） | allay 维度内：地形由 ALLVR 渲染（无剔除无 LOD 无延迟），实体/粒子正常 | tp 至任意远 Y（如 ±100 万）数秒内空岛可见；其它维度零回归；F3+T 热重载 | 阶段 2；build.gradle 加 sodium `compileOnly` |
 | **4. GPU-Driven 完全体** | §9 全量：八叉树遍历（视锥+HiZ+屏幕面积下钻）+ cmdgen + MDIC 零回读 + LOD L1–L3 + 驱逐/LRU + GPU 请求细分回读 | 剔除/LOD/命令全 GPU；远距块状化 LOD | 整场地形 1 draw call；渲染线程 CPU < 1 ms（粒子引擎计时环验证）；遮挡无穿透/无闪现回归 | 阶段 3 |
@@ -678,7 +692,8 @@ Bloom（MIP 金字塔，emissive HDR 输出受益）→ ACES tonemap（blit 内�
 | R9 | `region3d` 自定义格式无第三方工具支持 | 中 | 已后移阶段 6；届时列 chunk 保持标准 anvil、cube NBT 字段名对齐原版 section NBT |
 | R10 | 体素页/arena 内存超预算（多层空岛 + 集束视距/高空俯瞰） | 中 | §7.1 均匀 cube 简写（岛内部零页）+ §7.4 LRU + 稀疏缓冲按页提交 + `RenderResourceReuse` 跨维度复用；预算超限自动收缩视距并提示 |
 | R11 | 均匀简写正确性（mesher/查询/AO 对 uniform 邻居应答） | 中 | §7.1 页表项高位标记，查询路径统一入口；验收用例：uniform-页交界面的 mesh 与 AO 无缝 |
-| R12 | Y ±3000 万下实体/寻路/掉落物等原版数值假设 | 中 | 软件边界内实测；必要时实体 tick 分段（长距离传送拆步） |
+| R12 | Y ±3000 万下实体/寻路/掉落物等原版数值假设 | 中 | 软件边界内实测；**阶段 1 新确认**：`SectionPos` 20 bit Y（§2.4）使原版实体 section 存储在 |Y|>~840 万混叠——实体相关功能在超高 Y 的实际可信范围约 ±840 万，玩家本体与方块不受影响；远期需自建实体索引 |
+| R16 | 自定义方块级存储的坐标 key 位宽（`BlockPos.asLong` Y 12 bit） | 高（已踩） | **已修复**：cube 内 BE 用 15 bit 局部索引（`AllvrCube.localIndex`）；后续任何方块级 map 禁用 `BlockPos.asLong`，一律 cube key + 局部索引 |
 | R13 | 网络包体积/频率（cube 级 32³ 下发） | 低 | 调色板 + 仅 dirty section 重发 + 光源事件化 + 均匀 cube 数字节包 |
 | R14 | 内存态存档：阶段 6 前重启丢玩家改动 | 低 | 已知限制（决策定稿）；密度场确定性保证地形可复现；创造测试可接受 |
 | R15 | voxy（Connector 场景）残余交互 | 低 | §12 分析：ingest 链拿不到数据，自动失效不污染 |

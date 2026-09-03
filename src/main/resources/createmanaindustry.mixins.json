@@ -37,7 +37,10 @@
     "vanilla.BaseSpawnerAccessor",
     "vanilla.EntityMoltenFluidMixin",
     "vanilla.LivingEntityMoltenFluidMistMixin",
-    "vanilla.LivingEntityAccessor"
+    "vanilla.LivingEntityAccessor",
+    "allvr.AllvrLevelMixin",
+    "allvr.AllvrServerLevelMixin",
+    "allvr.AllvrEntityMixin"
   ],
   "client": [
     "render.LevelRendererBlockEntitiesMixin",

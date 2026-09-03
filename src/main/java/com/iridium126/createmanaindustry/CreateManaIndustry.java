@@ -41,6 +41,8 @@ import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
+
+import com.iridium126.createmanaindustry.dimension.AllvrServerHandler;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
@@ -137,6 +139,10 @@ public class CreateManaIndustry {
         // through their own connectivity update instead).
         NeoForge.EVENT_BUS.addListener(CreateManaIndustry::onBlockPlacedForRod);
         NeoForge.EVENT_BUS.addListener(CreateManaIndustry::onBlockBrokenForRod);
+
+        // Allay dimension cube loading driver (block access is routed by the
+        // allvr.* mixins; this only ticks the per-level cube map).
+        NeoForge.EVENT_BUS.addListener(AllvrServerHandler::onLevelTick);
 
         // Server-authoritative gameplay + stress config (synced to clients), and
         // the client-only rendering config. ServerConfig.build() must run after

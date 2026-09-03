@@ -43,6 +43,8 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
 
 import com.iridium126.createmanaindustry.dimension.AllvrServerHandler;
+import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrCubePacket;
+import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrForgetCubePacket;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
@@ -143,6 +145,8 @@ public class CreateManaIndustry {
         // Allay dimension cube loading driver (block access is routed by the
         // allvr.* mixins; this only ticks the per-level cube map).
         NeoForge.EVENT_BUS.addListener(AllvrServerHandler::onLevelTick);
+        NeoForge.EVENT_BUS.addListener(AllvrServerHandler::onPlayerLoggedOut);
+        NeoForge.EVENT_BUS.addListener(AllvrServerHandler::onPlayerChangedDimension);
 
         // Server-authoritative gameplay + stress config (synced to clients), and
         // the client-only rendering config. ServerConfig.build() must run after
@@ -200,6 +204,16 @@ public class CreateManaIndustry {
                 ServerboundStormPositionsPacket.TYPE,
                 ServerboundStormPositionsPacket.STREAM_CODEC,
                 ServerboundStormPositionsPacket::handle);
+        // Allay dimension cube streaming: block data + block entities + light
+        // emitter events per cube, plus forget packets on subscription exit.
+        registrar.playToClient(
+                ClientboundAllvrCubePacket.TYPE,
+                ClientboundAllvrCubePacket.STREAM_CODEC,
+                ClientboundAllvrCubePacket::handle);
+        registrar.playToClient(
+                ClientboundAllvrForgetCubePacket.TYPE,
+                ClientboundAllvrForgetCubePacket.STREAM_CODEC,
+                ClientboundAllvrForgetCubePacket::handle);
     }
 
     /**

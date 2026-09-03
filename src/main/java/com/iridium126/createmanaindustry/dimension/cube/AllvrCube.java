@@ -1,5 +1,6 @@
 package com.iridium126.createmanaindustry.dimension.cube;
 
+import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
@@ -34,6 +35,14 @@ public final class AllvrCube {
      * aliases positions beyond the vanilla build height.
      */
     private final Int2ObjectOpenHashMap<BlockEntity> blockEntities = new Int2ObjectOpenHashMap<>();
+    /**
+     * Light-emitting blocks (cell index → emission) — the wire-format "light
+     * source events" of the cube. Maintained on setBlock on the server,
+     * filled from the packet on the client; consumed by the phase-3
+     * synthetic light sampler. The island generator only produces
+     * stone/dirt/grass, so generated cubes start without emitters.
+     */
+    private final Int2IntOpenHashMap emitters = new Int2IntOpenHashMap();
 
     public AllvrCube(AllvrCubePos pos, Registry<Biome> biomeRegistry) {
         this.pos = pos;
@@ -98,6 +107,20 @@ public final class AllvrCube {
 
     public Int2ObjectOpenHashMap<BlockEntity> getBlockEntities() {
         return blockEntities;
+    }
+
+    // ---- light emitters ----------------------------------------------------
+
+    public void putEmitter(BlockPos worldPos, int emission) {
+        emitters.put(localIndex(worldPos), emission);
+    }
+
+    public void removeEmitter(BlockPos worldPos) {
+        emitters.remove(localIndex(worldPos));
+    }
+
+    public Int2IntOpenHashMap getEmitters() {
+        return emitters;
     }
 
     /** Holder of the cube's uniform biome (plains), for future consumers. */

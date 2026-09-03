@@ -44,6 +44,7 @@
     "allvr.AllvrEntityMixin"
   ],
   "client": [
+    "allvr.AllvrClientLevelMixin",
     "render.LevelRendererBlockEntitiesMixin",
     "render.CachedBuffersMixin",
     "render.ModelsMixin",

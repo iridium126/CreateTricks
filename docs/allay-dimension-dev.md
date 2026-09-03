@@ -3,7 +3,7 @@
 > 模组：CreateManaIndustry（机械动力：魔法工业）
 > 版本基线：1.21.1 / NeoForge 21.1.227 / Java 21 / Mixin（已有 `createmanaindustry.mixins.json` + `CMIMixinPlugin`）
 > 参考实现：`.refs/CubicChunks3`（NeoForge 21.6.4-beta / MC 1.21.6，作者声明"Not yet usable"，未完成重写）、`.refs/voxy`（Fabric 0.2.19-beta——**仅作为 GPU-Driven 体素渲染架构参考**，兼容性明确搁置）、`.refs/neoforge-21.1.227`（原版反编译源）、`.refs/sodium` / `.refs/Iris`（禁用目标与 mixin 目标核对）
-> 状态：**阶段 1 已实现（2026-09-03），待客户端冒烟测试**；阶段 2–3 未开始。实现偏差与新增技术事实见 §4.2/§4.3/§2.4/§5.2 与 §13 阶段 1 行。
+> 状态：**阶段 1–2 已实现（2026-09-03），阶段 1 已通过客户端测试，阶段 2 待客户端冒烟测试**；阶段 3（ALLVR V0 渲染）未开始。实现偏差与新增技术事实见 §4.2/§4.3/§2.4/§5.2 与 §13 阶段 1–2 行。
 > 目标：
 > 1. 注册自定义维度 `createmanaindustry:allay_dimension`（**阶段 1 前置任务，无独立可玩里程碑**）；Y 轴支持 −30,000,000 ~ +30,000,000；XZ 与默认世界边界一致（±29,999,984）；
 > 2. **仅在该维度内**重写区块数据结构与渲染：Cube（32³）体素管线、Mesh Shader、延迟着色 + G-Buffer、GPU-Driven 视锥/遮挡剔除与 LOD 选择、draw call 合并、阴影贴图 + 光照探针**完全取代原版光照引擎**、预烘焙光照/阴影/LOD；
@@ -668,7 +668,7 @@ Bloom（MIP 金字塔，emissive HDR 输出受益）→ ACES tonemap（blit 内�
 | 阶段 | 内容 | 交付物 | 验收标准 | 依赖 |
 |---|---|---|---|---|
 | **1. Cube 内核 + 维度注册** ✅ **已实现（待客户端冒烟测试）** | §4 JSON（flat 空 layers，零 mixin passThrough）+ §5.1 纯逻辑类（`dimension.cube.AllvrCubePos/AllvrCoords/AllvrCube`、`AllvrDimensionLimits`）+ `AllvrCubeMap`（自驱动加载：tick 预算 shell + 传送同步环 + 会话内不卸载保玩家改动）+ **3 个 mixin**（§5.2 实况）+ **`gen.AllvrIslandFieldGenerator`**（格点 XZ=2816/Y=512、p=8 超椭圆、FBM 边缘、草/土/石带） | 服务端可用：`/execute in` 进入（创造模式）、任意 Y 读写方块 | `/data get block` 越窗读写正确；重启后空岛确定性重生成；其它维度零回归。**测试发现**：维度类型 JSON 曾缺 4 个必填字段（§4.2）；`BlockPos.asLong` 12 bit Y 坑（§2.4） | 无（mixin 手写路线，实际 3 个） |
-| **2. 票据 + 网络** | 垂直视距票据（P1 mixin）+ `ClientboundAllvrCubePacket`（调色板 + 方块实体 + 光源事件）+ 客户端 cube 接收（`client.dimension` 缓存，尚无渲染） | 客户端内存拿到 cube 数据 | 网络层调试视图可 dump 接收的 cube；多人各自垂直视距 | 阶段 1 |
+| **2. 票据 + 网络** ✅ **已实现（待客户端冒烟测试）** | **无原版 ticket mixin**（阶段 1 的自驱动方案延续）：`AllvrCubeMap` 每玩家订阅跟踪（`Subscription.sent` 键集）+ shell 顺序流式下发（发送半径 xz=8/y=4、遗忘半径 +2 滞回、24 cube/tick 预算）+ `dimension.net.ClientboundAllvrCubePacket`（wire：cubePos long 直写 + 8×原版 `LevelChunkSection.write` 调色板编码 + BE 更新标签 + 发光体事件表；uniform cube ≈100B）+ `ClientboundAllvrForgetCubePacket` + 登出/换维重置订阅 + 客户端 `client.dimension.AllvrClientCubeCache`（主线程 apply，miss=void air 客户端从不生成）+ **`AllvrClientLevelMixin`**（client 组：ClientLevel 方块读路由到缓存 → 客户端碰撞/实体物理/方块轮廓/射线检测立即可用，tp 到空岛即可站立） | 客户端内存拿到 cube 数据 | tp 到空岛后玩家站立不坠落、准星对岛面出方块轮廓、`[Allvr] cube ... streamed` debug 日志；多人各自垂直视距 | 阶段 1 |
 | **3. ALLVR V0（本次实施终点）** | §6 框架落地：`AllvrShaderCache/AllvrBuffers`（粒子引擎骨架复用）+ 体素页/**均匀简写**/节点树/quad arena（§7）+ CPU greedy mesher（§8.1）+ Tier B MDI 前向着色（§9.4 简化版：仅 CPU 视锥）+ `AllvrIncompatDisabler`（原版/Sodium/Iris 禁用，§6.4）+ `AllvrLightSampler` 合成光照（§10.4） | allay 维度内：地形由 ALLVR 渲染（无剔除无 LOD 无延迟），实体/粒子正常 | tp 至任意远 Y（如 ±100 万）数秒内空岛可见；其它维度零回归；F3+T 热重载 | 阶段 2；build.gradle 加 sodium `compileOnly` |
 | **4. GPU-Driven 完全体** | §9 全量：八叉树遍历（视锥+HiZ+屏幕面积下钻）+ cmdgen + MDIC 零回读 + LOD L1–L3 + 驱逐/LRU + GPU 请求细分回读 | 剔除/LOD/命令全 GPU；远距块状化 LOD | 整场地形 1 draw call；渲染线程 CPU < 1 ms（粒子引擎计时环验证）；遮挡无穿透/无闪现回归 | 阶段 3 |
 | **5. 延迟着色 + 光照系统** | §10–11：G-Buffer MRT + 延迟 PBR + CSM + SH 探针烘焙 + LPV + 延迟点光 + 半透明前向 + bloom/ACES | 取代原版光照的完整视觉 | 光照更新零卡顿（变更场景帧预算内消化）；洞穴/缝隙漏光/昼夜/水面正确；实体检视无穿帮 | 阶段 4 |

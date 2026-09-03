@@ -167,6 +167,9 @@ public class CreateManaIndustryClient {
                 MistClientHandler.clearAll();
                 FuelRodBloomHandler.clearAll();
             }
+            // Allay-dimension streamed cubes die with the level (dimension
+            // switch or logout); the server restarts the stream on re-entry.
+            com.iridium126.createmanaindustry.client.dimension.AllvrClientCubeCache.clear();
             // The particle engine is self-hosted GL — reset regardless of Veil.
             // The reset must be SYNCHRONOUS here (NeoForge posts Unload inside
             // setLevel, BEFORE the dimension loading screen): the old queued
@@ -185,8 +188,10 @@ public class CreateManaIndustryClient {
      */
     @SubscribeEvent
     private static void onLevelLoad(LevelEvent.Load event) {
-        if (event.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel) {
+        if (event.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel) {
             CMIParticleEngine.INSTANCE.onLevelChanged();
+            // Bind the cube cache to the new client level (allay dimension only).
+            com.iridium126.createmanaindustry.client.dimension.AllvrClientCubeCache.onLevelChanged(clientLevel);
         }
     }
 }

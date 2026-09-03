@@ -5,6 +5,10 @@ import java.util.Map;
 import java.util.UUID;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
+import it.unimi.dsi.fastutil.longs.LongIterator;
+import it.unimi.dsi.fastutil.longs.LongList;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.Registries;
@@ -17,6 +21,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.dimension.AllvrDimensionLimits;
 import com.iridium126.createmanaindustry.dimension.gen.AllvrIslandFieldGenerator;
+import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrCubePacket;
+import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrForgetCubePacket;
 
 /**
  * Server-side registry of loaded cubes for one allay-dimension
@@ -40,8 +46,16 @@ import com.iridium126.createmanaindustry.dimension.gen.AllvrIslandFieldGenerator
  */
 public final class AllvrCubeMap {
 
-    /** Per-player ring load radius, in cubes (mirrors CC3 verticalViewDistance=8). */
-    private static final int VIEW_RADIUS = 8;
+    /** Per-player server-memory load radius, in cubes (mirrors CC3 verticalViewDistance=8). */
+    private static final int GEN_RADIUS = 8;
+    /** Per-player client subscription radii (xz, y) — smaller vertically, islands span ~7 cubes. */
+    private static final int SEND_XZ_RADIUS = 8;
+    private static final int SEND_Y_RADIUS = 4;
+    /** Forget margin beyond the send radii (hysteresis against jitter at the edge). */
+    private static final int FORGET_XZ_RADIUS = SEND_XZ_RADIUS + 2;
+    private static final int FORGET_Y_RADIUS = SEND_Y_RADIUS + 2;
+    /** Max cubes streamed per player per tick. */
+    private static final int SEND_BUDGET_PER_TICK = 24;
     /** Shell-load time budget per tick. */
     private static final long TICK_BUDGET_NANOS = 3_000_000L;
     /**
@@ -56,8 +70,14 @@ public final class AllvrCubeMap {
     private final Registry<net.minecraft.world.level.biome.Biome> biomeRegistry;
     private final AllvrIslandFieldGenerator generator;
     private final Long2ObjectOpenHashMap<AllvrCube> cubes = new Long2ObjectOpenHashMap<>();
-    private final Map<UUID, AllvrCubePos> playerLastCube = new java.util.HashMap<>();
+    private final Map<UUID, Subscription> subscriptions = new java.util.HashMap<>();
     private boolean loggedCapWarning;
+
+    /** Per-player client subscription state: which cube keys have been streamed. */
+    private static final class Subscription {
+        final LongOpenHashSet sent = new LongOpenHashSet();
+        AllvrCubePos lastCube;
+    }
 
     public AllvrCubeMap(ServerLevel level) {
         this.level = level;
@@ -104,6 +124,17 @@ public final class AllvrCubeMap {
         }
 
         updateBlockEntity(cube, pos, oldState, newState);
+
+        // light emitter tracking (wire "light source events"; consumed by the
+        // phase-3 synthetic light sampler)
+        int oldEmission = oldState.getLightEmission(level, pos);
+        int newEmission = newState.getLightEmission(level, pos);
+        if (oldEmission > 0) {
+            cube.removeEmitter(pos);
+        }
+        if (newEmission > 0) {
+            cube.putEmitter(pos, newEmission);
+        }
 
         // mirror of Level#markAndNotifyBlock, minus client sync / light engine
         // / chunk-status concerns (cubes have no LevelChunk)
@@ -175,30 +206,18 @@ public final class AllvrCubeMap {
     }
 
     /**
-     * Per-tick driver: on join/teleport synchronously fills the player's
-     * 3×3×3 cube neighborhood (so {@code /data get block} right after a
-     * {@code tp} sees real terrain), then loads rings outward in shell order
-     * within the per-tick time budget.
+     * Per-tick driver: on join/teleport synchronously generates + streams the
+     * player's 3×3×3 cube neighborhood (so {@code /data get block} right
+     * after a {@code tp} sees real terrain and the client can stand on it),
+     * then generates/shells outward within the per-tick time budget while
+     * streaming cube data to each player's client within the per-tick send
+     * budget. Cubes leaving the subscription range (with hysteresis) are
+     * forgotten client-side.
      */
     public void tick() {
         List<ServerPlayer> players = level.players();
         if (players.isEmpty()) {
             return;
-        }
-
-        for (ServerPlayer player : players) {
-            AllvrCubePos pc = AllvrCubePos.of(player.blockPosition());
-            AllvrCubePos last = playerLastCube.get(player.getUUID());
-            if (last == null || chebyshev(pc, last) > 2) {
-                for (int dy = -1; dy <= 1; dy++) {
-                    for (int dx = -1; dx <= 1; dx++) {
-                        for (int dz = -1; dz <= 1; dz++) {
-                            getOrGenerate(pc.getX() + dx, pc.getY() + dy, pc.getZ() + dz);
-                        }
-                    }
-                }
-                playerLastCube.put(player.getUUID(), pc);
-            }
         }
 
         long deadline = System.nanoTime() + TICK_BUDGET_NANOS;
@@ -210,32 +229,98 @@ public final class AllvrCubeMap {
 
         for (ServerPlayer player : players) {
             AllvrCubePos pc = AllvrCubePos.of(player.blockPosition());
-            for (int r = 0; r <= VIEW_RADIUS; r++) {
-                if (System.nanoTime() > deadline) {
-                    return;
+            Subscription sub = subscriptions.computeIfAbsent(player.getUUID(), k -> new Subscription());
+            if (sub.lastCube == null || chebyshev(pc, sub.lastCube) > 2) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        for (int dz = -1; dz <= 1; dz++) {
+                            AllvrCube cube = getOrGenerate(pc.getX() + dx, pc.getY() + dy, pc.getZ() + dz);
+                            long key = cube.getPos().asLong();
+                            if (sub.sent.add(key)) {
+                                player.connection.send(ClientboundAllvrCubePacket.of(cube, level.registryAccess()));
+                            }
+                        }
+                    }
                 }
-                int capR = capReached ? 2 : r;
-                if (r > capR) {
-                    continue;
-                }
+                sub.lastCube = pc;
+            }
+        }
+
+        for (ServerPlayer player : players) {
+            AllvrCubePos pc = AllvrCubePos.of(player.blockPosition());
+            Subscription sub = subscriptions.computeIfAbsent(player.getUUID(), k -> new Subscription());
+            if (capReached && chebyshev(pc, playerCubeCenter(sub)) > 2) {
+                continue;
+            }
+            int sentCount = 0;
+            genLoop:
+            for (int r = 0; r <= GEN_RADIUS; r++) {
                 for (int dy = -r; dy <= r; dy++) {
                     for (int dx = -r; dx <= r; dx++) {
                         for (int dz = -r; dz <= r; dz++) {
                             if (Math.max(Math.max(Math.abs(dx), Math.abs(dy)), Math.abs(dz)) != r) {
                                 continue;
                             }
-                            long key = AllvrCubePos.asLong(pc.getX() + dx, pc.getY() + dy, pc.getZ() + dz);
-                            if (!cubes.containsKey(key)) {
-                                getOrGenerate(pc.getX() + dx, pc.getY() + dy, pc.getZ() + dz);
-                                if (System.nanoTime() > deadline) {
-                                    return;
-                                }
+                            int cx = pc.getX() + dx;
+                            int cy = pc.getY() + dy;
+                            int cz = pc.getZ() + dz;
+                            long key = AllvrCubePos.asLong(cx, cy, cz);
+                            boolean inSendRange = Math.abs(dy) <= SEND_Y_RADIUS; // xz always <= GEN_RADIUS == SEND_XZ_RADIUS
+                            if (sub.sent.contains(key) || (capReached && r > 2 && !inSendRange)) {
+                                continue;
+                            }
+                            if (System.nanoTime() > deadline) {
+                                break genLoop;
+                            }
+                            AllvrCube cube = getOrGenerate(cx, cy, cz);
+                            if (inSendRange && sentCount < SEND_BUDGET_PER_TICK && sub.sent.add(key)) {
+                                player.connection.send(ClientboundAllvrCubePacket.of(cube, level.registryAccess()));
+                                sentCount++;
                             }
                         }
                     }
                 }
             }
+
+            forgetOutOfRange(player, pc, sub);
         }
+    }
+
+    private static AllvrCubePos playerCubeCenter(Subscription sub) {
+        return sub.lastCube != null ? sub.lastCube : AllvrCubePos.of(0, 0, 0);
+    }
+
+    private void forgetOutOfRange(ServerPlayer player, AllvrCubePos pc, Subscription sub) {
+        if (sub.sent.isEmpty()) {
+            return;
+        }
+        LongIterator it = sub.sent.iterator();
+        LongList forget = null;
+        while (it.hasNext()) {
+            long key = it.nextLong();
+            AllvrCubePos cpos = AllvrCubePos.fromLong(key);
+            int dxCube = cpos.getX() - pc.getX();
+            int dyCube = cpos.getY() - pc.getY();
+            int dzCube = cpos.getZ() - pc.getZ();
+            if (Math.max(Math.abs(dxCube), Math.abs(dzCube)) > FORGET_XZ_RADIUS
+                || Math.abs(dyCube) > FORGET_Y_RADIUS) {
+                if (forget == null) {
+                    forget = new LongArrayList();
+                }
+                forget.add(key);
+            }
+        }
+        if (forget != null) {
+            for (long key : forget) {
+                sub.sent.remove(key);
+                player.connection.send(new ClientboundAllvrForgetCubePacket(key));
+            }
+        }
+    }
+
+    /** Drops one player's subscription so cubes are re-streamed from scratch. */
+    public void resetPlayer(UUID uuid) {
+        subscriptions.remove(uuid);
     }
 
     private static int chebyshev(AllvrCubePos a, AllvrCubePos b) {

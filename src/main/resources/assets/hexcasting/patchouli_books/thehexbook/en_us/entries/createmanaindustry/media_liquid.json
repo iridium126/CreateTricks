@@ -1,0 +1,17 @@
+{
+  "name": "hexcasting.entry.createmanaindustry.media_liquid",
+  "category": "hexcasting:createmanaindustry",
+  "icon": "createmanaindustry:liquid_media_bucket",
+  "sortnum": 0,
+  "advancement": "hexcasting:root",
+  "pages": [
+    "hexcasting.page.createmanaindustry.media_liquid.1",
+    {
+      "type": "patchouli:spotlight",
+      "item": "createmanaindustry:liquid_media_bucket",
+      "text": "hexcasting.page.createmanaindustry.media_liquid.2"
+    },
+    "hexcasting.page.createmanaindustry.media_liquid.3",
+    "hexcasting.page.createmanaindustry.media_liquid.4"
+  ]
+}

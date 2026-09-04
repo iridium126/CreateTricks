@@ -37,8 +37,22 @@ repositories {
     mavenCentral()
     // Add here additional repositories if required by some of the dependencies below.
     mavenLocal()
-    maven { url = "https://cursemaven.com" }
-    maven { url = "https://maven.blamejared.com" }
+    maven {
+        name = "CurseMaven"
+        url = "https://cursemaven.com"
+    }
+    // JEI official maven (mezz.jei:*)
+    maven {
+        name = "BlameJared"
+        url = "https://maven.blamejared.com"
+    }
+    //镜像站们
+    maven { url = "https://maven.aliyun.com/repository/gradle-plugin" }
+    maven { url = uri("https://maven.aliyun.com/repository/public") }
+    maven{ url= uri("https://mvnrepository.com/artifact/") }
+    maven{ url =uri("https://mirrors.qlu.edu.cn/bmclapi") }
+    maven{url= uri("https://mirror.sjtu.edu.cn/")}
+    maven{url=uri("https://central.sonatype.com/artifact/")}
     // Make sure to add this to the pluginManagement.repositories block in settings.gradle as well
     maven {
         name = "Sinytra"
@@ -235,7 +249,12 @@ dependencies {
     localRuntime "curse.maven:strut-your-stuff-1486746:8301563"
 
     localRuntime "curse.maven:accessories-938917:7583320"
-    //localRuntime "curse.maven:owo-lib-532610:6785734" 需要更新至0.13.0 alpha.15
+    // owo-lib: required at runtime by accessories (>= 0.12.15.0+1.21) and trickster.
+    // Must use the neoforge-specific artifact (owo-lib-neoforge); the plain owo-lib
+    // coordinates publish only the fabric build (no mods.toml -> NeoForge won't load it).
+    // 0.12.15.1-beta.6 uses endec 0.1.8 -> fastutil 8.5.12 / guava 32.1.2-jre, matching
+    // NeoForge's strictly-pinned versions (newer 0.12.22 pulls 8.5.13/33.0.0-jre and conflicts).
+    localRuntime "io.wispforest:owo-lib-neoforge:0.12.15.1-beta.6+1.21"
     localRuntime "curse.maven:lithostitched-936015:8321754"
 
     // Add Connector to the launch classpath and for compile-time access

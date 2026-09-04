@@ -1,0 +1,30 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+# https://copier.readthedocs.io/en/stable/updating/#never-change-the-answers-file-manually
+_commit: v0.2.0
+_src_path: gh:hexdoc-dev/hexdoc-hexcasting-template
+advanced: true
+classname: CreateManaIndustry
+generate_vscode: false
+github_repo: CreateManaIndustry
+github_user: iridium126
+gradle_deps_type: gradle.properties
+gradle_hex_version_key: hexcastingVersion
+gradle_mod_version_key: mod_version
+main_branch: main
+minecraft_version: 1.20.1
+minecraft_version_in_mod_version: false
+mod_description: 'Create: Mana Industry bridges rotational power and the arcane: kinetic
+    mana generation,
+
+    molten quartz fluids and mist fields, allay burners, condensers and molten-salt
+    fuel
+
+    reactors, with deep integration for Trickster, Hexcasting and Ars Nouveau.'
+mod_display_name: Createmanaindustry
+modid: createmanaindustry
+multiloader: false
+package_name: hexdoc-createmanaindustry
+package_slug: hexdoc_createmanaindustry
+pages_url: https://iridium126.github.io/CreateManaIndustry
+pattern_registry_path: main/java/com/iridium126/createmanaindustry/compat/hexcasting/CMIHexActions.java
+source_url: https://github.com/iridium126/CreateManaIndustry

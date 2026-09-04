@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "createmanaindustry:item/amethyst_deposited_golden_sheet"
+  }
+}

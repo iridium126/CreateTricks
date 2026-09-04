@@ -134,20 +134,31 @@ public final class AllvrClientCubeCache {
     }
 
     /**
-     * Applies one authoritative server-side block change (the cube analogue
-     * of the vanilla confirmation packet path: flags 19, recursion 512).
-     * Unloaded cubes reject the write inside {@link #setBlock}, mirroring
-     * vanilla "write to unloaded chunk fails" (e.g. a race with a forget
-     * packet); emitter bookkeeping and border remeshing run inside the normal
-     * setBlock path.
+     * Applies one authoritative server-side block change. Routes through the
+     * VANILLA confirmation path ({@code ClientPacketListener#handleBlockUpdate}
+     * → {@code ClientLevel#setServerVerifiedBlockState}) rather than writing
+     * the cache directly: with a pending client prediction for that position,
+     * the handler absorbs the write — writing the cache directly leaves the
+     * prediction handler's entry holding the pre-break state, so the later
+     * prediction ACK's {@code syncBlockState} restores the broken block
+     * (remeshing it back in) and rubber-bands the player standing in the hole
+     * via {@code absMoveTo}. With no pending prediction it falls through to
+     * {@code Level#setBlock} (flags 19, recursion 512) and the mixin writes the
+     * cache normally — the vanilla semantics for a far-away authoritative
+     * change (another player, /setblock).
      */
     public static void applyBlockUpdate(ClientboundAllvrBlockUpdatePacket packet) {
+        ClientLevel clientLevel = level;
+        if (clientLevel == null || clientLevel.dimension() != AllvrDimensions.ALLAY_LEVEL) {
+            return; // level switched — the streamed cube died with it
+        }
         com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos pos =
             com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos.fromLong(packet.cubePos());
         int cell = packet.cellIndex();
         BlockPos blockPos = new BlockPos(pos.minBlockX() + (cell & 31),
             pos.minBlockY() + (cell >> 10), pos.minBlockZ() + ((cell >> 5) & 31));
-        setBlock(blockPos, net.minecraft.world.level.block.Block.stateById(packet.stateId()), 19, 512);
+        clientLevel.setServerVerifiedBlockState(blockPos,
+            net.minecraft.world.level.block.Block.stateById(packet.stateId()), 19);
     }
 
     /** The cached cube at a position's cube, or null (never generates). */

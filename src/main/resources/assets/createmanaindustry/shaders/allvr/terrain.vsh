@@ -89,7 +89,19 @@ void main() {
 
     gl_Position = ProjMat * ModelViewMat * vec4(relPos, 1.0);
 
-    vUvLocal = vec2(float(u) + c.x * float(sizeU), float(v) + c.y * float(sizeV));
+    // Texture coords follow the vanilla FaceInfo/BlockFaceUV table (derived
+    // from FaceBakery.makeVertices + BlockFaceUV.getU/getV, uv [0,0,16,16]) —
+    // NOT the mesher's winding basis. The 16-offsets vanish under fract, so
+    // per face (x,y,z = cube-local block coords):
+    //   EAST (-z,-y) | WEST (z,-y) | UP (x,z) | DOWN (x,-z) | SOUTH (x,-y) | NORTH (-x,-y)
+    // ±1-per-block slope tiles the sprite once per block, matching vanilla
+    // (opposite faces mirrored so textures read correctly from outside).
+    vUvLocal = faceIdx == 0u ? vec2(-local.z, -local.y)
+             : faceIdx == 1u ? vec2(local.z, -local.y)
+             : faceIdx == 2u ? vec2(local.x, local.z)
+             : faceIdx == 3u ? vec2(local.x, -local.z)
+             : faceIdx == 4u ? vec2(local.x, -local.y)
+             : vec2(-local.x, -local.y);
 
     // face shade (vanilla directional constants): x 0.6, y+ 1.0, y- 0.5, z 0.8
     vec3 normal = aw * (dir == 0u ? 1.0 : -1.0);

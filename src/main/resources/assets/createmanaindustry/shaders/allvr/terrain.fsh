@@ -22,10 +22,16 @@ out vec4 fragColor;
 void main() {
     vec2 tiled = fract(vUvLocal);
     vec2 inset = vInset.xy;
-    vec2 atlasUv = vRect.xy + (inset + tiled * (1.0 - 2.0 * inset)) * vRect.zw;
-    // continuous gradients: vUvLocal is piecewise-linear, fract is not
-    vec2 gradScale = vec2(1.0 - 2.0 * inset.x, 1.0 - 2.0 * inset.y) * vRect.zw;
-    vec4 tex = textureGrad(uAtlas, atlasUv, dFdx(vUvLocal) * gradScale, dFdy(vUvLocal) * gradScale);
+    // clamp (not range-scale) into the sprite: a 1:1 screen pixel lands exactly
+    // on the clamp bounds (pure border texels — vanilla-identical), and at other
+    // scales border texels stretch by at most half a texel instead of the whole
+    // face shrinking to 15×15. All sample points stay half a texel inside the
+    // sprite, so bilinear never crosses into the atlas neighbour.
+    vec2 atlasUv = vRect.xy + clamp(tiled, inset, 1.0 - inset) * vRect.zw;
+    // continuous gradients: vUvLocal is piecewise-linear, fract/clamp are not —
+    // feed the unclamped derivative to the sampler (fract's own derivative
+    // would poison the mip selection at every tile boundary)
+    vec4 tex = textureGrad(uAtlas, atlasUv, dFdx(vUvLocal) * vRect.zw, dFdy(vUvLocal) * vRect.zw);
     if (tex.a < 0.1 || vTint.w < 0.5) {
         discard;
     }

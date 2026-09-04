@@ -37,9 +37,9 @@ void main() {
     }
 
     Node n = nodes[nodeIdx];
-    uint quadStart = n.a.z;
+    uint quadStart = n.b.z;
     uint quadCount = n.b.x;
-    uint slot = n.b.w;
+    uint slot = n.b.w & 0x1FFFFu; // slot field of the packed b.w word
 
     uint baseVertex = quadStart * 4u;
     uint remaining = quadCount;

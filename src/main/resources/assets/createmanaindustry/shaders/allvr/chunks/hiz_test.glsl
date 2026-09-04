@@ -40,5 +40,11 @@ bool allvrHizOccluded(ivec3 relOrigin, ivec3 extent) {
     vec2 uv = ((ndcMin + ndcMax) * 0.5) * 0.5 + 0.5;
     float pyramidZ = textureLod(uHiz, uv, level).r;
     float eps = uDepthBiasScale / max(minW * minW, 1e-8) + 1e-7;
-    return minZ > pyramidZ + eps;
+    // minZ is NDC z in [-1,1] but the pyramid stores window depth in [0,1] —
+    // convert before comparing (uDepthBiasScale is calibrated in depth units).
+    // Raw NDC-z-vs-depth shifted the effective threshold to
+    // depth > (pyramid + 1) / 2, so only the far half of the frustum was
+    // ever culled (review 2026-09-04).
+    float depthZ = minZ * 0.5 + 0.5;
+    return depthZ > pyramidZ + eps;
 }

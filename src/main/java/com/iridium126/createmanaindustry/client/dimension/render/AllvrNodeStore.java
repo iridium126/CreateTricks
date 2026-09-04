@@ -10,34 +10,36 @@ import net.minecraft.core.BlockPos;
 /**
  * CPU-side registry + packed mirror of the ALLVR node SSBO (doc §7.2).
  * <p>
- * A node is 32 bytes (two uvec4) — the doc's 16 B layout carried no quadCount
- * and its bit budget did not add up (4+26+24+24 &gt; 64); the roomy layout
- * trades 16 B/node for exact uint fields everywhere:
+ * A node is 32 bytes (two uvec4). The first layout packed the cube position
+ * as 21-bit-biased fields inside a.x/a.y and OVERLAPPED (42 bit of y+z in a
+ * 32-bit uint) — the smoke test's node dump caught it (positions collapsed to
+ * ±几千, every node beyond the far plane, terrain invisible). The corrected
+ * layout stores the ABSOLUTE BLOCK origin as three signed int32 (±30M &lt;
+ * 2³¹, no biasing) and moves level/flags into b.w's high bits:
  * <pre>
- * a.x = zCoord(21b biased) | yCoord(21b biased) &lt;&lt; 21
- * a.y = xCoord(21b biased) | level(3b) &lt;&lt; 21 | flags(8b) &lt;&lt; 24
- * a.z = quadStart        (arena quad index)
- * a.w = childPtr         (node index of first of 8 children; 0 = none, 4c)
- * b.x = quadCount
- * b.y = visibleFrameId   (GPU-written by traversal; LRU input, 4c)
- * b.z = lastRequestFrame (GPU subdivision requests, 4c)
- * b.w = slot             (cubeInfo index, 0 = none — matches AllvrBuffers)
+ * a.x = absBlockX (signed int32)      b.x = quadCount
+ * a.y = absBlockY (signed int32)      b.y = visibleFrameId (GPU-written)
+ * a.z = absBlockZ (signed int32)      b.z = quadStart (arena quad index)
+ * a.w = childPtr (0 = none, 4c)       b.w = slot(17b) | level(3b)&lt;&lt;17 | flags(8b)&lt;&lt;20
  * </pre>
- * Position is stored as CUBE coordinates for the node's level (level 0 in 4a);
- * the shader reconstructs the absolute block AABB as
- * {@code coord << (5 + level)}. Nodes are keyed by cube long on the Java side;
- * freed indices recycle via a free list and keep {@code FLAG_DEAD} in the
- * mirror until reused (the traversal skips them — the dispatch covers
- * {@code highWater}, not a compacted count).
+ * Mirror longs (little-endian → uint pairs): [a.x|a.y, a.z|a.w, b.x|b.y,
+ * b.z|b.w]. Nodes are keyed by cube long; freed indices recycle via a free
+ * list and keep {@code FLAG_DEAD} in the mirror until reused (the traversal
+ * skips them — the dispatch covers {@code highWater}, not a compacted count).
  * <p>
  * All mutation happens on the render thread; the mirror is uploaded to GL by
- * {@code AllvrBuffers#syncNodes} from the dirty set (per-node 32 B chunks, or a
- * full re-upload when the capacity grew).
+ * {@code AllvrBuffers#syncNodes} from the dirty set (per-node 32 B chunks, or
+ * a full re-upload when the capacity grew).
  */
 public final class AllvrNodeStore {
 
     public static final int FLAG_HAS_MESH = 1;
     public static final int FLAG_DEAD = 2;
+
+    /** b.w field packing — single source shared with chunks/node_common.glsl. */
+    public static final int SLOT_BITS = 17;
+    public static final int LEVEL_SHIFT = 17;
+    public static final int FLAGS_SHIFT = 20;
 
     /** Hard ceiling (doc §7.4 node SSBO budget ≈ 2²¹ nodes). */
     public static final int MAX_NODES = 1 << 21;
@@ -95,9 +97,7 @@ public final class AllvrNodeStore {
             return -1;
         }
         this.byCubeKey.put(cubeKey, idx);
-        // position = cube coords for level 0: block min corner >> 5
-        this.writePosition(idx,
-            cubeMinBlock.getX() >> 5, cubeMinBlock.getY() >> 5, cubeMinBlock.getZ() >> 5);
+        this.writePosition(idx, cubeMinBlock);
         this.dirty.add(idx);
         return idx;
     }
@@ -109,14 +109,11 @@ public final class AllvrNodeStore {
             return;
         }
         int o = idx * LONGS_PER_NODE;
-        long a = this.mirror[o];                      // a.x | a.y<<32
-        long ay = (a >>> 32) & 0xFFFFFFFFL;
-        // keep xCoord+level (bits 0..23), replace flags with HAS_MESH
-        ay = (ay & 0x00FF_FFFFL) | ((long) FLAG_HAS_MESH << 24);
-        this.mirror[o] = (a & 0xFFFFFFFFL) | (ay << 32);
-        this.mirror[o + 1] = (long) quadStart & 0xFFFFFFFFL;      // a.z = quadStart, a.w = childPtr 0
-        this.mirror[o + 2] = (long) quadCount & 0xFFFFFFFFL;      // b.x = quadCount (b.y stamp stays stale)
-        this.mirror[o + 3] = ((long) slot & 0xFFFFFFFFL) << 32;   // b.w = slot
+        int word = packWord(slot, 0, FLAG_HAS_MESH);
+        // b.x = quadCount (b.y stamp preserved), b.z = quadStart, b.w = word
+        this.mirror[o + 2] = (this.mirror[o + 2] & 0xFFFFFFFF00000000L)
+            | ((long) quadCount & 0xFFFFFFFFL);
+        this.mirror[o + 3] = ((long) quadStart & 0xFFFFFFFFL) | ((long) word << 32);
         this.dirty.add(idx);
     }
 
@@ -127,9 +124,9 @@ public final class AllvrNodeStore {
             return;
         }
         int o = idx * LONGS_PER_NODE;
-        long ay = (this.mirror[o] >>> 32) & 0xFFFFFFFFL;
-        ay |= (long) FLAG_DEAD << 24;
-        this.mirror[o] = (this.mirror[o] & 0xFFFFFFFFL) | (ay << 32);
+        int word = (int) (this.mirror[o + 3] >>> 32);
+        word |= FLAG_DEAD << FLAGS_SHIFT;
+        this.mirror[o + 3] = (this.mirror[o + 3] & 0xFFFFFFFFL) | ((long) word << 32);
         this.dirty.add(idx);
         this.freeIndices.add(idx);
     }
@@ -164,13 +161,20 @@ public final class AllvrNodeStore {
         this.capacity = newCapacity;
     }
 
-    private void writePosition(int idx, int cx, int cy, int cz) {
+    /** a.x/a.y/a.z = absolute block min corner (signed int32, no biasing). */
+    private void writePosition(int idx, BlockPos cubeMinBlock) {
         int o = idx * LONGS_PER_NODE;
-        long ax = ((long) (cz & 0x1FFFFF)) | (((long) (cy & 0x1FFFFF)) << 21);
-        long ay = (long) (cx & 0x1FFFFF); // level 0, flags 0
+        long ax = (long) cubeMinBlock.getX() & 0xFFFFFFFFL;
+        long ay = (long) cubeMinBlock.getY() & 0xFFFFFFFFL;
+        long az = (long) cubeMinBlock.getZ() & 0xFFFFFFFFL;
         this.mirror[o] = ax | (ay << 32);
-        this.mirror[o + 1] = 0L;          // quadStart/childPtr unset
-        this.mirror[o + 2] = 0L;
-        this.mirror[o + 3] = 0L;
+        this.mirror[o + 1] = az;          // a.w = childPtr 0
+        this.mirror[o + 2] = 0L;          // b.x/b.y unset
+        this.mirror[o + 3] = 0L;          // b.z/b.w unset
+    }
+
+    /** b.w packing: slot | level&lt;&lt;LEVEL_SHIFT | flags&lt;&lt;FLAGS_SHIFT (≤ 27 bits). */
+    public static int packWord(int slot, int level, int flags) {
+        return (slot & ((1 << SLOT_BITS) - 1)) | ((level & 7) << LEVEL_SHIFT) | (flags << FLAGS_SHIFT);
     }
 }

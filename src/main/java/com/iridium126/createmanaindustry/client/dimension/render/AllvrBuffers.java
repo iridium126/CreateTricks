@@ -108,6 +108,10 @@ public final class AllvrBuffers {
     private int hizTexture;
     private int hizWidth;
     private int hizHeight;
+    /** Actual allocated mip count — glTexStorage2D rejects levels beyond
+     *  1+floor(log2(maxDim)); an oversized request voids the whole texture
+     *  (incomplete → samples 0.0 → HiZ would cull everything). */
+    private int hizLevels;
 
     private long arenaQuads;         // current capacity, quads
     private long arenaUsed;          // bump pointer, quads
@@ -197,12 +201,37 @@ public final class AllvrBuffers {
     }
 
     /** Debug-readback access (5 s throttle, debug log gated — never per frame). */
+    public int nodeBuffer() {
+        return this.nodeBuffer;
+    }
+
+    /** Debug-readback access (5 s throttle, debug log gated — never per frame). */
     public int commandCountBuffer() {
         return this.commandCountBuffer;
     }
 
+    /** Debug-readback access (5 s throttle, debug log gated — never per frame). */
+    public int commandBuffer() {
+        return this.commandBuffer;
+    }
+
     public int nodeCapacity() {
         return this.nodeCapacity;
+    }
+
+    /** Forces the next {@link #syncNodes} to a full re-upload. Call after
+     *  {@link AllvrNodeStore#clear()}: with the capacity unchanged the
+     *  dirty-set path uploads nothing, so the GPU buffer keeps the previous
+     *  level's live-looking nodes and the traversal's over-dispatch tail
+     *  draws them as ghosts (HAS_MESH + stale arena offsets → garbage
+     *  geometry until a capacity growth happens to re-upload everything). */
+    public void invalidateNodeUpload() {
+        this.nodeCapacity = -1;
+    }
+
+    /** Bump-pointer tail position, quads (debug command triage only). */
+    public long arenaUsedQuads() {
+        return this.arenaUsed;
     }
 
     /**
@@ -237,7 +266,9 @@ public final class AllvrBuffers {
 
     /** Allocates (or re-allocates on resize) the half-res R32F mip pyramid,
      *  cleared to 1.0 (far plane) — an unpopulated pyramid conservatively
-     *  occludes nothing. */
+     *  occludes nothing. Mip count is clamped to the size's legal maximum;
+     *  an allocation failure self-checks and drops the texture so the caller
+     *  degrades to frustum-only instead of sampling an incomplete texture. */
     public void allocHiz(int width, int height) {
         if (this.hizTexture != 0) {
             GL11.glDeleteTextures(this.hizTexture);
@@ -245,25 +276,44 @@ public final class AllvrBuffers {
         }
         this.hizWidth = width;
         this.hizHeight = height;
+        this.hizLevels = 0;
         int w = Math.max(1, (width + 1) / 2);
         int h = Math.max(1, (height + 1) / 2);
+        int maxDim = Math.max(w, h);
+        int allowedLevels = 1 + (31 - Integer.numberOfLeadingZeros(maxDim));
+        int levels = Math.min(HIZ_LEVELS, allowedLevels);
         this.hizTexture = GL11.glGenTextures();
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.hizTexture);
-        GL42.glTexStorage2D(GL11.GL_TEXTURE_2D, HIZ_LEVELS, GL30.GL_R32F, w, h);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER,
-            GL11.GL_NEAREST_MIPMAP_NEAREST);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
-        float[] far = {1.0f};
-        for (int level = 0; level < HIZ_LEVELS; level++) {
-            GL44.glClearTexImage(this.hizTexture, level, GL11.GL_RED, GL11.GL_FLOAT, far);
+        GL42.glTexStorage2D(GL11.GL_TEXTURE_2D, levels, GL30.GL_R32F, w, h);
+        // allocation self-check: an incomplete texture samples as 0.0 (near
+        // plane) — that culls the whole world, so fail loudly to frustum-only
+        boolean ok = GL11.glGetError() == 0;
+        if (ok) {
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER,
+                GL11.GL_NEAREST_MIPMAP_NEAREST);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+            float[] far = {1.0f};
+            for (int level = 0; level < levels; level++) {
+                GL44.glClearTexImage(this.hizTexture, level, GL11.GL_RED, GL11.GL_FLOAT, far);
+            }
+            this.hizLevels = levels;
+        } else {
+            com.iridium126.createmanaindustry.CreateManaIndustry.LOGGER.error(
+                "[Allvr] HiZ pyramid allocation failed ({}x{} levels {}) — HiZ disabled, frustum only",
+                w, h, levels);
         }
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
     }
 
     public boolean hizReady() {
-        return this.hizTexture != 0;
+        return this.hizTexture != 0 && this.hizLevels > 0;
+    }
+
+    /** Actual mip count of the allocated pyramid (shader top-level clamp). */
+    public int hizLevels() {
+        return this.hizLevels;
     }
 
     public int hizWidth() {
@@ -288,6 +338,7 @@ public final class AllvrBuffers {
         GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_NODES, this.nodeBuffer);
         GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_QUEUE, this.queueBuffer);
         GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_CMD_COUNT, this.commandCountBuffer);
+        GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_DISPATCH, this.dispatchBuffer);
         GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_COMMANDS, this.commandBuffer);
         GL15.glBindBuffer(ARBIndirectParameters.GL_PARAMETER_BUFFER_ARB, this.commandCountBuffer);
         glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, this.dispatchBuffer);
@@ -317,6 +368,7 @@ public final class AllvrBuffers {
         GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_NODES, 0);
         GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_QUEUE, 0);
         GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_CMD_COUNT, 0);
+        GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_DISPATCH, 0);
         GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_COMMANDS, 0);
         GL15.glBindBuffer(ARBIndirectParameters.GL_PARAMETER_BUFFER_ARB, 0);
         glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);

@@ -260,6 +260,11 @@ public final class AllvrRenderer {
         this.deferredCount = 0;
         this.buffers.reset();
         this.nodes.clear();
+        // zero the GPU node buffer on the next sync — nodes.clear() alone
+        // leaves the old session's nodes alive in it (capacity unchanged →
+        // the dirty-set upload is a no-op) and the traversal's over-dispatch
+        // tail draws them as ghost cubes with stale arena offsets
+        this.buffers.invalidateNodeUpload();
         AllvrMesherWorker.clearQueues();
     }
 
@@ -546,7 +551,7 @@ public final class AllvrRenderer {
         int highWater = this.nodes.highWater();
         int nodeCount = this.nodes.nodeCount();
         if (highWater == 0) {
-            this.logGpuStats(nodeCount, 0, -1, -1, -1);
+            this.logGpuStats(nodeCount, 0, -1, -1, -1, "");
             return;
         }
         this.extractFrustum(event.getProjectionMatrix(), event.getModelViewMatrix(), camPos);
@@ -596,22 +601,68 @@ public final class AllvrRenderer {
         GL42.glMemoryBarrier(GL43.GL_COMMAND_BARRIER_BIT | GL43.GL_SHADER_STORAGE_BARRIER_BIT);
 
         // triage readback (Q9): 5 s-throttled, debug-log gated — the real
-        // per-frame path stays zero-readback
+        // per-frame path stays zero-readback. Also dumps node[0]'s raw uints
+        // (GPU mirror truth) and a CPU re-run of the plane test (frustum
+        // sanity vs the vanilla-Frustum count the V0 path logs).
         int phase1 = -1;
         int phase2 = -1;
         int cmdCount = -1;
+        String triage = "";
         if (CreateManaIndustry.LOGGER.isDebugEnabled()
                 && System.currentTimeMillis() - this.lastGpuDebugMillis > 5000) {
             this.lastGpuDebugMillis = System.currentTimeMillis();
-            int[] tmp = new int[3];
+            int[] q = new int[3];
             GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.buffers.queueBuffer());
-            GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, tmp);
-            phase1 = tmp[0];
-            phase2 = tmp[1];
+            GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, q);
+            phase1 = q[0];
+            phase2 = q[1];
+            int[] c = new int[1];
             GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.buffers.commandCountBuffer());
-            GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, tmp);
-            cmdCount = tmp[0];
+            GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, c);
+            cmdCount = c[0];
+            // command-stream validity triage: garbage commands (stale/ghost
+            // node data, misaligned arena offsets) draw misaligned quads and
+            // surface as stretched dark-line artifacts — the first commands
+            // must reference an aligned, in-bounds arena range and a live slot
+            String cmdTriage = "";
+            if (cmdCount > 0) {
+                int[] cmds = new int[20];
+                GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.buffers.commandBuffer());
+                GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, cmds);
+                StringBuilder sb = new StringBuilder(" | cmds");
+                for (int i = 0; i < 4; i++) {
+                    int count = cmds[i * 5];
+                    int baseV = cmds[i * 5 + 3];
+                    int inst = cmds[i * 5 + 4];
+                    boolean ok = (baseV & 3) == 0 && cmds[i * 5 + 1] == 1 && cmds[i * 5 + 2] == 0
+                        && inst > 0 && inst < AllvrBuffers.MAX_SLOTS
+                        && ((long) (baseV >> 2)) + (count / 6) <= this.buffers.arenaUsedQuads();
+                    sb.append(String.format(" [%d,%d,%d,%d,%d%s]", count, cmds[i * 5 + 1],
+                        cmds[i * 5 + 2], baseV, inst, ok ? "" : " BAD"));
+                }
+                cmdTriage = sb.toString();
+            }
+            int[] n0 = new int[8];
+            GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.buffers.nodeBuffer());
+            GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, n0);
             GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+            int camX = net.minecraft.util.Mth.floor(camPos.x);
+            int camY = net.minecraft.util.Mth.floor(camPos.y);
+            int camZ = net.minecraft.util.Mth.floor(camPos.z);
+            triage = String.format(
+                " | planes0=(%.3f,%.3f,%.3f,%.3f) planes3=(%.3f,%.3f,%.3f,%.3f) cam=(%d,%d,%d)"
+                    + " | node0=[%08x %08x %08x %08x %08x %08x %08x %08x]"
+                    + " | node0mirror=[%08x %08x %08x %08x %08x %08x %08x %08x]"
+                    + " | cpuFrustum %d/%d",
+                this.frustumPlanes[0], this.frustumPlanes[1], this.frustumPlanes[2], this.frustumPlanes[3],
+                this.frustumPlanes[12], this.frustumPlanes[13], this.frustumPlanes[14], this.frustumPlanes[15],
+                camX, camY, camZ,
+                n0[0], n0[1], n0[2], n0[3], n0[4], n0[5], n0[6], n0[7],
+                this.nodes.mirror()[0], this.nodes.mirror()[1],
+                this.nodes.mirror()[2], this.nodes.mirror()[3],
+                this.nodes.mirror()[4], this.nodes.mirror()[5],
+                this.nodes.mirror()[6], this.nodes.mirror()[7],
+                this.debugCpuFrustumPass(camX, camY, camZ), this.nodes.nodeCount()) + cmdTriage;
         }
 
         // 5. terrain draw — V0 program/state, MDIC submission
@@ -620,6 +671,12 @@ public final class AllvrRenderer {
             this.buffers.unbindGpuCull();
             return;
         }
+        // TBO freshness parity with the V0 path (which re-checks every frame):
+        // the state table must cover every id the mesher registers. In a
+        // GPU-only session nothing ever builds it (every face renders black
+        // through the unbound samplerBuffer), and ids registered after the
+        // last build fetch out of bounds (garbage rect/tint)
+        this.buffers.ensureStateTable(AllvrRenderStateMap.entryCount());
         GL20.glUseProgram(prog);
         this.buffers.bindForDraw();
         this.terrainUniforms(prog, event, level, camPos);
@@ -634,7 +691,7 @@ public final class AllvrRenderer {
         RenderSystem.disableBlend();
 
         this.buffers.drawIndirectCount(this.coreGl46);
-        this.logGpuStats(nodeCount, highWater, phase1, phase2, cmdCount);
+        this.logGpuStats(nodeCount, highWater, phase1, phase2, cmdCount, triage);
 
         // 6. build the fresh HiZ pyramid from this frame's depth, then
         // re-validate phase-1 stamps against it (their depth is on screen)
@@ -650,10 +707,10 @@ public final class AllvrRenderer {
                 net.minecraft.util.Mth.floor(camPos.x),
                 net.minecraft.util.Mth.floor(camPos.y),
                 net.minecraft.util.Mth.floor(camPos.z));
-            GL30.glUniform1ui(GL30.glGetUniformLocation(revProg, "uFrameId"), curFrame);
-            GL30.glUniform1ui(GL30.glGetUniformLocation(revProg, "uLastFrameId"), lastFrame);
             this.uploadHizUniforms(revProg, event, mc);
-            GL43.glDispatchCompute((highWater + 63) / 64, 1, 1);
+            // fixed over-dispatch: p1 lives GPU-side (zero readback) — the
+            // kernel exits on the queue bounds; see gpu_cull_revalidate.comp
+            GL43.glDispatchCompute((AllvrBuffers.QUEUE_CAPACITY + 63) / 64, 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL42.GL_TEXTURE_FETCH_BARRIER_BIT);
         }
 
@@ -680,7 +737,7 @@ public final class AllvrRenderer {
             event.getProjectionMatrix().get(new float[16]));
         var main = mc.getMainRenderTarget();
         GL20.glUniform2f(GL20.glGetUniformLocation(prog, "uViewport"), main.width, main.height);
-        GL20.glUniform1i(GL20.glGetUniformLocation(prog, "uHizTopLevel"), AllvrBuffers.HIZ_LEVELS - 1);
+        GL20.glUniform1i(GL20.glGetUniformLocation(prog, "uHizTopLevel"), this.buffers.hizLevels() - 1);
         GL20.glUniform1f(GL20.glGetUniformLocation(prog, "uDepthBiasScale"), this.depthBiasScale);
     }
 
@@ -748,7 +805,7 @@ public final class AllvrRenderer {
 
         int down = this.shaders.hizDownsample();
         GL20.glUseProgram(down);
-        for (int lvl = 1; lvl < AllvrBuffers.HIZ_LEVELS; lvl++) {
+        for (int lvl = 1; lvl < this.buffers.hizLevels(); lvl++) {
             int pw = AllvrBuffers.hizLevelDim(hw, lvl - 1);
             int ph = AllvrBuffers.hizLevelDim(hh, lvl - 1);
             int dw = AllvrBuffers.hizLevelDim(hw, lvl);
@@ -795,7 +852,7 @@ public final class AllvrRenderer {
     }
 
     /** 5 s-throttled GPU-path stats (CPU-known counters + optional readback). */
-    private void logGpuStats(int nodeCount, int highWater, int phase1, int phase2, int cmdCount) {
+    private void logGpuStats(int nodeCount, int highWater, int phase1, int phase2, int cmdCount, String triage) {
         long now = System.currentTimeMillis();
         if (now - this.lastStatsLogMillis < 5000) {
             return;
@@ -803,12 +860,49 @@ public final class AllvrRenderer {
         this.lastStatsLogMillis = now;
         if (phase1 >= 0) {
             CreateManaIndustry.LOGGER.info(
-                "[Allvr] gpu frame: {} nodes ({} high water) → p1 {} + p2 {} = {} visible → {} commands",
-                nodeCount, highWater, phase1, phase2, phase1 + phase2, cmdCount);
+                "[Allvr] gpu frame: {} nodes ({} high water) → p1 {} + p2 {} = {} visible → {} commands{}",
+                nodeCount, highWater, phase1, phase2, phase1 + phase2, cmdCount, triage);
         } else {
-            CreateManaIndustry.LOGGER.info("[Allvr] gpu frame: {} nodes ({} high water)",
-                nodeCount, highWater);
+            CreateManaIndustry.LOGGER.info("[Allvr] gpu frame: {} nodes ({} high water){}",
+                nodeCount, highWater, triage);
         }
+    }
+
+    /**
+     * Triage: re-runs the traversal's exact plane test on the CPU for every
+     * live node, using the same frustumPlanes array uploaded to the shader.
+     * A nonzero count here with a GPU-side 0 pins the failure to the node
+     * upload / kernel; a zero count here pins it to the plane extraction.
+     */
+    private int debugCpuFrustumPass(int camX, int camY, int camZ) {
+        int pass = 0;
+        for (var e : this.renderCubes.long2ObjectEntrySet()) {
+            Cube rc = e.getValue();
+            if (rc.quadCount <= 0 || rc.slot < 0) {
+                continue;
+            }
+            AllvrCubePos p = AllvrCubePos.fromLong(e.getLongKey());
+            float ox = p.minBlockX() - camX;
+            float oy = p.minBlockY() - camY;
+            float oz = p.minBlockZ() - camZ;
+            boolean ok = true;
+            for (int i = 0; i < 6 && ok; i++) {
+                float nx = this.frustumPlanes[i * 4];
+                float ny = this.frustumPlanes[i * 4 + 1];
+                float nz = this.frustumPlanes[i * 4 + 2];
+                float d = this.frustumPlanes[i * 4 + 3];
+                float px = nx > 0f ? ox + 32f : ox;
+                float py = ny > 0f ? oy + 32f : oy;
+                float pz = nz > 0f ? oz + 32f : oz;
+                if (nx * px + ny * py + nz * pz + d < 0f) {
+                    ok = false;
+                }
+            }
+            if (ok) {
+                pass++;
+            }
+        }
+        return pass;
     }
 
     /** 5 s-throttled pipeline stats — the V0 visibility triage log: commands > 0

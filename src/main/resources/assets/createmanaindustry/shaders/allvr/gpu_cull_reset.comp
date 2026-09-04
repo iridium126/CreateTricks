@@ -1,0 +1,17 @@
+// ALLVR GPU-cull frame-reset (doc §9.1 queue discipline): clears the visible-
+// node queue counter and the MDI command counter for this frame. One thread;
+// runs before traversal. Kernel-level serialization (sequential dispatches +
+// SSBO barriers between them) makes the plain stores safe.
+layout(local_size_x = 1) in;
+
+layout(std430, binding = BIND_QUEUE) buffer Queue {
+    uint queue[]; // [0] = atomic counter, [1+i] = node index
+};
+layout(std430, binding = BIND_CMD_COUNT) buffer CmdCount {
+    uint cmdCount;
+};
+
+void main() {
+    queue[0] = 0u;
+    cmdCount = 0u;
+}

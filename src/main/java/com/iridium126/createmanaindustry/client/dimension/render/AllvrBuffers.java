@@ -17,14 +17,19 @@ import static org.lwjgl.opengl.GL30.glDeleteVertexArrays;
 import static org.lwjgl.opengl.GL30.glGenVertexArrays;
 import static org.lwjgl.opengl.GL31.GL_TEXTURE_BUFFER;
 import static org.lwjgl.opengl.GL31.glCopyBufferSubData;
+import static org.lwjgl.opengl.GL43.GL_DISPATCH_INDIRECT_BUFFER;
 import static org.lwjgl.opengl.GL40.GL_DRAW_INDIRECT_BUFFER;
 import static org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER;
 import static org.lwjgl.opengl.GL43.glMultiDrawElementsIndirect;
 
+import org.lwjgl.opengl.ARBIndirectParameters;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
+import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL31;
+import org.lwjgl.opengl.GL43;
+import org.lwjgl.opengl.GL46;
 
 /**
  * V0 GPU store for the ALLVR terrain pass (doc §7 / §9.4 Tier B): the packed
@@ -47,11 +52,23 @@ public final class AllvrBuffers {
     public static final int BIND_CUBEINFO = 1;
     /** Texture unit of the state material TBO. */
     public static final int STATE_TBO_UNIT = 2;
+    public static final int BIND_NODES = 3;
+    public static final int BIND_QUEUE = 4;
+    public static final int BIND_CMD_COUNT = 5;
+    public static final int BIND_DISPATCH = 6;
+    public static final int BIND_COMMANDS = 7;
 
     public static final int MAX_QUADS_PER_COMMAND = 8192; // ≥ 32²×6 worst case
     public static final int COMMAND_STRIDE = 5;           // uints per MDI command
-    public static final int MAX_COMMANDS = 8192;
+    /**
+     * 4a GPU path: cmdgen chunk-splits oversized cubes into consecutive
+     * commands, so the cap no longer bounds per-cube geometry — it bounds the
+     * whole visible command stream (65536 × 20 B = 1.28 MB, one-time alloc).
+     */
+    public static final int MAX_COMMANDS = 1 << 16;
     public static final int MAX_SLOTS = 65536;
+    /** Queue entries = node indices; [0] is the atomic counter (§9.1). */
+    public static final int QUEUE_CAPACITY = 1 << 16;
 
     private static final int COMMAND_BYTES = COMMAND_STRIDE * 4;
 
@@ -62,6 +79,14 @@ public final class AllvrBuffers {
     private int commandBuffer;
     private int stateTbo;
     private int stateTableBuffer;
+
+    // GPU-cull path (4a): node tree mirror, visible queue, cmdgen dispatch
+    // params, and the MDIC draw count (GL_PARAMETER_BUFFER; cmdgen atomicAdds it).
+    private int nodeBuffer;
+    private int nodeCapacity;        // nodes, matches the store's mirror capacity
+    private int queueBuffer;
+    private int dispatchBuffer;
+    private int commandCountBuffer;
 
     private long arenaQuads;         // current capacity, quads
     private long arenaUsed;          // bump pointer, quads
@@ -116,6 +141,113 @@ public final class AllvrBuffers {
 
     public boolean ready() {
         return this.vao != 0;
+    }
+
+    // ------------------------------------------------------------------
+    // GPU-cull buffers (4a)
+    // ------------------------------------------------------------------
+
+    /** Allocates the compute-side buffers once; sizes are static in 4a. */
+    public void ensureGpuCull() {
+        if (this.nodeBuffer != 0) {
+            return;
+        }
+        this.nodeBuffer = glGenBuffers();
+        this.queueBuffer = glGenBuffers();
+        this.dispatchBuffer = glGenBuffers();
+        this.commandCountBuffer = glGenBuffers();
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, this.queueBuffer);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, 4L * (QUEUE_CAPACITY + 1), GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, this.dispatchBuffer);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, 16L, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, this.commandCountBuffer);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, 4L, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    }
+
+    public boolean gpuCullReady() {
+        return this.nodeBuffer != 0;
+    }
+
+    /** Debug-readback access (5 s throttle, debug log gated — never per frame). */
+    public int queueBuffer() {
+        return this.queueBuffer;
+    }
+
+    /** Debug-readback access (5 s throttle, debug log gated — never per frame). */
+    public int commandCountBuffer() {
+        return this.commandCountBuffer;
+    }
+
+    public int nodeCapacity() {
+        return this.nodeCapacity;
+    }
+
+    /**
+     * Uploads node mirror changes: a full re-upload when the store grew, else
+     * per-node 32 B chunks for the drained dirty set. Render thread only.
+     */
+    public void syncNodes(AllvrNodeStore store) {
+        this.ensureGpuCull();
+        if (this.nodeCapacity != store.capacity()) {
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, this.nodeBuffer);
+            glBufferData(GL_SHADER_STORAGE_BUFFER, 32L * store.capacity(), GL_DYNAMIC_DRAW);
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, store.mirror());
+            this.nodeCapacity = store.capacity();
+            store.clearDirty();
+            return;
+        }
+        it.unimi.dsi.fastutil.ints.IntSet dirty = store.takeDirty();
+        if (dirty.isEmpty()) {
+            return;
+        }
+        long[] chunk = new long[AllvrNodeStore.LONGS_PER_NODE];
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, this.nodeBuffer);
+        for (int idx : dirty) {
+            System.arraycopy(store.mirror(), idx * AllvrNodeStore.LONGS_PER_NODE, chunk, 0, chunk.length);
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 32L * idx, chunk);
+        }
+    }
+
+    /** Binds the SSBO bases + GL_PARAMETER_BUFFER + dispatch-indirect source. */
+    public void bindGpuCull() {
+        GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_NODES, this.nodeBuffer);
+        GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_QUEUE, this.queueBuffer);
+        GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_CMD_COUNT, this.commandCountBuffer);
+        GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_COMMANDS, this.commandBuffer);
+        GL15.glBindBuffer(ARBIndirectParameters.GL_PARAMETER_BUFFER_ARB, this.commandCountBuffer);
+        glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, this.dispatchBuffer);
+    }
+
+    /** cmdgen dispatch: size comes from the queue counter (over-dispatch ≤63 idle groups). */
+    public void dispatchCmdgenIndirect() {
+        GL43.glDispatchComputeIndirect(0L);
+    }
+
+    /**
+     * MDIC draw: the actual command count lives in the GL_PARAMETER_BUFFER
+     * (cmdgen's atomicAdd) — the CPU never reads it back (doc §9.4).
+     */
+    public void drawIndirectCount(boolean coreGl46) {
+        if (coreGl46) {
+            GL46.glMultiDrawElementsIndirectCount(GL_TRIANGLES, GL_UNSIGNED_INT, 0L, 0L, MAX_COMMANDS,
+                COMMAND_STRIDE * 4);
+        } else {
+            org.lwjgl.opengl.ARBIndirectParameters.glMultiDrawElementsIndirectCountARB(
+                GL_TRIANGLES, GL_UNSIGNED_INT, 0L, 0L, MAX_COMMANDS, COMMAND_STRIDE * 4);
+        }
+    }
+
+    /** Releases GPU-cull bindings (mirror of {@link #unbind}'s discipline). */
+    public void unbindGpuCull() {
+        GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_NODES, 0);
+        GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_QUEUE, 0);
+        GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_CMD_COUNT, 0);
+        GL30.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, AllvrShaderCache.BIND_COMMANDS, 0);
+        GL15.glBindBuffer(ARBIndirectParameters.GL_PARAMETER_BUFFER_ARB, 0);
+        glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
 
     /** Grows the arena, preserving content. Cap 64M quads (512 MB). */

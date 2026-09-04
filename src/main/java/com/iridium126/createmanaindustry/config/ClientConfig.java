@@ -34,6 +34,10 @@ public final class ClientConfig {
     private static ModConfigSpec.BooleanValue PARTICLE_SHADER_PACK_INTEGRATION;
     private static ModConfigSpec.BooleanValue PARTICLE_HEX_SPRAY_REDIRECT;
 
+    // ---- allay dimension (ALLVR) -------------------------------------------
+
+    private static ModConfigSpec.BooleanValue ALLVR_GPU_PIPELINE;
+
     static {
         BUILDER.comment("Volumetric mist rendering options.").push("rendering");
         MIST_GLOW_STRENGTH = BUILDER
@@ -83,6 +87,16 @@ public final class ClientConfig {
                         + "automatically when the engine is unavailable. Default true.")
                 .define("hexSprayRedirect", true);
         BUILDER.pop();
+
+        BUILDER.comment("Allay dimension (ALLVR) terrain renderer options.").push("allvr");
+        ALLVR_GPU_PIPELINE = BUILDER
+                .comment("Use the GPU-driven terrain pipeline (node tree + compute frustum cull + MDI command "
+                        + "generation + glMultiDrawElementsIndirectCount) instead of the CPU per-cube path. "
+                        + "Falls back to the CPU path automatically when the GL capability probe or shader "
+                        + "compile fails. Stage 4a slice: frustum culling only (HiZ occlusion and LOD arrive "
+                        + "in 4b/4c).")
+                .define("gpuPipeline", false);
+        BUILDER.pop();
     }
 
     public static final ModConfigSpec SPEC = BUILDER.build();
@@ -97,6 +111,7 @@ public final class ClientConfig {
     public static int particleFadeDistance = 96;
     public static boolean shaderPackIntegration = true;
     public static boolean hexSprayRedirect = true;
+    public static boolean allvrGpuPipeline = false;
 
     private ClientConfig() {}
 
@@ -114,6 +129,7 @@ public final class ClientConfig {
             particleFadeDistance = PARTICLE_FADE_DISTANCE.get();
             shaderPackIntegration = PARTICLE_SHADER_PACK_INTEGRATION.get();
             hexSprayRedirect = PARTICLE_HEX_SPRAY_REDIRECT.get();
+            allvrGpuPipeline = ALLVR_GPU_PIPELINE.get();
         }
     }
 }

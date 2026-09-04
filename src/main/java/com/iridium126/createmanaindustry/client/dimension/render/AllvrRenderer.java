@@ -12,13 +12,21 @@ import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
+import org.joml.Matrix4f;
+import org.joml.Matrix4fc;
+import org.joml.Vector4f;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
+import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
+import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL42;
+import org.lwjgl.opengl.GL43;
 import org.lwjgl.opengl.GL46;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.client.dimension.AllvrClientCubeCache;
+import com.iridium126.createmanaindustry.config.ClientConfig;
 import com.iridium126.createmanaindustry.dimension.AllvrDimensions;
 import com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -47,10 +55,24 @@ public final class AllvrRenderer {
 
     private final AllvrBuffers buffers = new AllvrBuffers();
     private final AllvrShaderCache shaders = new AllvrShaderCache();
+    private final AllvrNodeStore nodes = new AllvrNodeStore();
     private final Long2ObjectOpenHashMap<Cube> renderCubes = new Long2ObjectOpenHashMap<>();
     /** Dedupe set for submitted mesh jobs (main thread only). */
     private final LongOpenHashSet pending = new LongOpenHashSet();
     private final int[] commands = new int[AllvrBuffers.COMMAND_STRIDE * AllvrBuffers.MAX_COMMANDS];
+
+    // GPU-cull path state (4a). Nodes are maintained regardless of the active
+    // path (setMesh/freeNode mirror assignQuads/forget), so the config switch
+    // is seamless without a resync pass.
+    private final float[] frustumPlanes = new float[24];
+    private final Matrix4f projViewScratch = new Matrix4f();
+    private final Vector4f planeScratch = new Vector4f();
+    private boolean mdiOk;
+    /** True when the context is GL 4.6 core (MDIC entry point choice). */
+    private boolean coreGl46;
+    private boolean warnedGpuCaps;
+    private int frameId;
+    private long lastGpuDebugMillis;
 
     private boolean initialized;
     private boolean tierOk;
@@ -107,7 +129,30 @@ public final class AllvrRenderer {
         }
 
         this.pumpResults();
-        this.draw(event, level);
+        // 4a: GPU-driven path (node traversal → cmdgen → MDIC) behind the
+        // config switch; the CPU path below is the V0 fallback and stays
+        // until 4c acceptance removes it.
+        if (this.wantGpu()) {
+            this.gpuDraw(event, level);
+        } else {
+            this.draw(event, level);
+        }
+    }
+
+    /** GPU path gate: config + MDIC caps + all four compute programs + buffers. */
+    private boolean wantGpu() {
+        if (!ClientConfig.allvrGpuPipeline) {
+            return false;
+        }
+        if (!this.mdiOk) {
+            if (!this.warnedGpuCaps) {
+                this.warnedGpuCaps = true;
+                CreateManaIndustry.LOGGER.warn(
+                    "[Allvr] gpuPipeline requested but MDIC (GL 4.6 / ARB_indirect_parameters) unavailable — CPU path active");
+            }
+            return false;
+        }
+        return this.shaders.gpuReady() && this.buffers.gpuCullReady();
     }
 
     private void initialize(Minecraft mc) {
@@ -116,8 +161,13 @@ public final class AllvrRenderer {
         // per-command draw parameters: GL 4.6 core, or the ARB extension on 4.5
         this.tierOk = caps.OpenGL46 || caps.GL_ARB_shader_draw_parameters;
         AllvrShaderCache.setUseExtensionFallback(!caps.OpenGL46 && caps.GL_ARB_shader_draw_parameters);
-        CreateManaIndustry.LOGGER.info("[Allvr] caps probe: OpenGL46={} ARB_shader_draw_parameters={} → tier {}",
-            caps.OpenGL46, caps.GL_ARB_shader_draw_parameters, this.tierOk ? "B" : "C");
+        // MDIC (GL_PARAMETER_BUFFER draw count): GL 4.6 core or ARB_indirect_parameters
+        this.mdiOk = caps.OpenGL46 || caps.GL_ARB_indirect_parameters;
+        this.coreGl46 = caps.OpenGL46;
+        CreateManaIndustry.LOGGER.info(
+            "[Allvr] caps probe: OpenGL46={} ARB_shader_draw_parameters={} ARB_indirect_parameters={} → tier {} mdi {}",
+            caps.OpenGL46, caps.GL_ARB_shader_draw_parameters, caps.GL_ARB_indirect_parameters,
+            this.tierOk ? "B" : "C", this.mdiOk ? "ok" : "unavailable");
         this.buffers.ensure();
         AllvrMesherWorker.start();
         if (!this.tierOk && !this.warnedTier) {
@@ -159,6 +209,7 @@ public final class AllvrRenderer {
             this.buffers.freeRange(rc.quadStart, rc.quadCount);
         }
         this.buffers.freeSlot(rc.slot);
+        this.nodes.freeNode(key);
         this.pending.remove(key);
         this.sawFirstMesh.remove(key);
     }
@@ -199,6 +250,7 @@ public final class AllvrRenderer {
         this.pending.clear();
         this.deferredCount = 0;
         this.buffers.reset();
+        this.nodes.clear();
         AllvrMesherWorker.clearQueues();
     }
 
@@ -284,6 +336,14 @@ public final class AllvrRenderer {
         this.buffers.uploadQuads(start, quads);
         rc.quadStart = start;
         rc.quadCount = quads.length;
+        // GPU-cull path: publish the mesh into the node SSBO. Slotless cubes
+        // (cubeInfo table full) stay nodeless — the V0 draw skips them too.
+        if (rc.slot >= 0) {
+            AllvrCubePos cpos = AllvrCubePos.fromLong(key);
+            this.nodes.setMesh(key,
+                new net.minecraft.core.BlockPos(cpos.minBlockX(), cpos.minBlockY(), cpos.minBlockZ()),
+                start, quads.length, rc.slot);
+        }
         // first mesh: neighbors meshed earlier may have culled faces
         // against this cube while it was still void air
         if (rc.slot >= 0 && !this.sawFirstMesh.contains(key)) {
@@ -394,7 +454,33 @@ public final class AllvrRenderer {
 
         GL20.glUseProgram(prog);
         this.buffers.bindForDraw();
+        this.terrainUniforms(prog, event, level, camPos);
 
+        GL13.glActiveTexture(GL13.GL_TEXTURE0);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D,
+            mc.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS).getId());
+
+        // state: opaque forward pass into the MC main target (borrowed depth —
+        // vanilla entities/translucents render after and depth-test correctly)
+        RenderSystem.enableDepthTest();
+        GL11.glEnable(GL11.GL_CULL_FACE);
+        GL11.glCullFace(GL11.GL_BACK);
+        RenderSystem.depthMask(true);
+        RenderSystem.disableBlend();
+
+        this.buffers.draw(n);
+        this.logStats(n, cubesWithGeometry);
+
+        // off-departure hygiene (particle-engine discipline)
+        RenderSystem.depthMask(true);
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableBlend();
+        GL20.glUseProgram(0);
+        this.buffers.unbind();
+    }
+
+    /** Camera-relative + fog + day uniforms shared by both draw paths. */
+    private void terrainUniforms(int prog, RenderLevelStageEvent event, ClientLevel level, Vec3 camPos) {
         AllvrShaderCache.uniformMat4(prog, "ModelViewMat", event.getModelViewMatrix());
         AllvrShaderCache.uniformMat4(prog, "ProjMat", event.getProjectionMatrix());
         int camX = net.minecraft.util.Mth.floor(camPos.x);
@@ -421,21 +507,104 @@ public final class AllvrRenderer {
         }
         AllvrShaderCache.uniformInt(prog, "uAtlas", 0);
         AllvrShaderCache.uniformInt(prog, "uStateTable", AllvrBuffers.STATE_TBO_UNIT);
+    }
 
+    /**
+     * 4a GPU-driven draw (doc §9.1/§9.4): flush dirty nodes → reset → frustum
+     * traversal → finalize → cmdgen → one glMultiDrawElementsIndirectCount
+     * whose command count is only ever read by the GPU (GL_PARAMETER_BUFFER).
+     * Kernel sequence is serialized by SSBO barriers; the terrain draw tail is
+     * the V0 path's program/state with a different command source.
+     */
+    private void gpuDraw(RenderLevelStageEvent event, ClientLevel level) {
+        if (this.shaders.needsRebuild()) {
+            this.shaders.rebuild();
+            if (!this.shaders.gpuReady()) {
+                this.draw(event, level); // compute compile failed — V0 fallback
+                return;
+            }
+        }
+        Minecraft mc = Minecraft.getInstance();
+        Camera camera = event.getCamera();
+        Vec3 camPos = camera.getPosition();
+
+        this.buffers.ensureGpuCull();
+        this.buffers.syncNodes(this.nodes);
+        int highWater = this.nodes.highWater();
+        int nodeCount = this.nodes.nodeCount();
+        if (highWater == 0) {
+            this.logGpuStats(nodeCount, 0, -1, -1);
+            return;
+        }
+        this.extractFrustum(event.getProjectionMatrix(), event.getModelViewMatrix(), camPos);
+
+        this.buffers.bindGpuCull();
+
+        // 1. reset queue + command counters
+        GL20.glUseProgram(this.shaders.cullReset());
+        GL43.glDispatchCompute(1, 1, 1);
+        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // 2. traversal: frustum cull every live node → visible queue + stamp
+        int travProg = this.shaders.traversal();
+        GL20.glUseProgram(travProg);
+        GL20.glUniform4fv(GL20.glGetUniformLocation(travProg, "uPlanes"), this.frustumPlanes);
+        AllvrShaderCache.uniformIVec3(travProg, "uCamInt",
+            net.minecraft.util.Mth.floor(camPos.x),
+            net.minecraft.util.Mth.floor(camPos.y),
+            net.minecraft.util.Mth.floor(camPos.z));
+        GL30.glUniform1ui(GL30.glGetUniformLocation(travProg, "uFrameId"), this.frameId++);
+        GL43.glDispatchCompute((highWater + 63) / 64, 1, 1);
+        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // 3. finalize: queue count → cmdgen dispatch size
+        GL20.glUseProgram(this.shaders.cullFinalize());
+        GL43.glDispatchCompute(1, 1, 1);
+        GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // 4. cmdgen: visible nodes → MDI commands + atomic count
+        GL20.glUseProgram(this.shaders.cmdgen());
+        this.buffers.dispatchCmdgenIndirect();
+        GL42.glMemoryBarrier(GL43.GL_COMMAND_BARRIER_BIT | GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // triage readback (Q9): 5 s-throttled, debug-log gated — the real
+        // per-frame path stays zero-readback
+        int queueCount = -1;
+        int cmdCount = -1;
+        if (CreateManaIndustry.LOGGER.isDebugEnabled()
+                && System.currentTimeMillis() - this.lastGpuDebugMillis > 5000) {
+            this.lastGpuDebugMillis = System.currentTimeMillis();
+            int[] tmp = new int[1];
+            GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.buffers.queueBuffer());
+            GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, tmp);
+            queueCount = tmp[0];
+            GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.buffers.commandCountBuffer());
+            GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, tmp);
+            cmdCount = tmp[0];
+            GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, 0);
+        }
+
+        // 5. terrain draw — V0 program/state, MDIC submission
+        int prog = this.shaders.terrain();
+        if (prog == 0) {
+            this.buffers.unbindGpuCull();
+            return;
+        }
+        GL20.glUseProgram(prog);
+        this.buffers.bindForDraw();
+        this.terrainUniforms(prog, event, level, camPos);
         GL13.glActiveTexture(GL13.GL_TEXTURE0);
         GL11.glBindTexture(GL11.GL_TEXTURE_2D,
             mc.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS).getId());
 
-        // state: opaque forward pass into the MC main target (borrowed depth —
-        // vanilla entities/translucents render after and depth-test correctly)
         RenderSystem.enableDepthTest();
         GL11.glEnable(GL11.GL_CULL_FACE);
         GL11.glCullFace(GL11.GL_BACK);
         RenderSystem.depthMask(true);
         RenderSystem.disableBlend();
 
-        this.buffers.draw(n);
-        this.logStats(n, cubesWithGeometry);
+        this.buffers.drawIndirectCount(this.coreGl46);
+        this.logGpuStats(nodeCount, highWater, queueCount, cmdCount);
 
         // off-departure hygiene (particle-engine discipline)
         RenderSystem.depthMask(true);
@@ -443,11 +612,57 @@ public final class AllvrRenderer {
         RenderSystem.disableBlend();
         GL20.glUseProgram(0);
         this.buffers.unbind();
+        this.buffers.unbindGpuCull();
     }
 
-    /** 5 s-throttled pipeline stats — the visibility triage log: commands > 0
-     * but nothing visible points at the shader/transform; commands == 0
-     * points at the geometry pipeline (snapshot → mesher → arena). */
+    /**
+     * Gribb–Hartmann planes of Proj*View (particle-engine extraction, §6.5),
+     * normalized; the camera's sub-block fraction is folded into each plane's
+     * distance so the shader can test integer camera-relative AABBs directly.
+     */
+    private void extractFrustum(Matrix4fc projectionMatrix, Matrix4fc modelViewMatrix, Vec3 camPos) {
+        Matrix4f m = this.projViewScratch.set(projectionMatrix).mul(modelViewMatrix);
+        int camX = net.minecraft.util.Mth.floor(camPos.x);
+        int camY = net.minecraft.util.Mth.floor(camPos.y);
+        int camZ = net.minecraft.util.Mth.floor(camPos.z);
+        float fx = (float) (camPos.x - camX);
+        float fy = (float) (camPos.y - camY);
+        float fz = (float) (camPos.z - camZ);
+        for (int i = 0; i < 6; i++) {
+            m.frustumPlane(i, this.planeScratch);
+            float a = this.planeScratch.x;
+            float b = this.planeScratch.y;
+            float c = this.planeScratch.z;
+            float d = this.planeScratch.w;
+            float inv = 1f / (float) Math.sqrt(a * a + b * b + c * c);
+            int o = i * 4;
+            this.frustumPlanes[o] = a * inv;
+            this.frustumPlanes[o + 1] = b * inv;
+            this.frustumPlanes[o + 2] = c * inv;
+            this.frustumPlanes[o + 3] = (d - (a * fx + b * fy + c * fz)) * inv;
+        }
+    }
+
+    /** 5 s-throttled GPU-path stats (CPU-known counters + optional readback). */
+    private void logGpuStats(int nodeCount, int highWater, int queueCount, int cmdCount) {
+        long now = System.currentTimeMillis();
+        if (now - this.lastStatsLogMillis < 5000) {
+            return;
+        }
+        this.lastStatsLogMillis = now;
+        if (queueCount >= 0) {
+            CreateManaIndustry.LOGGER.info(
+                "[Allvr] gpu frame: {} nodes ({} high water) → {} visible → {} commands",
+                nodeCount, highWater, queueCount, cmdCount);
+        } else {
+            CreateManaIndustry.LOGGER.info("[Allvr] gpu frame: {} nodes ({} high water)",
+                nodeCount, highWater);
+        }
+    }
+
+    /** 5 s-throttled pipeline stats — the V0 visibility triage log: commands > 0
+     *  but nothing visible points at the shader/transform; commands == 0
+     *  points at the geometry pipeline (snapshot → mesher → arena). */
     private void logStats(int commands, int cubesWithGeometry) {
         long now = System.currentTimeMillis();
         if (now - this.lastStatsLogMillis < 5000) {

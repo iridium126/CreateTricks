@@ -1,0 +1,54 @@
+// ALLVR GPU-cull cmdgen, 4a slice (doc §9.4): per visible node, emit MDI
+// commands — identical 20 B layout to the V0 CPU path (count/primCount/
+// firstIndex/baseVertex/baseInstance), so terrain.vsh is untouched. Dispatch
+// is indirect from the finalize-written size; over-dispatched invocations
+// exit on the queue bound. Cubes beyond MAX_QUADS_PER_COMMAND quads continue
+// in consecutive commands (chunk loop, mirroring AllvrRenderer.draw's split).
+layout(local_size_x = 64) in;
+
+struct Node {
+    uvec4 a; // position packed / quadStart / childPtr
+    uvec4 b; // quadCount / visibleFrameId / lastRequestFrame / slot
+};
+layout(std430, binding = BIND_NODES) readonly buffer Nodes {
+    Node nodes[];
+};
+layout(std430, binding = BIND_QUEUE) readonly buffer Queue {
+    uint queue[]; // [0] = atomic counter, [1+i] = node index
+};
+layout(std430, binding = BIND_CMD_COUNT) buffer CmdCount {
+    uint cmdCount;
+};
+layout(std430, binding = BIND_COMMANDS) writeonly buffer DrawCmds {
+    uint commands[]; // 5 uints per DrawElementsIndirectCommand
+};
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    // counter can transiently exceed QUEUE_CAPACITY (traversal adds before the
+    // cap check) — clamp so the over-dispatch can never index past the queue
+    if (id >= min(queue[0], uint(QUEUE_CAPACITY))) {
+        return;
+    }
+    Node n = nodes[queue[1u + id]];
+    uint quadStart = n.a.z;
+    uint quadCount = n.b.x;
+    uint slot = n.b.w;
+
+    uint baseVertex = quadStart * 4u;
+    uint remaining = quadCount;
+    while (remaining > 0u) {
+        uint take = min(remaining, uint(MAX_QUADS_PER_COMMAND));
+        uint ci = atomicAdd(cmdCount, 1u);
+        if (ci < uint(MAX_COMMANDS)) {
+            uint o = ci * 5u;
+            commands[o + 0u] = take * 6u;
+            commands[o + 1u] = 1u;
+            commands[o + 2u] = 0u;
+            commands[o + 3u] = baseVertex;
+            commands[o + 4u] = slot;
+        }
+        baseVertex += take * 4u;
+        remaining -= take;
+    }
+}

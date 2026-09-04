@@ -219,5 +219,9 @@
   "hexcasting.page.createmanaindustry.media_liquid.9": "TODO：待写文本",
   "hexcasting.page.createmanaindustry.media_liquid.10": "TODO：待写文本",
   "hexcasting.page.createmanaindustry.media_liquid.11": "TODO：待写文本",
-  "hexcasting.page.createmanaindustry.media_liquid.12": "TODO：待写文本"
+  "hexcasting.page.createmanaindustry.media_liquid.12": "TODO：待写文本",
+  "createmanaindustry.goggles.allay_burner.burning": "Allay is dancing",
+  "item.createmanaindustry.kinetic_mana_generator": "Kinetic Mana Generator",
+  "item.createmanaindustry.kinetic_atomizer": "Kinetic Atomizer",
+  "item.createmanaindustry.condenser": "Condenser"
 }

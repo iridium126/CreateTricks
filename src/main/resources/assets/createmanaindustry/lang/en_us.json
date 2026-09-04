@@ -150,6 +150,7 @@
   "hexcasting.action.createmanaindustry:players_in_circle": "Players in Circle",
   "hexcasting.action.createmanaindustry:read_trick_from_item": "Read Trick From Item",
   "hexcasting.action.createmanaindustry:execute_trick": "Execute Trick",
+  "hexcasting.action.createmanaindustry:read_iota_from_block": "工程师之纯化",
   "createmanaindustry.hex.mishap.invalid_burner": "The block at %s is not a lit Blaze Burner or an Allay Burner",
   "hexcasting.mishap.bad_item.trick": "a knot containing a spell",
   "hexcasting.mishap.invalid_value.class.createmanaindustry.trick": "a Trickster spell fragment",

@@ -30,6 +30,10 @@ public final class AllvrShaderCache {
     public static final int BIND_QUADS = AllvrBuffers.BIND_QUADS;
     public static final int BIND_CUBEINFO = AllvrBuffers.BIND_CUBEINFO;
     public static final int STATE_TBO_UNIT = AllvrBuffers.STATE_TBO_UNIT;
+    // compile-time constants — inlined by javac, so this never initializes
+    // AllvrRenderStateMap (no class-init cycle from the PRELUDE builder)
+    private static final int TEXELS_PER_ENTRY = AllvrRenderStateMap.TEXELS_PER_ENTRY;
+    private static final int TEXELS_PER_FACE = AllvrRenderStateMap.TEXELS_PER_FACE;
 
     private static final String GLSL_DIR = "shaders/allvr/";
 
@@ -39,10 +43,12 @@ public final class AllvrShaderCache {
 
     private static String buildPrelude() {
         StringBuilder sb = new StringBuilder(256);
-        sb.append("// ==== ALLVR terrain constants (GENERATED from AllvrBuffers) ====\n");
+        sb.append("// ==== ALLVR terrain constants (GENERATED from AllvrBuffers / AllvrRenderStateMap) ====\n");
         sb.append("#define BIND_QUADS ").append(BIND_QUADS).append('\n');
         sb.append("#define BIND_CUBEINFO ").append(BIND_CUBEINFO).append('\n');
         sb.append("#define STATE_TBO_UNIT ").append(STATE_TBO_UNIT).append('\n');
+        sb.append("#define STATE_TEXELS ").append(TEXELS_PER_ENTRY).append('\n');
+        sb.append("#define STATE_TEXELS_PER_FACE ").append(TEXELS_PER_FACE).append('\n');
         return sb.toString();
     }
 

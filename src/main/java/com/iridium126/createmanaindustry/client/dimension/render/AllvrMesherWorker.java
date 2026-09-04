@@ -69,14 +69,21 @@ public final class AllvrMesherWorker {
     private static void run() {
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         while (running) {
+            Long key = null;
             try {
-                Long key = JOBS.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS);
-                if (key == null) {
-                    continue;
+                key = JOBS.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS);
+                if (key != null) {
+                    process(key, pos);
                 }
-                process(key, pos);
             } catch (InterruptedException ignored) {
                 return;
+            } catch (Throwable t) {
+                // keep the worker alive: a dead thread silently ends ALL remeshing
+                // (the renderer's lazy-start check only sees a non-null handle);
+                // failed jobs are dropped, not retried — deterministic failures
+                // would otherwise loop forever
+                com.iridium126.createmanaindustry.CreateManaIndustry.LOGGER
+                    .error("[Allvr] mesher failed on cube {}, job dropped", key, t);
             }
         }
     }

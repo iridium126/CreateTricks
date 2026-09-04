@@ -4,7 +4,7 @@
 // baseInstance=cubeSlot. The shared relative index pattern yields
 // gl_VertexID = baseVertex + 4*quadLocal + corner, so:
 //   quad index  = (baseVertex>>2) + ((gl_VertexID-baseVertex)>>2)
-//   corner      =  (gl_VertexID-baseVertex) & 3   (0,0)/(1,0)/(1,1)/(0,1)
+//   corner      =  (gl_VertexID-baseVertex) & 3   (0,0)/(1,0)/(0,1)/(1,1)
 // Camera-relative math (±30M float32 jitter guard, doc §9.5): the cube
 // origin is stored ABSOLUTE in cubeInfo (exact ivec3); the subtraction
 // origin - uCamInt happens in integer space (exact), the camera's
@@ -53,11 +53,6 @@ void main() {
     // NOTE: id occupies bits 28..43 of the 64-bit word → low 4 bits in .x,
     // high 12 in .y low bits.
 
-    vec4 rect = texelFetch(uStateTable, int(stateId) * 3 + 0);
-    vTint = texelFetch(uStateTable, int(stateId) * 3 + 1);
-    vInset = texelFetch(uStateTable, int(stateId) * 3 + 2);
-    vRect = rect;
-
     // (u,v) basis per (axis,dir) — the mesher chose them so u×v = the outward
     // face normal:
     //   +x: u=y v=z | -x: u=z v=y | +y: u=z v=x | -y: u=x v=z | +z: u=x v=y | -z: u=y v=x
@@ -67,10 +62,22 @@ void main() {
     uint vAxis = faceIdx == 0u ? 2u : faceIdx == 1u ? 1u : faceIdx == 2u ? 0u
                : faceIdx == 3u ? 2u : faceIdx == 4u ? 1u : 0u;
 
+    // per-face material: the table stores 6 faces × (uvRect, tint+flag, inset)
+    // per state in AllvrMesher.FACES order (= faceIdx); untinted faces carry a
+    // white tint (identity multiply)
+    int entry = int(stateId) * STATE_TEXELS + int(faceIdx) * STATE_TEXELS_PER_FACE;
+    vRect  = texelFetch(uStateTable, entry + 0);
+    vTint  = texelFetch(uStateTable, entry + 1);
+    vInset = texelFetch(uStateTable, entry + 2);
+
     vec3 au = AXIS[uAxis];
     vec3 av = AXIS[vAxis];
     vec3 aw = AXIS[axis];
-    vec2 c = vec2(corner == 1u || corner == 2u ? 1.0 : 0.0,
+    // corner table is z-order, not perimeter order: the shared index pattern
+    // (0,1,2)(2,1,3) reuses the v1–v2 edge, so v1 and v2 must be DIAGONAL
+    // corners — a perimeter-order table flips triangle 2's winding (back-face
+    // culled) and tiles only half of every quad
+    vec2 c = vec2(corner == 1u || corner == 3u ? 1.0 : 0.0,
                   corner >= 2u ? 1.0 : 0.0);
     float plane = float(w) + (dir == 0u ? 1.0 : 0.0);
     vec3 local = au * (float(u) + c.x * float(sizeU))

@@ -21,6 +21,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.dimension.AllvrDimensionLimits;
 import com.iridium126.createmanaindustry.dimension.gen.AllvrIslandFieldGenerator;
+import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrBlockUpdatePacket;
 import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrCubePacket;
 import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrForgetCubePacket;
 
@@ -136,12 +137,13 @@ public final class AllvrCubeMap {
             cube.putEmitter(pos, newEmission);
         }
 
-        // mirror of Level#markAndNotifyBlock, minus client sync / light engine
-        // / chunk-status concerns (cubes have no LevelChunk)
+        // mirror of Level#markAndNotifyBlock, minus light engine / chunk-status
+        // concerns (cubes have no LevelChunk)
         if ((flags & 2) != 0) {
-            // sendBlockUpdated: skipped until cubes sync to clients with
-            // dedicated packets (roadmap phase 2); vanilla chunk broadcast
-            // never sees cube positions
+            // vanilla sendBlockUpdated equivalent: authoritative per-block push
+            // to subscribed clients (the initiating player's own prediction
+            // re-applies the same state idempotently)
+            sendBlockUpdate(pos, newState);
         }
         if ((flags & 1) != 0) {
             level.blockUpdated(pos, oldState.getBlock());
@@ -156,6 +158,20 @@ public final class AllvrCubeMap {
             newState.updateIndirectNeighbourShapes(level, pos, i, recursionLeft - 1);
         }
         return true;
+    }
+
+    /** Authoritative per-block push to every client subscribed to this cube
+     *  (one packet build, N sends; level.players() is the allay dimension). */
+    private void sendBlockUpdate(BlockPos pos, BlockState state) {
+        long cubeKey = AllvrCubePos.asLong(pos);
+        ClientboundAllvrBlockUpdatePacket packet = new ClientboundAllvrBlockUpdatePacket(
+            cubeKey, AllvrCube.localIndex(pos), net.minecraft.world.level.block.Block.getId(state));
+        for (ServerPlayer player : level.players()) {
+            Subscription sub = subscriptions.get(player.getUUID());
+            if (sub != null && sub.sent.contains(cubeKey)) {
+                player.connection.send(packet);
+            }
+        }
     }
 
     private void updateBlockEntity(AllvrCube cube, BlockPos pos, BlockState oldState, BlockState newState) {

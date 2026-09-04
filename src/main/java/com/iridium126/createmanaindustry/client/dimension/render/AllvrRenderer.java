@@ -299,13 +299,23 @@ public final class AllvrRenderer {
                 pos.minBlockX() + 32, pos.minBlockY() + 32, pos.minBlockZ() + 32))) {
                 continue;
             }
-            int o = n * AllvrBuffers.COMMAND_STRIDE;
-            this.commands[o] = rc.quadCount * 6;
-            this.commands[o + 1] = 1;
-            this.commands[o + 2] = 0;
-            this.commands[o + 3] = rc.quadStart * 4;
-            this.commands[o + 4] = rc.slot;
-            n++;
+            // one command reaches quads only through the shared index buffer
+            // (MAX_QUADS_PER_COMMAND); craftable cubes beyond that (e.g.
+            // checkerboard, ~5×10⁴ quads) continue in consecutive commands
+            int remaining = rc.quadCount;
+            int baseQuad = rc.quadStart;
+            while (remaining > 0 && n < AllvrBuffers.MAX_COMMANDS) {
+                int take = Math.min(remaining, AllvrBuffers.MAX_QUADS_PER_COMMAND);
+                int o = n * AllvrBuffers.COMMAND_STRIDE;
+                this.commands[o] = take * 6;
+                this.commands[o + 1] = 1;
+                this.commands[o + 2] = 0;
+                this.commands[o + 3] = baseQuad * 4;
+                this.commands[o + 4] = rc.slot;
+                baseQuad += take;
+                remaining -= take;
+                n++;
+            }
         }
         if (n == 0) {
             this.logStats(0, cubesWithGeometry);

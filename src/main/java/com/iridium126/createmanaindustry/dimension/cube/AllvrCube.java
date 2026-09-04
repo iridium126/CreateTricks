@@ -55,9 +55,19 @@ public final class AllvrCube {
         return pos;
     }
 
-    /** Section containing the given block-local Y (0..31). */
-    public LevelChunkSection sectionAt(int localY) {
-        return sections[localY >> 4];
+    /**
+     * Slice index within the 2×2×2 section grid, Y-major (each s* = 0..1) —
+     * the single source shared by the block accessors and the island
+     * generator's fill loop; the packet streams sections in plain array
+     * order, so both sides agree without encoding the convention.
+     */
+    public static int sliceIndex(int ssx, int ssy, int ssz) {
+        return (ssy << 2) | (ssz << 1) | ssx;
+    }
+
+    /** Section array index for block-local coords (0..31 per axis). */
+    private static int sectionIndex(int lx, int ly, int lz) {
+        return sliceIndex(lx >> 4, ly >> 4, lz >> 4);
     }
 
     public LevelChunkSection[] getSections() {
@@ -68,7 +78,7 @@ public final class AllvrCube {
         int lx = AllvrCoords.blockToLocal(worldPos.getX());
         int ly = AllvrCoords.blockToLocal(worldPos.getY());
         int lz = AllvrCoords.blockToLocal(worldPos.getZ());
-        return sectionAt(ly).getBlockState(lx, ly & 15, lz);
+        return sections[sectionIndex(lx, ly, lz)].getBlockState(lx & 15, ly & 15, lz & 15);
     }
 
     /**
@@ -81,7 +91,7 @@ public final class AllvrCube {
         int lx = AllvrCoords.blockToLocal(worldPos.getX());
         int ly = AllvrCoords.blockToLocal(worldPos.getY());
         int lz = AllvrCoords.blockToLocal(worldPos.getZ());
-        return sectionAt(ly).setBlockState(lx, ly & 15, lz, state, useLocks);
+        return sections[sectionIndex(lx, ly, lz)].setBlockState(lx & 15, ly & 15, lz & 15, state, useLocks);
     }
 
     // ---- block entities -------------------------------------------------

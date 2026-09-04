@@ -28,10 +28,11 @@ public final class AllvrMesher {
 
     public static final int CUBE = 32;
     static final int PADDED = 34;
-    public static final int MAX_QUADS_PER_CUBE = CUBE * CUBE * 6;
 
-    /** [axis*2 + dir] → the face Direction (dir 0 = positive axis). */
-    private static final Direction[] FACES = {
+    /** [axis*2 + dir] → the face Direction (dir 0 = positive axis). Also the
+     *  per-face material table order, shared with {@link AllvrRenderStateMap}
+     *  and the vertex shader's faceIdx. */
+    static final Direction[] FACES = {
         Direction.EAST, Direction.WEST,
         Direction.UP, Direction.DOWN,
         Direction.SOUTH, Direction.NORTH
@@ -151,7 +152,10 @@ public final class AllvrMesher {
                         | ((long) w << 23)
                         | ((long) (m - 1) << 28);
                     if (this.outCount == this.out.length) {
-                        long[] grown = new long[Math.min(MAX_QUADS_PER_CUBE, this.out.length * 2)];
+                        // no cap: craftable patterns (checkerboard) reach ~5×10⁴
+                        // quads per cube; the old 6144 ceiling AIOOBE'd here and
+                        // the oversized stream is split per-command at draw time
+                        long[] grown = new long[this.out.length * 2];
                         System.arraycopy(this.out, 0, grown, 0, this.outCount);
                         this.out = grown;
                     }

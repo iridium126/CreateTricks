@@ -43,6 +43,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
 
 import com.iridium126.createmanaindustry.dimension.AllvrServerHandler;
+import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrBlockUpdatePacket;
 import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrCubePacket;
 import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrForgetCubePacket;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
@@ -216,6 +217,10 @@ public class CreateManaIndustry {
                 ClientboundAllvrForgetCubePacket.TYPE,
                 ClientboundAllvrForgetCubePacket.STREAM_CODEC,
                 ClientboundAllvrForgetCubePacket::handle);
+        registrar.playToClient(
+                ClientboundAllvrBlockUpdatePacket.TYPE,
+                ClientboundAllvrBlockUpdatePacket.STREAM_CODEC,
+                ClientboundAllvrBlockUpdatePacket::handle);
     }
 
     /**

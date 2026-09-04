@@ -13,6 +13,7 @@ import net.minecraft.world.level.material.FluidState;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.dimension.AllvrDimensions;
 import com.iridium126.createmanaindustry.dimension.cube.AllvrCube;
+import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrBlockUpdatePacket;
 import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrCubePacket;
 
 /**
@@ -76,6 +77,23 @@ public final class AllvrClientCubeCache {
             cubes.remove(cubePos);
         }
         com.iridium126.createmanaindustry.client.dimension.render.AllvrRenderer.INSTANCE.onCubeForgotten(cubePos);
+    }
+
+    /**
+     * Applies one authoritative server-side block change (the cube analogue
+     * of the vanilla confirmation packet path: flags 19, recursion 512).
+     * Unloaded cubes reject the write inside {@link #setBlock}, mirroring
+     * vanilla "write to unloaded chunk fails" (e.g. a race with a forget
+     * packet); emitter bookkeeping and border remeshing run inside the normal
+     * setBlock path.
+     */
+    public static void applyBlockUpdate(ClientboundAllvrBlockUpdatePacket packet) {
+        com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos pos =
+            com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos.fromLong(packet.cubePos());
+        int cell = packet.cellIndex();
+        BlockPos blockPos = new BlockPos(pos.minBlockX() + (cell & 31),
+            pos.minBlockY() + (cell >> 10), pos.minBlockZ() + ((cell >> 5) & 31));
+        setBlock(blockPos, net.minecraft.world.level.block.Block.stateById(packet.stateId()), 19, 512);
     }
 
     /** The cached cube at a position's cube, or null (never generates). */

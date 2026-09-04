@@ -81,17 +81,24 @@ public final class AllvrIslandFieldGenerator {
             return;
         }
 
-        for (int sy = 0; sy < AllvrCube.SECTIONS_PER_CUBE; sy++) {
-            LevelChunkSection section = cube.getSections()[sy];
-            for (int ly = 0; ly < 16; ly++) {
-                int wy = y0 + (sy << 4) + ly;
-                for (int lz = 0; lz < 16; lz++) {
-                    int wz = z0 + lz;
-                    for (int lx = 0; lx < 16; lx++) {
-                        int wx = x0 + lx;
-                        BlockState state = evaluate(wx, wy, wz, islands);
-                        if (state != null) {
-                            section.setBlockState(lx, ly, lz, state, false);
+        // fills the cube's 2×2×2 section slices (16³ each) — the slice index
+        // convention is AllvrCube.sliceIndex (Y-major); each slice evaluates
+        // only its own 16³ world AABB, keeping the per-cube field cost at 32³
+        for (int ssy = 0; ssy < 2; ssy++) {
+            for (int ssz = 0; ssz < 2; ssz++) {
+                for (int ssx = 0; ssx < 2; ssx++) {
+                    LevelChunkSection section = cube.getSections()[AllvrCube.sliceIndex(ssx, ssy, ssz)];
+                    for (int ly = 0; ly < 16; ly++) {
+                        int wy = y0 + (ssy << 4) + ly;
+                        for (int lz = 0; lz < 16; lz++) {
+                            int wz = z0 + (ssz << 4) + lz;
+                            for (int lx = 0; lx < 16; lx++) {
+                                int wx = x0 + (ssx << 4) + lx;
+                                BlockState state = evaluate(wx, wy, wz, islands);
+                                if (state != null) {
+                                    section.setBlockState(lx, ly, lz, state, false);
+                                }
+                            }
                         }
                     }
                 }

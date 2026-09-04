@@ -38,6 +38,7 @@
     "vanilla.EntityMoltenFluidMixin",
     "vanilla.LivingEntityMoltenFluidMistMixin",
     "vanilla.LivingEntityAccessor",
+    "allvr.AllvrBlockCollisionsMixin",
     "allvr.AllvrLevelMixin",
     "allvr.AllvrLevelHeightAccessorMixin",
     "allvr.AllvrServerLevelMixin",

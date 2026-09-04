@@ -64,6 +64,78 @@ public final class AllvrClientCubeCache {
         cubes.remove(cubePos);
     }
 
+    /**
+     * Client-side mirror of {@code AllvrCubeMap#setBlock} for the write paths
+     * vanilla routes through {@code Level#setBlock} on the client (destroy /
+     * place prediction, server confirmation packets). Keeps prediction writes
+     * off the empty-shell column chunks, whose section arrays cannot address
+     * cube-only Y positions ({@code LevelChunk#setBlockState} has no section
+     * bounds check — an unchecked write crashes with AIOOBE).
+     * <p>
+     * Unloaded cubes reject the write ({@code false}), mirroring vanilla's
+     * "write to unloaded chunk fails": a block the player can target is always
+     * inside a streamed cube. Light-emitter bookkeeping mirrors the server so
+     * the emitter table stays consistent for the phase-3 synthetic light.
+     */
+    public static boolean setBlock(BlockPos pos, BlockState newState, int flags, int recursionLeft) {
+        ClientLevel clientLevel = level;
+        if (clientLevel == null || !com.iridium126.createmanaindustry.dimension.AllvrDimensionLimits.isInBounds(pos)) {
+            return false;
+        }
+        AllvrCube cube = cubes.get(com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos.asLong(pos));
+        if (cube == null) {
+            return false;
+        }
+        pos = pos.immutable();
+        BlockState oldState = cube.setBlockState(pos, newState, false);
+        if (oldState == null) {
+            return false;
+        }
+
+        updateBlockEntity(clientLevel, cube, pos, oldState, newState);
+
+        int oldEmission = oldState.getLightEmission(clientLevel, pos);
+        int newEmission = newState.getLightEmission(clientLevel, pos);
+        if (oldEmission > 0) {
+            cube.removeEmitter(pos);
+        }
+        if (newEmission > 0) {
+            cube.putEmitter(pos, newEmission);
+        }
+
+        // mirror of Level#markAndNotifyBlock, minus renderer notification —
+        // cubes have no vanilla sections to re-render (ALLVR remesh, phase 3)
+        if ((flags & 1) != 0) {
+            clientLevel.blockUpdated(pos, oldState.getBlock());
+            if (newState.hasAnalogOutputSignal()) {
+                clientLevel.updateNeighbourForOutputSignal(pos, newState.getBlock());
+            }
+        }
+        if ((flags & 16) == 0 && recursionLeft > 0) {
+            int i = flags & -34;
+            oldState.updateIndirectNeighbourShapes(clientLevel, pos, i, recursionLeft - 1);
+            newState.updateNeighbourShapes(clientLevel, pos, i, recursionLeft - 1);
+            newState.updateIndirectNeighbourShapes(clientLevel, pos, i, recursionLeft - 1);
+        }
+        return true;
+    }
+
+    private static void updateBlockEntity(ClientLevel clientLevel, AllvrCube cube, BlockPos pos, BlockState oldState, BlockState newState) {
+        if (oldState.hasBlockEntity() && !newState.hasBlockEntity()) {
+            BlockEntity be = cube.removeBlockEntity(pos);
+            if (be != null) {
+                be.setRemoved();
+            }
+        }
+        if (newState.hasBlockEntity() && newState.getBlock() instanceof net.minecraft.world.level.block.EntityBlock entityBlock) {
+            BlockEntity be = entityBlock.newBlockEntity(pos, newState);
+            if (be != null) {
+                be.setLevel(clientLevel);
+                cube.putBlockEntity(pos, be);
+            }
+        }
+    }
+
     public static BlockState getBlockState(BlockPos pos) {
         AllvrCube cube = cubes.get(com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos.asLong(pos));
         return cube == null ? Blocks.VOID_AIR.defaultBlockState() : cube.getBlockState(pos);

@@ -54,4 +54,24 @@ public abstract class AllvrClientLevelMixin {
             cir.setReturnValue(AllvrClientCubeCache.getBlockEntity(pos));
         }
     }
+
+    /**
+     * Targets the 4-arg real implementation — every client write funnels
+     * through it ({@code ClientLevel#setBlock} calls {@code super.setBlock} in
+     * both its predicting and non-predicting branches; destroy/place
+     * prediction and server confirmation packets alike). Without this,
+     * prediction writes reach the empty-shell column chunk and
+     * {@code LevelChunk#setBlockState} indexes its section array out of
+     * bounds (the vanilla body's only guards sit behind the widened
+     * {@code isOutsideBuildHeight}).
+     */
+    @Inject(method = "setBlock(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;II)Z",
+        at = @At("HEAD"), cancellable = true)
+    private void allvr$clientSetBlock(BlockPos pos, BlockState state, int flags, int recursionLeft,
+                                      CallbackInfoReturnable<Boolean> cir) {
+        Level self = (Level) (Object) this;
+        if (allvr$isAllayClient(self)) {
+            cir.setReturnValue(AllvrClientCubeCache.setBlock(pos, state, flags, recursionLeft));
+        }
+    }
 }

@@ -34,6 +34,12 @@ public class CreateManaIndustryClient {
     public CreateManaIndustryClient(ModContainer container) {
         container.registerExtensionPoint(IConfigScreenFactory.class, ConfigurationScreen::new);
 
+        // Bridge the client cube cache into the common-side collision mixin —
+        // the common bytecode must not reference client classes (dedicated
+        // servers never load them), so the resolver is injected here instead.
+        com.iridium126.createmanaindustry.dimension.AllvrClientBlockHook.setResolver(
+            com.iridium126.createmanaindustry.client.dimension.AllvrClientCubeCache::getBlockState);
+
         // Register the Veil post-processing uniform injection listeners.
         // The mist/fuel-rod-glow pipelines are added/removed on demand when
         // atomizers activate / rods form — see MistClientHandler.setActive()

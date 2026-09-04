@@ -22,13 +22,8 @@
       "output": "",
       "text": "hexcasting.page.createmanaindustry.industrial_patterns.light_burner"
     },
-    {
-      "type": "hexcasting:pattern",
-      "op_id": "createmanaindustry:players_in_circle",
-      "anchor": "createmanaindustry:players_in_circle",
-      "input": "",
-      "output": "list of entity",
-      "text": "hexcasting.page.createmanaindustry.industrial_patterns.players_in_circle"
-    }
+    "hexcasting.page.createmanaindustry.industrial_patterns.2",
+    "hexcasting.page.createmanaindustry.industrial_patterns.3",
+    "hexcasting.page.createmanaindustry.industrial_patterns.4"
   ]
 }

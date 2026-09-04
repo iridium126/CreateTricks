@@ -1,0 +1,28 @@
+{
+  "name": "hexcasting.entry.createmanaindustry.trickster_patterns",
+  "category": "hexcasting:createmanaindustry",
+  "icon": "trickster:amethyst_knot",
+  "sortnum": 4,
+  "advancement": "hexcasting:root",
+  "flag": "mod:trickster",
+  "pages": [
+    "hexcasting.page.createmanaindustry.trickster_patterns.1",
+    {
+      "type": "hexcasting:pattern",
+      "op_id": "createmanaindustry:read_trick_from_item",
+      "anchor": "createmanaindustry:read_trick_from_item",
+      "input": "",
+      "output": "any",
+      "text": "hexcasting.page.createmanaindustry.trickster_patterns.read_trick_from_item"
+    },
+    {
+      "type": "hexcasting:pattern",
+      "op_id": "createmanaindustry:execute_trick",
+      "anchor": "createmanaindustry:execute_trick",
+      "input": "trick",
+      "output": "any",
+      "text": "hexcasting.page.createmanaindustry.trickster_patterns.execute_trick"
+    },
+    "hexcasting.page.createmanaindustry.trickster_patterns.trick_iota"
+  ]
+}

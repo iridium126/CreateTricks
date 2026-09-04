@@ -71,7 +71,11 @@ public final class AllvrRenderer {
     /** True when the context is GL 4.6 core (MDIC entry point choice). */
     private boolean coreGl46;
     private boolean warnedGpuCaps;
-    private int frameId;
+    // starts at 2 so cleared stamps (0) and pre-run stamps never alias a
+    // live lastFrameId (>= 2) in the two-phase membership test
+    private int frameId = 2;
+    /** 1.5·near·far/(far−near): view-space → depth-space bias for HiZ tests. */
+    private float depthBiasScale = -1f;
     private long lastGpuDebugMillis;
 
     private boolean initialized;
@@ -139,7 +143,12 @@ public final class AllvrRenderer {
         }
     }
 
-    /** GPU path gate: config + MDIC caps + all four compute programs + buffers. */
+    /**
+     * GPU path gate: config + MDIC caps + all four compute programs. The
+     * GPU-cull buffers must NOT be part of this gate — they are allocated
+     * on demand inside {@link #gpuDraw}; requiring them here deadlocked the
+     * switch (gate false → gpuDraw never runs → buffers never allocated).
+     */
     private boolean wantGpu() {
         if (!ClientConfig.allvrGpuPipeline) {
             return false;
@@ -152,7 +161,7 @@ public final class AllvrRenderer {
             }
             return false;
         }
-        return this.shaders.gpuReady() && this.buffers.gpuCullReady();
+        return this.shaders.gpuReady();
     }
 
     private void initialize(Minecraft mc) {
@@ -510,11 +519,15 @@ public final class AllvrRenderer {
     }
 
     /**
-     * 4a GPU-driven draw (doc §9.1/§9.4): flush dirty nodes → reset → frustum
-     * traversal → finalize → cmdgen → one glMultiDrawElementsIndirectCount
-     * whose command count is only ever read by the GPU (GL_PARAMETER_BUFFER).
-     * Kernel sequence is serialized by SSBO barriers; the terrain draw tail is
-     * the V0 path's program/state with a different command source.
+     * 4b GPU-driven draw (doc §9.1/§9.2/§9.4): flush dirty nodes → reset →
+     * traversal (frustum + HiZ vs last frame's pyramid + two-phase split) →
+     * finalize → cmdgen → one glMultiDrawElementsIndirectCount whose command
+     * count is only ever read by the GPU (GL_PARAMETER_BUFFER) → build the HiZ
+     * pyramid from the borrowed MC main depth → revalidate phase-1 stamps
+     * against the fresh pyramid. Kernel sequence is serialized by SSBO/image
+     * barriers; the terrain draw tail is the V0 path's program/state with a
+     * different command source. HiZ degrades to frustum-only (4a) under an
+     * active iris pack or when the pyramid can't be built (Q7 safe degradation).
      */
     private void gpuDraw(RenderLevelStageEvent event, ClientLevel level) {
         if (this.shaders.needsRebuild()) {
@@ -533,19 +546,29 @@ public final class AllvrRenderer {
         int highWater = this.nodes.highWater();
         int nodeCount = this.nodes.nodeCount();
         if (highWater == 0) {
-            this.logGpuStats(nodeCount, 0, -1, -1);
+            this.logGpuStats(nodeCount, 0, -1, -1, -1);
             return;
         }
         this.extractFrustum(event.getProjectionMatrix(), event.getModelViewMatrix(), camPos);
+        int curFrame = ++this.frameId;
+        int lastFrame = curFrame - 1;
+        boolean hiz = !irisPackInUse() && this.shaders.hizReady()
+            && this.extractDepthBias(event.getProjectionMatrix())
+            && this.ensureHiz(mc);
 
         this.buffers.bindGpuCull();
+        if (hiz) {
+            GL13.glActiveTexture(GL13.GL_TEXTURE0 + AllvrBuffers.HIZ_UNIT);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.buffers.hizTexture());
+            GL13.glActiveTexture(GL13.GL_TEXTURE0);
+        }
 
         // 1. reset queue + command counters
         GL20.glUseProgram(this.shaders.cullReset());
         GL43.glDispatchCompute(1, 1, 1);
         GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
 
-        // 2. traversal: frustum cull every live node → visible queue + stamp
+        // 2. traversal: frustum + HiZ cull every live node → two-phase queue + stamp
         int travProg = this.shaders.traversal();
         GL20.glUseProgram(travProg);
         GL20.glUniform4fv(GL20.glGetUniformLocation(travProg, "uPlanes"), this.frustumPlanes);
@@ -553,31 +576,38 @@ public final class AllvrRenderer {
             net.minecraft.util.Mth.floor(camPos.x),
             net.minecraft.util.Mth.floor(camPos.y),
             net.minecraft.util.Mth.floor(camPos.z));
-        GL30.glUniform1ui(GL30.glGetUniformLocation(travProg, "uFrameId"), this.frameId++);
+        GL30.glUniform1ui(GL30.glGetUniformLocation(travProg, "uFrameId"), curFrame);
+        GL30.glUniform1ui(GL30.glGetUniformLocation(travProg, "uLastFrameId"), lastFrame);
+        GL30.glUniform1ui(GL30.glGetUniformLocation(travProg, "uHizEnabled"), hiz ? 1 : 0);
+        if (hiz) {
+            this.uploadHizUniforms(travProg, event, mc);
+        }
         GL43.glDispatchCompute((highWater + 63) / 64, 1, 1);
         GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
 
-        // 3. finalize: queue count → cmdgen dispatch size
+        // 3. finalize: two-phase counts → cmdgen dispatch size
         GL20.glUseProgram(this.shaders.cullFinalize());
         GL43.glDispatchCompute(1, 1, 1);
         GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT);
 
-        // 4. cmdgen: visible nodes → MDI commands + atomic count
+        // 4. cmdgen: visible nodes (phase 1 first) → MDI commands + atomic count
         GL20.glUseProgram(this.shaders.cmdgen());
         this.buffers.dispatchCmdgenIndirect();
         GL42.glMemoryBarrier(GL43.GL_COMMAND_BARRIER_BIT | GL43.GL_SHADER_STORAGE_BARRIER_BIT);
 
         // triage readback (Q9): 5 s-throttled, debug-log gated — the real
         // per-frame path stays zero-readback
-        int queueCount = -1;
+        int phase1 = -1;
+        int phase2 = -1;
         int cmdCount = -1;
         if (CreateManaIndustry.LOGGER.isDebugEnabled()
                 && System.currentTimeMillis() - this.lastGpuDebugMillis > 5000) {
             this.lastGpuDebugMillis = System.currentTimeMillis();
-            int[] tmp = new int[1];
+            int[] tmp = new int[3];
             GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.buffers.queueBuffer());
             GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, tmp);
-            queueCount = tmp[0];
+            phase1 = tmp[0];
+            phase2 = tmp[1];
             GL15.glBindBuffer(GL43.GL_SHADER_STORAGE_BUFFER, this.buffers.commandCountBuffer());
             GL15.glGetBufferSubData(GL43.GL_SHADER_STORAGE_BUFFER, 0, tmp);
             cmdCount = tmp[0];
@@ -604,15 +634,136 @@ public final class AllvrRenderer {
         RenderSystem.disableBlend();
 
         this.buffers.drawIndirectCount(this.coreGl46);
-        this.logGpuStats(nodeCount, highWater, queueCount, cmdCount);
+        this.logGpuStats(nodeCount, highWater, phase1, phase2, cmdCount);
+
+        // 6. build the fresh HiZ pyramid from this frame's depth, then
+        // re-validate phase-1 stamps against it (their depth is on screen)
+        if (hiz) {
+            GL42.glMemoryBarrier(GL43.GL_FRAMEBUFFER_BARRIER_BIT | GL42.GL_TEXTURE_FETCH_BARRIER_BIT);
+            this.buildHiz(mc);
+            // pyramid levels were written via imageStore — make them visible to
+            // the revalidate kernel's sampler reads before its dispatch
+            GL42.glMemoryBarrier(GL43.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL42.GL_TEXTURE_FETCH_BARRIER_BIT);
+            int revProg = this.shaders.revalidate();
+            GL20.glUseProgram(revProg);
+            AllvrShaderCache.uniformIVec3(revProg, "uCamInt",
+                net.minecraft.util.Mth.floor(camPos.x),
+                net.minecraft.util.Mth.floor(camPos.y),
+                net.minecraft.util.Mth.floor(camPos.z));
+            GL30.glUniform1ui(GL30.glGetUniformLocation(revProg, "uFrameId"), curFrame);
+            GL30.glUniform1ui(GL30.glGetUniformLocation(revProg, "uLastFrameId"), lastFrame);
+            this.uploadHizUniforms(revProg, event, mc);
+            GL43.glDispatchCompute((highWater + 63) / 64, 1, 1);
+            GL42.glMemoryBarrier(GL43.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL42.GL_TEXTURE_FETCH_BARRIER_BIT);
+        }
 
         // off-departure hygiene (particle-engine discipline)
+        GL13.glActiveTexture(GL13.GL_TEXTURE0 + AllvrBuffers.HIZ_UNIT);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        GL13.glActiveTexture(GL13.GL_TEXTURE0 + AllvrBuffers.MC_DEPTH_UNIT);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        GL13.glActiveTexture(GL13.GL_TEXTURE0);
         RenderSystem.depthMask(true);
         RenderSystem.defaultBlendFunc();
         RenderSystem.disableBlend();
         GL20.glUseProgram(0);
         this.buffers.unbind();
         this.buffers.unbindGpuCull();
+    }
+
+    /** Binds the pyramid sampler + projection uniforms the HiZ chunk consumes. */
+    private void uploadHizUniforms(int prog, RenderLevelStageEvent event, Minecraft mc) {
+        GL20.glUniform1i(GL20.glGetUniformLocation(prog, "uHiz"), AllvrBuffers.HIZ_UNIT);
+        GL20.glUniformMatrix4fv(GL20.glGetUniformLocation(prog, "uModelView"), false,
+            event.getModelViewMatrix().get(new float[16]));
+        GL20.glUniformMatrix4fv(GL20.glGetUniformLocation(prog, "uProj"), false,
+            event.getProjectionMatrix().get(new float[16]));
+        var main = mc.getMainRenderTarget();
+        GL20.glUniform2f(GL20.glGetUniformLocation(prog, "uViewport"), main.width, main.height);
+        GL20.glUniform1i(GL20.glGetUniformLocation(prog, "uHizTopLevel"), AllvrBuffers.HIZ_LEVELS - 1);
+        GL20.glUniform1f(GL20.glGetUniformLocation(prog, "uDepthBiasScale"), this.depthBiasScale);
+    }
+
+    /**
+     * Depth-comparison bias scale: dz/du of the perspective depth for a
+     * 1.5-block view-space margin (doc §9.2 conservative test), extracted from
+     * the projection each frame (MC's far plane tracks fog distance). Returns
+     * false when the matrix yields no sane perspective (HiZ disabled this frame).
+     */
+    private boolean extractDepthBias(Matrix4fc projectionMatrix) {
+        try {
+            float near = projectionMatrix.perspectiveNear();
+            float far = projectionMatrix.perspectiveFar();
+            if (near <= 0f || far <= near) {
+                this.depthBiasScale = -1f;
+                return false;
+            }
+            this.depthBiasScale = 1.5f * near * far / (far - near);
+            return true;
+        } catch (UnsupportedOperationException e) {
+            this.depthBiasScale = -1f;
+            return false;
+        }
+    }
+
+    /** Allocates / resizes the HiZ pyramid to the current main target size. */
+    private boolean ensureHiz(Minecraft mc) {
+        var main = mc.getMainRenderTarget();
+        int w = main.width;
+        int h = main.height;
+        if (w <= 0 || h <= 0) {
+            return false;
+        }
+        if (this.buffers.hizReady() && this.buffers.hizWidth() == w && this.buffers.hizHeight() == h) {
+            return true;
+        }
+        this.buffers.allocHiz(w, h);
+        return true;
+    }
+
+    /**
+     * Builds the MAX-depth pyramid from the main target's depth (verified
+     * plain GL_DEPTH_COMPONENT/float in 1.21.1 MainTarget — directly
+     * sampleable): level 0 = 2×2 depth quads, then a CPU-looped chain step
+     * per mip with image-unit rebinding. An unbound/garbage depth source
+     * collapses to "occludes nothing" — the safe-degradation contract.
+     */
+    private void buildHiz(Minecraft mc) {
+        var main = mc.getMainRenderTarget();
+        int hw = Math.max(1, (this.buffers.hizWidth() + 1) / 2);
+        int hh = Math.max(1, (this.buffers.hizHeight() + 1) / 2);
+
+        GL13.glActiveTexture(GL13.GL_TEXTURE0 + AllvrBuffers.MC_DEPTH_UNIT);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, main.getDepthTextureId());
+        GL13.glActiveTexture(GL13.GL_TEXTURE0);
+
+        int first = this.shaders.hizFirst();
+        GL20.glUseProgram(first);
+        GL20.glUniform1i(GL20.glGetUniformLocation(first, "uDepth"), AllvrBuffers.MC_DEPTH_UNIT);
+        GL20.glUniform2f(GL20.glGetUniformLocation(first, "uDepthSize"), main.width, main.height);
+        GL20.glUniform2f(GL20.glGetUniformLocation(first, "uHizSize"), hw, hh);
+        GL43.glBindImageTexture(0, this.buffers.hizTexture(), 0, false, 0, GL43.GL_WRITE_ONLY, GL30.GL_R32F);
+        GL43.glDispatchCompute(Math.max(1, (hw + 7) / 8), Math.max(1, (hh + 7) / 8), 1);
+        GL42.glMemoryBarrier(GL43.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+        int down = this.shaders.hizDownsample();
+        GL20.glUseProgram(down);
+        for (int lvl = 1; lvl < AllvrBuffers.HIZ_LEVELS; lvl++) {
+            int pw = AllvrBuffers.hizLevelDim(hw, lvl - 1);
+            int ph = AllvrBuffers.hizLevelDim(hh, lvl - 1);
+            int dw = AllvrBuffers.hizLevelDim(hw, lvl);
+            int dh = AllvrBuffers.hizLevelDim(hh, lvl);
+            GL43.glBindImageTexture(0, this.buffers.hizTexture(), lvl - 1, false, 0,
+                GL43.GL_READ_ONLY, GL30.GL_R32F);
+            GL43.glBindImageTexture(1, this.buffers.hizTexture(), lvl, false, 0,
+                GL43.GL_WRITE_ONLY, GL30.GL_R32F);
+            GL20.glUniform2f(GL20.glGetUniformLocation(down, "uSrcDims"), pw, ph);
+            GL20.glUniform2f(GL20.glGetUniformLocation(down, "uDestSize"), dw, dh);
+            GL43.glDispatchCompute(Math.max(1, (dw + 7) / 8), Math.max(1, (dh + 7) / 8), 1);
+            GL42.glMemoryBarrier(GL43.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        }
+        GL43.glBindImageTexture(0, 0, 0, false, 0, GL43.GL_READ_ONLY, GL30.GL_R32F);
+        GL43.glBindImageTexture(1, 0, 0, false, 0, GL43.GL_WRITE_ONLY, GL30.GL_R32F);
     }
 
     /**
@@ -644,16 +795,16 @@ public final class AllvrRenderer {
     }
 
     /** 5 s-throttled GPU-path stats (CPU-known counters + optional readback). */
-    private void logGpuStats(int nodeCount, int highWater, int queueCount, int cmdCount) {
+    private void logGpuStats(int nodeCount, int highWater, int phase1, int phase2, int cmdCount) {
         long now = System.currentTimeMillis();
         if (now - this.lastStatsLogMillis < 5000) {
             return;
         }
         this.lastStatsLogMillis = now;
-        if (queueCount >= 0) {
+        if (phase1 >= 0) {
             CreateManaIndustry.LOGGER.info(
-                "[Allvr] gpu frame: {} nodes ({} high water) → {} visible → {} commands",
-                nodeCount, highWater, queueCount, cmdCount);
+                "[Allvr] gpu frame: {} nodes ({} high water) → p1 {} + p2 {} = {} visible → {} commands",
+                nodeCount, highWater, phase1, phase2, phase1 + phase2, cmdCount);
         } else {
             CreateManaIndustry.LOGGER.info("[Allvr] gpu frame: {} nodes ({} high water)",
                 nodeCount, highWater);

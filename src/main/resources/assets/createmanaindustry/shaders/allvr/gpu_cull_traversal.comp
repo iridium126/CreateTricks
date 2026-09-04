@@ -1,37 +1,35 @@
-// ALLVR GPU-cull traversal, 4a slice (doc §9.1): frustum cull only. One
-// invocation per node (CPU dispatches ceil(highWater/64) groups of 64); the
-// hierarchy dispatch / HiZ / screen-area subdivision arrive in 4b/4c — the
-// queue append + visibility stamp below are the interface those extend.
+// ALLVR GPU-cull traversal, 4b slice (doc §9.1/§9.2): frustum cull + HiZ
+// occlusion test against LAST frame's pyramid + two-phase temporal split.
+// One invocation per node (CPU dispatches ceil(highWater/64) groups of 64).
 //
-// Plane + precision conventions (mirrors the particle engine's keygen and the
-// terrain.vsh camera-relative rule, doc §9.5): planes are JOML Gribb-Hartmann
-// of Proj*View, normalized, inside = dot(n, p) + d >= 0, measured against
-// camera-relative positions; the renderer folds the camera's sub-block
-// fraction into d (CPU, double precision). Node AABBs are rebuilt in integer
-// space and the ABSOLUTE origin minus uCamInt happens in exact int math — no
-// float32 world coordinate ever exceeds the view distance in magnitude, so
-// the ±30M jitter hazard never reaches the plane test.
+// Two-phase occlusion: nodes visible last frame (b.y == uLastFrameId) skip
+// the HiZ test and append to the phase-1 (front) queue segment — they render
+// unconditionally so their depth is on screen while the frame rasterizes;
+// everything else is HiZ-tested and appends to the phase-2 (back) segment.
+// cmdgen emits phase-1 commands first, so within the single MDI draw the
+// known-visible depth lands before the new geometry. The phase-1 stamps are
+// re-checked after this frame's draw (gpu_cull_revalidate) against the fresh
+// pyramid, so steady-state occlusion still culls island backs.
+//
+// Plane convention (mirrors the particle engine's keygen): JOML Gribb-Hartmann
+// planes of Proj*View, normalized, inside = dot(n, p) + d >= 0, measured
+// against camera-relative positions; the renderer folds the camera's
+// sub-block fraction into d (CPU, double precision). Node AABBs stay in
+// integer space (±30M exact), camera-relative before any float conversion.
+#pragma cmi_include chunks/node_common.glsl
+#pragma cmi_include chunks/hiz_test.glsl
+
 layout(local_size_x = 64) in;
 
 uniform vec4 uPlanes[6];
 uniform ivec3 uCamInt;
 uniform uint uFrameId;
+uniform uint uLastFrameId;
+uniform uint uHizEnabled;
 
-struct Node {
-    uvec4 a; // position packed / quadStart / childPtr
-    uvec4 b; // quadCount / visibleFrameId / lastRequestFrame / slot
-};
-layout(std430, binding = BIND_NODES) buffer Nodes {
-    Node nodes[];
-};
 layout(std430, binding = BIND_QUEUE) buffer Queue {
-    uint queue[]; // [0] = atomic counter, [1+i] = node index
+    uint queue[]; // [0] p1 count, [1] p2 count, [2..] p1 entries, [2+CAP..] p2 entries
 };
-
-/** 21-bit biased field -> sign-extended int. */
-int se21(uint bits) {
-    return int(bits << 11) >> 11;
-}
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -39,33 +37,35 @@ void main() {
         return; // over-dispatch / dead-tail guard
     }
     Node n = nodes[idx];
-    uint flags = n.a.y >> 24;
-    if ((flags & NODE_FLAG_DEAD) != 0u || (flags & NODE_FLAG_HAS_MESH) == 0u) {
+    if (!nodeLive(n)) {
         return;
     }
-    uint level = (n.a.y >> 21) & 7u;
-    ivec3 cubeCoord = ivec3(se21(n.a.y & 0x1FFFFFu),        // x
-                            se21(n.a.x & 0x1FFFFFu),        // y
-                            se21((n.a.x >> 21) & 0x1FFFFFu)); // z
-    // absolute block origin (int32 exact: |coord|<<5 ≤ 2^25) -> camera-relative
-    ivec3 relOrigin = (cubeCoord << int(5u + level)) - uCamInt;
-    ivec3 relEnd = relOrigin + ivec3(int(32u << level));
+    uint level = nodeLevel(n);
+    ivec3 extent = ivec3(int(32u << level));
+    ivec3 relOrigin = nodeAbsOrigin(n) - uCamInt;
 
     // positive-vertex test against the six planes; any miss culls the node
     for (int i = 0; i < 6; i++) {
         vec3 pn = uPlanes[i].xyz;
         vec3 lo = vec3(relOrigin);
-        vec3 hi = vec3(relEnd);
+        vec3 hi = vec3(relOrigin + extent);
         vec3 positive = max(lo, hi) * step(0.0, pn) + min(lo, hi) * (1.0 - step(0.0, pn));
         if (dot(pn, positive) + uPlanes[i].w < 0.0) {
             return;
         }
     }
 
-    // visible: stamp + append (counter is capacity-bounded — one add per node)
+    // two-phase temporal: last-frame-visible bypasses the HiZ test
+    bool lastVisible = n.b.y == uLastFrameId;
+    if (uHizEnabled != 0u && !lastVisible && allvrHizOccluded(relOrigin, extent)) {
+        return;
+    }
+
+    // visible: stamp + append to the node's phase segment
     nodes[idx].b.y = uFrameId;
-    uint slot = atomicAdd(queue[0], 1u);
+    uint phase = lastVisible ? 0u : 1u;
+    uint slot = atomicAdd(queue[phase], 1u);
     if (slot < QUEUE_CAPACITY) {
-        queue[1u + slot] = idx;
+        queue[2u + phase * uint(QUEUE_CAPACITY) + slot] = idx;
     }
 }

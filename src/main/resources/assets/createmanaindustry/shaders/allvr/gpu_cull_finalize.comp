@@ -1,17 +1,19 @@
-// ALLVR GPU-cull finalize (doc §9.1/§9.4): one thread converts the visible-
-// node queue count into the cmdgen dispatch size and stages the dispatch into
+// ALLVR GPU-cull finalize (doc §9.1/§9.4): one thread converts the two
+// temporal-segment counts into the cmdgen dispatch size and stages it into
 // the indirect buffer. The dispatch over-dispatches by up to 63 idle groups
 // (raw count, not ceil — glDispatchComputeIndirect consumes raw numbers);
-// max(queue,1) keeps a zero-count frame valid.
+// max(total,1) keeps a zero-count frame valid.
 layout(local_size_x = 1) in;
 
 layout(std430, binding = BIND_QUEUE) readonly buffer Queue {
-    uint queue[];
+    uint queue[]; // [0] p1 count, [1] p2 count
 };
 layout(std430, binding = BIND_DISPATCH) writeonly buffer Dispatch {
     uvec4 dispatch; // glDispatchComputeIndirect: (x groups, 1, 1, 0)
 };
 
 void main() {
-    dispatch = uvec4(max(queue[0], 1u), 1u, 1u, 0u);
+    uint p1 = min(queue[0], uint(QUEUE_CAPACITY));
+    uint p2 = min(queue[1], uint(QUEUE_CAPACITY));
+    dispatch = uvec4(max(p1 + p2, 1u), 1u, 1u, 0u);
 }

@@ -24,11 +24,14 @@ import static org.lwjgl.opengl.GL43.glMultiDrawElementsIndirect;
 
 import org.lwjgl.opengl.ARBIndirectParameters;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL12;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL31;
+import org.lwjgl.opengl.GL42;
 import org.lwjgl.opengl.GL43;
+import org.lwjgl.opengl.GL44;
 import org.lwjgl.opengl.GL46;
 
 /**
@@ -67,8 +70,20 @@ public final class AllvrBuffers {
      */
     public static final int MAX_COMMANDS = 1 << 16;
     public static final int MAX_SLOTS = 65536;
-    /** Queue entries = node indices; [0] is the atomic counter (§9.1). */
+    /**
+     * Queue entries = node indices, two temporal segments (doc §9.2 two-phase
+     * occlusion): [0] = last-frame-visible counter, [1] = newly-visible
+     * counter, [2..2+CAP) = phase-1 entries, [2+CAP..2+2CAP) = phase-2
+     * entries — cmdgen emits phase-1 commands first so their depth lands
+     * before the new segments rasterize.
+     */
     public static final int QUEUE_CAPACITY = 1 << 16;
+    public static final int QUEUE_UINTS = 2 + 2 * QUEUE_CAPACITY;
+    /** HiZ pyramid mip levels (static; extra levels are clamped at sample time). */
+    public static final int HIZ_LEVELS = 12;
+    /** Sampler units for the HiZ chain and the borrowed MC main depth. */
+    public static final int HIZ_UNIT = 3;
+    public static final int MC_DEPTH_UNIT = 4;
 
     private static final int COMMAND_BYTES = COMMAND_STRIDE * 4;
 
@@ -87,6 +102,12 @@ public final class AllvrBuffers {
     private int queueBuffer;
     private int dispatchBuffer;
     private int commandCountBuffer;
+
+    // HiZ pyramid (4b): R32F mip chain at half main-target resolution, rebuilt
+    // from the borrowed MC main depth after each terrain draw.
+    private int hizTexture;
+    private int hizWidth;
+    private int hizHeight;
 
     private long arenaQuads;         // current capacity, quads
     private long arenaUsed;          // bump pointer, quads
@@ -158,7 +179,7 @@ public final class AllvrBuffers {
         this.commandCountBuffer = glGenBuffers();
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, this.queueBuffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, 4L * (QUEUE_CAPACITY + 1), GL_DYNAMIC_DRAW);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, 4L * QUEUE_UINTS, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, this.dispatchBuffer);
         glBufferData(GL_SHADER_STORAGE_BUFFER, 16L, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, this.commandCountBuffer);
@@ -208,6 +229,58 @@ public final class AllvrBuffers {
             System.arraycopy(store.mirror(), idx * AllvrNodeStore.LONGS_PER_NODE, chunk, 0, chunk.length);
             glBufferSubData(GL_SHADER_STORAGE_BUFFER, 32L * idx, chunk);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // HiZ pyramid (4b)
+    // ------------------------------------------------------------------
+
+    /** Allocates (or re-allocates on resize) the half-res R32F mip pyramid,
+     *  cleared to 1.0 (far plane) — an unpopulated pyramid conservatively
+     *  occludes nothing. */
+    public void allocHiz(int width, int height) {
+        if (this.hizTexture != 0) {
+            GL11.glDeleteTextures(this.hizTexture);
+            this.hizTexture = 0;
+        }
+        this.hizWidth = width;
+        this.hizHeight = height;
+        int w = Math.max(1, (width + 1) / 2);
+        int h = Math.max(1, (height + 1) / 2);
+        this.hizTexture = GL11.glGenTextures();
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.hizTexture);
+        GL42.glTexStorage2D(GL11.GL_TEXTURE_2D, HIZ_LEVELS, GL30.GL_R32F, w, h);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER,
+            GL11.GL_NEAREST_MIPMAP_NEAREST);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+        float[] far = {1.0f};
+        for (int level = 0; level < HIZ_LEVELS; level++) {
+            GL44.glClearTexImage(this.hizTexture, level, GL11.GL_RED, GL11.GL_FLOAT, far);
+        }
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+    }
+
+    public boolean hizReady() {
+        return this.hizTexture != 0;
+    }
+
+    public int hizWidth() {
+        return this.hizWidth;
+    }
+
+    public int hizHeight() {
+        return this.hizHeight;
+    }
+
+    public int hizTexture() {
+        return this.hizTexture;
+    }
+
+    /** Level dims of the pyramid: level 0 = half main-target res. */
+    public static int hizLevelDim(int baseHalfRes, int level) {
+        return Math.max(1, baseHalfRes >> level);
     }
 
     /** Binds the SSBO bases + GL_PARAMETER_BUFFER + dispatch-indirect source. */

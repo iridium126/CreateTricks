@@ -68,11 +68,18 @@ public final class AllvrShaderCache {
         return sb.toString();
     }
 
+    /** Matches {@code #pragma cmi_include chunks/name.glsl} lines (mirrors ParticlePrograms). */
+    private static final java.util.regex.Pattern INCLUDE_PATTERN =
+        java.util.regex.Pattern.compile("^\\s*#pragma\\s+cmi_include\\s+(\\S+)\\s*$", java.util.regex.Pattern.MULTILINE);
+
     private int terrain;
     private int cullReset;
     private int traversal;
     private int cullFinalize;
     private int cmdgen;
+    private int hizFirst;
+    private int hizDownsample;
+    private int revalidate;
     private volatile boolean dirty = true;
 
     /** Selects the GLSL version before the first compile (capability probe). */
@@ -97,17 +104,22 @@ public final class AllvrShaderCache {
             GL20.glDeleteProgram(this.terrain);
             this.terrain = 0;
         }
-        for (int p : new int[] {this.cullReset, this.traversal, this.cullFinalize, this.cmdgen}) {
+        for (int p : new int[] {this.cullReset, this.traversal, this.cullFinalize, this.cmdgen,
+                this.hizFirst, this.hizDownsample, this.revalidate}) {
             if (p != 0) {
                 GL20.glDeleteProgram(p);
             }
         }
         this.cullReset = this.traversal = this.cullFinalize = this.cmdgen = 0;
+        this.hizFirst = this.hizDownsample = this.revalidate = 0;
         this.terrain = link(GLSL_DIR + "terrain.vsh", GLSL_DIR + "terrain.fsh");
         this.cullReset = compileCompute(GLSL_DIR + "gpu_cull_reset.comp");
         this.traversal = compileCompute(GLSL_DIR + "gpu_cull_traversal.comp");
         this.cullFinalize = compileCompute(GLSL_DIR + "gpu_cull_finalize.comp");
         this.cmdgen = compileCompute(GLSL_DIR + "gpu_cull_cmdgen.comp");
+        this.hizFirst = compileCompute(GLSL_DIR + "gpu_hiz_first.comp");
+        this.hizDownsample = compileCompute(GLSL_DIR + "gpu_hiz_downsample.comp");
+        this.revalidate = compileCompute(GLSL_DIR + "gpu_cull_revalidate.comp");
         if (this.terrain == 0) {
             this.dirty = true;
             CreateManaIndustry.LOGGER.error("[Allvr] terrain program compile FAILED (will retry)");
@@ -116,6 +128,9 @@ public final class AllvrShaderCache {
         }
         if (this.gpuReady()) {
             CreateManaIndustry.LOGGER.info("[Allvr] GPU-cull programs compiled (reset/traversal/finalize/cmdgen)");
+        }
+        if (this.hizReady()) {
+            CreateManaIndustry.LOGGER.info("[Allvr] HiZ programs compiled (first/downsample/revalidate)");
         }
     }
 
@@ -139,6 +154,18 @@ public final class AllvrShaderCache {
         return this.cmdgen;
     }
 
+    public int hizFirst() {
+        return this.hizFirst;
+    }
+
+    public int hizDownsample() {
+        return this.hizDownsample;
+    }
+
+    public int revalidate() {
+        return this.revalidate;
+    }
+
     public boolean ready() {
         return this.terrain != 0;
     }
@@ -146,6 +173,11 @@ public final class AllvrShaderCache {
     /** All four compute programs linked (GPU-cull path completeness). */
     public boolean gpuReady() {
         return this.cullReset != 0 && this.traversal != 0 && this.cullFinalize != 0 && this.cmdgen != 0;
+    }
+
+    /** All three HiZ programs linked; false degrades 4b to frustum-only (4a). */
+    public boolean hizReady() {
+        return this.hizFirst != 0 && this.hizDownsample != 0 && this.revalidate != 0;
     }
 
     // ------------------------------------------------------------------
@@ -255,8 +287,21 @@ public final class AllvrShaderCache {
     }
 
     private static String load(String path) {
+        return loadResolved(path, 0);
+    }
+
+    /**
+     * Loads a bundled shader file as text, or null on failure. Lines of the
+     * form {@code #pragma cmi_include chunks/name.glsl} (path relative to
+     * {@code shaders/allvr/}) are replaced with the referenced file's content,
+     * recursively up to a small depth bound — the shared-source mechanism that
+     * keeps the node decode + HiZ test single-sourced across the traversal and
+     * revalidate kernels (mirrors ParticlePrograms).
+     */
+    private static String loadResolved(String path, int depth) {
         ResourceManager rm = Minecraft.getInstance().getResourceManager();
         ResourceLocation id = CreateManaIndustry.modLoc(path);
+        String raw;
         try (Reader r = rm.openAsReader(id)) {
             StringBuilder sb = new StringBuilder(2048);
             char[] buf = new char[4096];
@@ -264,11 +309,22 @@ public final class AllvrShaderCache {
             while ((n = r.read(buf)) != -1) {
                 sb.append(buf, 0, n);
             }
-            return sb.toString();
+            raw = sb.toString();
         } catch (IOException e) {
             CreateManaIndustry.LOGGER.error("[Allvr] cannot read shader {}", id, e);
             return null;
         }
+        if (depth >= 4 || !INCLUDE_PATTERN.matcher(raw).find()) {
+            return raw;
+        }
+        java.util.regex.Matcher m = INCLUDE_PATTERN.matcher(raw);
+        StringBuffer out = new StringBuffer(raw.length());
+        while (m.find()) {
+            String included = loadResolved(GLSL_DIR + m.group(1), depth + 1);
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(included != null ? included : ""));
+        }
+        m.appendTail(out);
+        return out.toString();
     }
 
     AllvrShaderCache() {

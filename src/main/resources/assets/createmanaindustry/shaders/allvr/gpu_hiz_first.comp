@@ -1,0 +1,27 @@
+// ALLVR HiZ level-0 build (doc §9.2): one thread per half-res texel takes the
+// MAX of the 2×2 depth quad (conservative — larger depth = fewer culls), so
+// sky (depth 1.0) regions occlude nothing. Source: the borrowed MC main
+// RenderTarget depth (verified plain GL_DEPTH_COMPONENT/float in 1.21.1
+// MainTarget, sampleable as sampler2D). Written to pyramid mip 0 (image unit
+// 0); the chain continues in gpu_hiz_downsample.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+uniform sampler2D uDepth;  // unit MC_DEPTH_UNIT
+uniform vec2 uDepthSize;   // main target pixel size
+uniform vec2 uHizSize;     // level-0 (half-res) texel size
+
+layout(r32f, binding = 0) writeonly uniform image2D uDest;
+
+void main() {
+    ivec2 outCoord = ivec2(gl_GlobalInvocationID.xy);
+    if (outCoord.x >= int(uHizSize.x) || outCoord.y >= int(uHizSize.y)) {
+        return;
+    }
+    vec2 texel = 1.0 / uDepthSize;
+    vec2 base = (vec2(outCoord) * 2.0 + 0.5) * texel;
+    float d = textureLod(uDepth, base, 0.0).r;
+    d = max(d, textureLod(uDepth, base + vec2(texel.x, 0.0), 0.0).r);
+    d = max(d, textureLod(uDepth, base + vec2(0.0, texel.y), 0.0).r);
+    d = max(d, textureLod(uDepth, base + texel, 0.0).r);
+    imageStore(uDest, outCoord, vec4(d));
+}

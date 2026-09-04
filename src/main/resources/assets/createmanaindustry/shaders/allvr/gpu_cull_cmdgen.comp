@@ -1,20 +1,18 @@
-// ALLVR GPU-cull cmdgen, 4a slice (doc §9.4): per visible node, emit MDI
+// ALLVR GPU-cull cmdgen, 4b slice (doc §9.4): per visible node, emit MDI
 // commands — identical 20 B layout to the V0 CPU path (count/primCount/
 // firstIndex/baseVertex/baseInstance), so terrain.vsh is untouched. Dispatch
 // is indirect from the finalize-written size; over-dispatched invocations
-// exit on the queue bound. Cubes beyond MAX_QUADS_PER_COMMAND quads continue
-// in consecutive commands (chunk loop, mirroring AllvrRenderer.draw's split).
+// exit on the queue bounds. Nodes are consumed phase-1 (last-frame visible)
+// first, then phase-2 (newly visible) — the temporal command ordering of the
+// two-phase occlusion scheme (doc §9.2): the known-visible depth lands before
+// the new segments rasterize. Cubes beyond MAX_QUADS_PER_COMMAND quads
+// continue in consecutive commands.
+#pragma cmi_include chunks/node_common.glsl
+
 layout(local_size_x = 64) in;
 
-struct Node {
-    uvec4 a; // position packed / quadStart / childPtr
-    uvec4 b; // quadCount / visibleFrameId / lastRequestFrame / slot
-};
-layout(std430, binding = BIND_NODES) readonly buffer Nodes {
-    Node nodes[];
-};
 layout(std430, binding = BIND_QUEUE) readonly buffer Queue {
-    uint queue[]; // [0] = atomic counter, [1+i] = node index
+    uint queue[]; // [0] p1 count, [1] p2 count, [2..] p1, [2+CAP..] p2
 };
 layout(std430, binding = BIND_CMD_COUNT) buffer CmdCount {
     uint cmdCount;
@@ -25,12 +23,20 @@ layout(std430, binding = BIND_COMMANDS) writeonly buffer DrawCmds {
 
 void main() {
     uint id = gl_GlobalInvocationID.x;
-    // counter can transiently exceed QUEUE_CAPACITY (traversal adds before the
-    // cap check) — clamp so the over-dispatch can never index past the queue
-    if (id >= min(queue[0], uint(QUEUE_CAPACITY))) {
-        return;
+    uint p1 = min(queue[0], uint(QUEUE_CAPACITY));
+    uint p2 = min(queue[1], uint(QUEUE_CAPACITY));
+    uint nodeIdx;
+    if (id < p1) {
+        nodeIdx = queue[2u + id];
+    } else {
+        uint id2 = id - p1;
+        if (id2 >= p2) {
+            return; // over-dispatch guard
+        }
+        nodeIdx = queue[2u + uint(QUEUE_CAPACITY) + id2];
     }
-    Node n = nodes[queue[1u + id]];
+
+    Node n = nodes[nodeIdx];
     uint quadStart = n.a.z;
     uint quadCount = n.b.x;
     uint slot = n.b.w;

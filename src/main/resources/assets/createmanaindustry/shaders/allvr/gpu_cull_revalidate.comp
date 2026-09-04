@@ -1,0 +1,35 @@
+// ALLVR phase-1 revalidation (doc §9.2 two-phase tail): after this frame's
+// terrain draw, the fresh HiZ pyramid is built; this kernel re-tests the
+// nodes that rendered unconditionally as phase-1 (stamped lastFrameId). A
+// node the fresh pyramid occludes loses its stamp — it drops to the phase-2
+// (tested) segment next frame, so steady-state occlusion still culls island
+// backs despite the phase-1 bypass. Phase-2 nodes carry the current frameId
+// and are skipped (they were HiZ-tested before drawing).
+#pragma cmi_include chunks/node_common.glsl
+#pragma cmi_include chunks/hiz_test.glsl
+
+layout(local_size_x = 64) in;
+
+uniform ivec3 uCamInt;
+uniform uint uFrameId;
+uniform uint uLastFrameId;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= nodes.length()) {
+        return;
+    }
+    Node n = nodes[idx];
+    if (!nodeLive(n)) {
+        return;
+    }
+    if (n.b.y != uLastFrameId) {
+        return; // not a phase-1 member this frame
+    }
+    uint level = nodeLevel(n);
+    ivec3 extent = ivec3(int(32u << level));
+    ivec3 relOrigin = nodeAbsOrigin(n) - uCamInt;
+    if (allvrHizOccluded(relOrigin, extent)) {
+        nodes[idx].b.y = 0u; // drops out of phase-1 next frame
+    }
+}

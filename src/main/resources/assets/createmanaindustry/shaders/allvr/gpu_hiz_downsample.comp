@@ -1,0 +1,27 @@
+// ALLVR HiZ chain step (doc §9.2): MAX-downsamples mip L-1 into mip L. The
+// renderer loops the levels CPU-side, rebinding the two image units and
+// updating uSrcSize (the DEST dims of this level) + uSrcDims (the SOURCE
+// dims, for the odd-size clamp) per dispatch.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(r32f, binding = 0) readonly uniform image2D uSrc;
+layout(r32f, binding = 1) writeonly uniform image2D uDest;
+uniform vec2 uSrcDims; // source (previous level) texel dims, for clamping
+uniform vec2 uDestSize; // destination (this level) texel dims, dispatch guard
+
+void main() {
+    ivec2 outCoord = ivec2(gl_GlobalInvocationID.xy);
+    if (outCoord.x >= int(uDestSize.x) || outCoord.y >= int(uDestSize.y)) {
+        return;
+    }
+    ivec2 quadBase = ivec2(2) * outCoord;
+    ivec2 s0 = min(quadBase, ivec2(uSrcDims) - 1);
+    ivec2 s1 = min(quadBase + ivec2(1, 0), ivec2(uSrcDims) - 1);
+    ivec2 s2 = min(quadBase + ivec2(0, 1), ivec2(uSrcDims) - 1);
+    ivec2 s3 = min(quadBase + ivec2(1, 1), ivec2(uSrcDims) - 1);
+    float d = imageLoad(uSrc, s0).r;
+    d = max(d, imageLoad(uSrc, s1).r);
+    d = max(d, imageLoad(uSrc, s2).r);
+    d = max(d, imageLoad(uSrc, s3).r);
+    imageStore(uDest, outCoord, vec4(d));
+}

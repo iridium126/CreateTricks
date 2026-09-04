@@ -31,6 +31,14 @@ import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrCubePacke
  */
 public final class AllvrClientCubeCache {
 
+    /**
+     * Guards the cube map and cube contents. Main-thread writers (apply /
+     * forget / setBlock) and the mesher worker's snapshot reads both hold it —
+     * {@code LevelChunkSection} objects are not thread-safe against
+     * concurrent writes. Held briefly; no GL or world access inside.
+     */
+    public static final Object LOCK = new Object();
+
     private static ClientLevel level;
     private static final Long2ObjectOpenHashMap<AllvrCube> cubes = new Long2ObjectOpenHashMap<>();
 
@@ -53,7 +61,10 @@ public final class AllvrClientCubeCache {
         }
         level = clientLevel;
         AllvrCube cube = packet.decodeCube(clientLevel.registryAccess());
-        cubes.put(packet.cubePos(), cube);
+        synchronized (LOCK) {
+            cubes.put(packet.cubePos(), cube);
+        }
+        com.iridium126.createmanaindustry.client.dimension.render.AllvrRenderer.INSTANCE.onCubeApplied(packet.cubePos());
         if (CreateManaIndustry.LOGGER.isDebugEnabled()) {
             CreateManaIndustry.LOGGER.debug("[Allvr] cube {} streamed ({} bytes, {} cubes cached)",
                 cube.getPos(), packet.payload().length, cubes.size());
@@ -61,7 +72,17 @@ public final class AllvrClientCubeCache {
     }
 
     public static void forgetCube(long cubePos) {
-        cubes.remove(cubePos);
+        synchronized (LOCK) {
+            cubes.remove(cubePos);
+        }
+        com.iridium126.createmanaindustry.client.dimension.render.AllvrRenderer.INSTANCE.onCubeForgotten(cubePos);
+    }
+
+    /** The cached cube at a position's cube, or null (never generates). */
+    public static AllvrCube peekCube(BlockPos pos) {
+        synchronized (LOCK) {
+            return cubes.get(com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos.asLong(pos));
+        }
     }
 
     /**
@@ -82,26 +103,32 @@ public final class AllvrClientCubeCache {
         if (clientLevel == null || !com.iridium126.createmanaindustry.dimension.AllvrDimensionLimits.isInBounds(pos)) {
             return false;
         }
-        AllvrCube cube = cubes.get(com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos.asLong(pos));
-        if (cube == null) {
-            return false;
-        }
-        pos = pos.immutable();
-        BlockState oldState = cube.setBlockState(pos, newState, false);
-        if (oldState == null) {
-            return false;
-        }
+        AllvrCube cube;
+        BlockState oldState;
+        synchronized (LOCK) {
+            cube = cubes.get(com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos.asLong(pos));
+            if (cube == null) {
+                return false;
+            }
+            pos = pos.immutable();
+            oldState = cube.setBlockState(pos, newState, false);
+            if (oldState == null) {
+                return false;
+            }
+            updateBlockEntity(clientLevel, cube, pos, oldState, newState);
 
-        updateBlockEntity(clientLevel, cube, pos, oldState, newState);
-
-        int oldEmission = oldState.getLightEmission(clientLevel, pos);
-        int newEmission = newState.getLightEmission(clientLevel, pos);
-        if (oldEmission > 0) {
-            cube.removeEmitter(pos);
+            int oldEmission = oldState.getLightEmission(clientLevel, pos);
+            int newEmission = newState.getLightEmission(clientLevel, pos);
+            if (oldEmission > 0) {
+                cube.removeEmitter(pos);
+            }
+            if (newEmission > 0) {
+                cube.putEmitter(pos, newEmission);
+            }
         }
-        if (newEmission > 0) {
-            cube.putEmitter(pos, newEmission);
-        }
+        // re-entrant LOCK acquisitions below (recursive setBlock via neighbour
+        // shape updates) are safe — Java monitors are reentrant
+        com.iridium126.createmanaindustry.client.dimension.render.AllvrRenderer.INSTANCE.onBlockChanged(pos);
 
         // mirror of Level#markAndNotifyBlock, minus renderer notification —
         // cubes have no vanilla sections to re-render (ALLVR remesh, phase 3)

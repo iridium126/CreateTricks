@@ -74,6 +74,7 @@ public class CreateManaIndustry {
     public static boolean VEIL_ACTIVE = false;
     public static boolean ARS_ACTIVE = false;
     public static boolean IRISVEIL_ACTIVE = false;
+    public static boolean IRIS_ACTIVE = false;
 
     public static final CreateRegistrate REGISTRATE = CreateRegistrate.create(MODID);
 
@@ -99,6 +100,7 @@ public class CreateManaIndustry {
         VEIL_ACTIVE = ModList.get().isLoaded("veil");
         ARS_ACTIVE = ModList.get().isLoaded("ars_nouveau");
         IRISVEIL_ACTIVE = ModList.get().isLoaded("irisveil");
+        IRIS_ACTIVE = ModList.get().isLoaded("iris");
 
         REGISTRATE.registerEventListeners(modEventBus);
         modEventBus.addListener(CMICapabilities::register);

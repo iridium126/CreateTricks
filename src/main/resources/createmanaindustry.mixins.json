@@ -46,6 +46,9 @@
   ],
   "client": [
     "allvr.AllvrClientLevelMixin",
+    "allvr.AllvrRenderSectionLayerMixin",
+    "allvr.AllvrGetLightColorMixin",
+    "sodium.AllvrSodiumTerrainMixin",
     "render.LevelRendererBlockEntitiesMixin",
     "render.CachedBuffersMixin",
     "render.ModelsMixin",

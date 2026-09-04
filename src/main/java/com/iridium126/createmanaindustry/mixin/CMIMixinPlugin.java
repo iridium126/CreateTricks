@@ -41,6 +41,7 @@ public class CMIMixinPlugin implements IMixinConfigPlugin {
     private static final String HEX_MOD_ID = "hexcasting";
     private static final String IRIS_MOD_ID = "iris";
     private static final String IRISVEIL_MOD_ID = "irisveil";
+    private static final String SODIUM_MOD_ID = "sodium";
 
     @Override
     public void onLoad(String mixinPackage) {}
@@ -77,6 +78,11 @@ public class CMIMixinPlugin implements IMixinConfigPlugin {
         // so loading implies everything they target is present
         if (mixinClassName.contains(".irisveil."))
             return isLoaded(IRISVEIL_MOD_ID);
+
+        // Allay-dimension sodium terrain disable — string mixin targets, no
+        // compile dependency; only applies where sodium is actually installed
+        if (mixinClassName.contains(".sodium."))
+            return isLoaded(SODIUM_MOD_ID);
 
         return true;
     }

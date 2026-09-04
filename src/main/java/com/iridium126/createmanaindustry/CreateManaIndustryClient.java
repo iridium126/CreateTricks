@@ -73,6 +73,9 @@ public class CreateManaIndustryClient {
         // NB: Stage is a plain class of constants (not an enum) in this NeoForge
         // version, so stage dispatch must use identity comparison, not switch.
         var stage = event.getStage();
+        // ALLVR terrain: AFTER_SKY normally, AFTER_LEVEL under an active iris
+        // pack (stage-adaptive coexistence, chosen inside the renderer).
+        com.iridium126.createmanaindustry.client.dimension.render.AllvrRenderer.INSTANCE.onRenderStage(event);
         if (stage == RenderLevelStageEvent.Stage.AFTER_SKY) {
             CMIParticleEngine.INSTANCE.beginFrame(event.getCamera(),
                     event.getModelViewMatrix(), event.getProjectionMatrix(), event.getPartialTick());
@@ -176,6 +179,8 @@ public class CreateManaIndustryClient {
             // Allay-dimension streamed cubes die with the level (dimension
             // switch or logout); the server restarts the stream on re-entry.
             com.iridium126.createmanaindustry.client.dimension.AllvrClientCubeCache.clear();
+            // and the renderer-side cube geometry (arena ranges + slots) with them
+            com.iridium126.createmanaindustry.client.dimension.render.AllvrRenderer.INSTANCE.dropLevel();
             // The particle engine is self-hosted GL — reset regardless of Veil.
             // The reset must be SYNCHRONOUS here (NeoForge posts Unload inside
             // setLevel, BEFORE the dimension loading screen): the old queued

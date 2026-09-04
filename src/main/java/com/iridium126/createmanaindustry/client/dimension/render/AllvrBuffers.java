@@ -195,11 +195,50 @@ public final class AllvrBuffers {
         return start;
     }
 
+    /** Same test as {@link #allocRange}'s success condition: a contiguous free
+     *  range, or untouched tail headroom, of at least {@code size} quads.
+     *  {@code allocRange} can still fail after a true return only if the arena
+     *  changed in between — the deferred-retry path in {@code AllvrRenderer}
+     *  uses this to avoid retry-spin under fragmentation. */
+    public boolean canFit(long size) {
+        for (long[] r : this.freeRanges) {
+            if (r[1] >= size) {
+                return true;
+            }
+        }
+        return this.arenaUsed + size <= this.arenaQuads;
+    }
+
+    /** Frees a range, coalescing with adjacent free ranges and reclaiming the
+     *  bump-pointer tail — without this, cube remesh churn fragments the arena
+     *  until even single-cube allocations fail. */
     public void freeRange(int start, int size) {
         if (size <= 0) {
             return;
         }
-        this.freeRanges.add(new long[] {start, size});
+        long end = start + (long) size;
+        for (int i = 0; i < this.freeRanges.size(); ) {
+            long[] r = this.freeRanges.get(i);
+            if (r[0] + r[1] == start) {
+                // adjacent range ends where this begins — absorb it
+                start = (int) r[0];
+                size += (int) r[1];
+                this.freeRanges.remove(i);
+            } else if (r[0] == end) {
+                // this ends where the adjacent range begins — absorb it
+                end = r[0] + r[1];
+                size += (int) r[1];
+                this.freeRanges.remove(i);
+            } else {
+                i++;
+            }
+        }
+        if (end == this.arenaUsed) {
+            // touches the unallocated tail — shrink it instead of tracking
+            this.arenaUsed = start;
+        } else {
+            this.freeRanges.add(new long[] {start, size});
+        }
     }
 
     /** Uploads {@code quads} at arena offset {@code start} (render thread). */

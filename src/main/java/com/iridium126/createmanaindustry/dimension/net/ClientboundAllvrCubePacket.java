@@ -10,6 +10,7 @@ import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
@@ -96,7 +97,7 @@ public record ClientboundAllvrCubePacket(long cubePos, byte[] payload) implement
     }
 
     /** Client-side decode into a fresh {@link AllvrCube} (main thread). */
-    public AllvrCube decodeCube(RegistryAccess registryAccess) {
+    public AllvrCube decodeCube(Level level, RegistryAccess registryAccess) {
         AllvrCubePos pos = AllvrCubePos.fromLong(cubePos);
         AllvrCube cube = new AllvrCube(pos, registryAccess.registryOrThrow(Registries.BIOME));
         FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.wrappedBuffer(payload));
@@ -116,10 +117,14 @@ public record ClientboundAllvrCubePacket(long cubePos, byte[] payload) implement
             if (state.getBlock() instanceof net.minecraft.world.level.block.EntityBlock entityBlock) {
                 BlockEntity be = entityBlock.newBlockEntity(worldPos, state);
                 if (be != null) {
+                    be.setLevel(level);
                     if (tag != null) {
                         be.loadWithComponents(tag, registryAccess);
                     }
                     cube.putBlockEntity(worldPos, be);
+                    // bind the ticker for the streamed state (the vanilla chunk
+                    // packet path does the same for its BEs)
+                    cube.updateBlockEntity(level, worldPos, state);
                 }
             }
         }

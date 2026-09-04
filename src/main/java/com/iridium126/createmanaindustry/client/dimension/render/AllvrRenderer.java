@@ -58,12 +58,19 @@ public final class AllvrRenderer {
     private boolean warnedPack;
     private int loggedMeshResults;
     private long lastStatsLogMillis;
+    /** Cubes currently holding a deferred (arena-starved) mesh stream. */
+    private int deferredCount;
+    private long lastStarveWarnMillis;
 
     private static final class Cube {
         int slot = -1;
         int quadStart = -1;
         int quadCount = 0;
         boolean needsRemesh;
+        /** Mesh result held when the quad arena couldn't fit it — retried by
+         *  {@link #retryDeferred} once {@code AllvrBuffers#canFit} passes, so
+         *  an exhausted arena defers instead of dropping the cube forever. */
+        long[] deferredQuads;
     }
 
     // ------------------------------------------------------------------
@@ -145,6 +152,9 @@ public final class AllvrRenderer {
         if (rc == null) {
             return;
         }
+        if (rc.deferredQuads != null) {
+            this.deferredCount--;
+        }
         if (rc.quadStart >= 0) {
             this.buffers.freeRange(rc.quadStart, rc.quadCount);
         }
@@ -187,6 +197,7 @@ public final class AllvrRenderer {
     public void dropLevel() {
         this.renderCubes.clear();
         this.pending.clear();
+        this.deferredCount = 0;
         this.buffers.reset();
         AllvrMesherWorker.clearQueues();
     }
@@ -239,24 +250,71 @@ public final class AllvrRenderer {
                 }
                 int start = this.buffers.allocRange(result.quads().length);
                 if (start < 0) {
-                    com.iridium126.createmanaindustry.CreateManaIndustry.LOGGER
-                        .warn("[Allvr] quad arena exhausted, cube {} deferred", AllvrCubePos.fromLong(key));
-                } else {
-                    this.buffers.uploadQuads(start, result.quads());
-                    rc.quadStart = start;
-                    rc.quadCount = result.quads().length;
-                    // first mesh: neighbors meshed earlier may have culled faces
-                    // against this cube while it was still void air
-                    if (rc.slot >= 0 && !this.sawFirstMesh.contains(key)) {
-                        this.sawFirstMesh.add(key);
-                        this.dirtyAllNeighbors(key);
+                    // arena full: hold the stream and retry when space frees up —
+                    // dropping it left the cube unrendered until some later block
+                    // change happened to re-trigger a remesh
+                    if (rc.deferredQuads == null) {
+                        this.deferredCount++;
                     }
+                    rc.deferredQuads = result.quads();
+                    long now = System.currentTimeMillis();
+                    if (now - this.lastStarveWarnMillis > 5000) {
+                        this.lastStarveWarnMillis = now;
+                        CreateManaIndustry.LOGGER.warn("[Allvr] quad arena full — {} cube(s) deferred",
+                            this.deferredCount);
+                    }
+                } else {
+                    if (rc.deferredQuads != null) {
+                        // a fresher stream just landed — the stale one is superseded
+                        rc.deferredQuads = null;
+                        this.deferredCount--;
+                    }
+                    this.assignQuads(key, rc, start, result.quads());
                 }
             }
             if (rc.needsRemesh) {
                 rc.needsRemesh = false;
                 this.submit(key);
             }
+        }
+        this.retryDeferred();
+    }
+
+    private void assignQuads(long key, Cube rc, int start, long[] quads) {
+        this.buffers.uploadQuads(start, quads);
+        rc.quadStart = start;
+        rc.quadCount = quads.length;
+        // first mesh: neighbors meshed earlier may have culled faces
+        // against this cube while it was still void air
+        if (rc.slot >= 0 && !this.sawFirstMesh.contains(key)) {
+            this.sawFirstMesh.add(key);
+            this.dirtyAllNeighbors(key);
+        }
+    }
+
+    /** Uploads deferred mesh results once the arena can actually fit them.
+     *  {@code canFit} mirrors {@code allocRange}'s success test, so a
+     *  fragmented arena waits for real contiguous space instead of
+     *  spin-remeshing the same cube every frame. */
+    private void retryDeferred() {
+        if (this.deferredCount == 0) {
+            return;
+        }
+        Iterator<Long2ObjectOpenHashMap.Entry<Cube>> it = this.renderCubes.long2ObjectEntrySet().fastIterator();
+        while (it.hasNext()) {
+            Long2ObjectOpenHashMap.Entry<Cube> e = it.next();
+            Cube rc = e.getValue();
+            if (rc.deferredQuads == null || !this.buffers.canFit(rc.deferredQuads.length)) {
+                continue;
+            }
+            int start = this.buffers.allocRange(rc.deferredQuads.length);
+            if (start < 0) {
+                continue; // arena changed between canFit and alloc — retry next frame
+            }
+            long[] quads = rc.deferredQuads;
+            rc.deferredQuads = null;
+            this.deferredCount--;
+            this.assignQuads(e.getLongKey(), rc, start, quads);
         }
     }
 

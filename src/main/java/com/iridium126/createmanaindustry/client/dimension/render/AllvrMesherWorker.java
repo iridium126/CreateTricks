@@ -3,18 +3,17 @@ package com.iridium126.createmanaindustry.client.dimension.render;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
-import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.state.BlockState;
 
 import com.iridium126.createmanaindustry.client.dimension.AllvrClientCubeCache;
-import com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos;
 
 /**
  * Single daemon worker that turns streamed cubes into greedy-meshed quad
- * streams (doc §8.2 M0). Jobs are cube keys; the snapshot (34³ states +
- * occluder flags) is built under the cube cache's lock so worker reads never
- * race main-thread applies/writes, then meshed outside the lock. Results are
- * drained by the render thread in {@code AllvrRenderer}.
+ * streams (doc §8.2 M0). Jobs are cube keys; the snapshot is taken through
+ * {@link AllvrClientCubeCache#snapshotForMesher} — the lock is held only for
+ * the neighborhood lookup, eight private section copies and the padding
+ * strips, so main-thread applies/writes never queue behind a full snapshot.
+ * Results are drained by the render thread in {@code AllvrRenderer}.
  * <p>
  * V0 keeps one worker: a burst of 24 streamed cubes/tick meshes at a few ms
  * per cube, so results lag the stream slightly during load spikes — load
@@ -67,13 +66,12 @@ public final class AllvrMesherWorker {
     }
 
     private static void run() {
-        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         while (running) {
             Long key = null;
             try {
                 key = JOBS.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS);
                 if (key != null) {
-                    process(key, pos);
+                    process(key);
                 }
             } catch (InterruptedException ignored) {
                 return;
@@ -88,31 +86,14 @@ public final class AllvrMesherWorker {
         }
     }
 
-    private static void process(long key, BlockPos.MutableBlockPos pos) {
-        AllvrCubePos cpos = AllvrCubePos.fromLong(key);
-        int bx = cpos.minBlockX();
-        int by = cpos.minBlockY();
-        int bz = cpos.minBlockZ();
+    private static void process(long key) {
         BlockState[] states = new BlockState[AllvrMesher.PADDED * AllvrMesher.PADDED * AllvrMesher.PADDED];
         byte[] occludes = new byte[states.length];
-
-        // Snapshot under the cache lock: worker reads must not race main-thread
-        // apply/forget/setBlock (the lock is also held by those writers).
-        synchronized (AllvrClientCubeCache.LOCK) {
-            int i = 0;
-            for (int y = -1; y <= AllvrMesher.CUBE; y++) {
-                for (int z = -1; z <= AllvrMesher.CUBE; z++) {
-                    for (int x = -1; x <= AllvrMesher.CUBE; x++) {
-                        BlockState state = AllvrClientCubeCache.getBlockState(
-                            pos.set(bx + x, by + y, bz + z));
-                        states[i] = state;
-                        occludes[i] = AllvrMesher.occludesAt(state);
-                        i++;
-                    }
-                }
-            }
-        }
-
+        // Snapshot via the cache's copy-based path: the lock is held only for
+        // the neighborhood lookup + section copies + padding strips; the 32³
+        // interior is filled outside it (the old per-voxel scan held the lock
+        // for the full 39k reads and stalled main-thread cube writes).
+        AllvrClientCubeCache.snapshotForMesher(key, states, occludes);
         RESULTS.add(new MeshResult(key, AllvrMesher.build(states, occludes)));
     }
 

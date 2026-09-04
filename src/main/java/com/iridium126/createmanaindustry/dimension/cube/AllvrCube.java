@@ -6,11 +6,15 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityTicker;
+import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.chunk.PalettedContainer;
 
 /**
  * A 32×32×32 cube — the allay dimension's unit of block data, mirroring
@@ -43,6 +47,15 @@ public final class AllvrCube {
      * stone/dirt/grass, so generated cubes start without emitters.
      */
     private final Int2IntOpenHashMap emitters = new Int2IntOpenHashMap();
+    /**
+     * Block-entity tickers keyed by the 15-bit cell index, resolved from
+     * {@code BlockState#getTicker} at creation/rebind time — the same caching
+     * vanilla {@code LevelChunk.TickingTracker} performs. Driven by
+     * {@link #tickBlockEntities} from the server cube map and the client cache
+     * (cubes are outside the vanilla {@code Level#tickBlockEntities} loop, whose
+     * per-chunk {@code TickingTracker} we deliberately do not touch).
+     */
+    private final Int2ObjectOpenHashMap<BlockEntityTicker> tickers = new Int2ObjectOpenHashMap<>();
 
     public AllvrCube(AllvrCubePos pos, Registry<Biome> biomeRegistry) {
         this.pos = pos;
@@ -103,6 +116,38 @@ public final class AllvrCube {
             | AllvrCoords.blockToLocal(worldPos.getX());
     }
 
+    /**
+     * Vanilla-mirror block-entity bookkeeping for a setBlock write (the
+     * {@code LevelChunk#setBlockState} semantics our first version lacked):
+     * a different-type existing BE is removed and {@code setRemoved()}; the
+     * <b>same-type</b> existing BE is kept — its NBT survives state-only
+     * changes (chest orientation, open state, …) exactly like vanilla; a new
+     * {@code EntityBlock} state creates one. The ticker is bound to the
+     * written state in every kept/created case.
+     */
+    public void updateBlockEntity(Level level, BlockPos pos, BlockState newState) {
+        int cell = localIndex(pos);
+        BlockEntity existing = this.blockEntities.get(cell);
+        if (existing != null && !existing.getType().isValid(newState)) {
+            this.blockEntities.remove(cell);
+            this.tickers.remove(cell);
+            existing.setRemoved();
+            existing = null;
+        }
+        if (existing == null && newState.hasBlockEntity()
+            && newState.getBlock() instanceof net.minecraft.world.level.block.EntityBlock entityBlock) {
+            BlockEntity be = entityBlock.newBlockEntity(pos, newState);
+            if (be != null) {
+                be.setLevel(level);
+                this.blockEntities.put(cell, be);
+            }
+            existing = be;
+        }
+        if (existing != null) {
+            this.rebindTicker(level, pos, newState, existing);
+        }
+    }
+
     public BlockEntity getBlockEntity(BlockPos worldPos) {
         return blockEntities.get(localIndex(worldPos));
     }
@@ -112,11 +157,52 @@ public final class AllvrCube {
     }
 
     public BlockEntity removeBlockEntity(BlockPos worldPos) {
+        this.tickers.remove(localIndex(worldPos));
         return blockEntities.remove(localIndex(worldPos));
     }
 
     public Int2ObjectOpenHashMap<BlockEntity> getBlockEntities() {
         return blockEntities;
+    }
+
+    public boolean hasBlockEntities() {
+        return !blockEntities.isEmpty();
+    }
+
+    /**
+     * Ticks this cube's block entities — the per-cube slice of the vanilla
+     * {@code Level#tickBlockEntities} loop: the cached rebindable ticker runs
+     * against the BE's current state, removed BEs are skipped. Iterates a key
+     * snapshot because tickers may add/remove BEs mid-tick (vanilla defers its
+     * removals through a queue for the same reason).
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public void tickBlockEntities(Level level) {
+        if (this.blockEntities.isEmpty()) {
+            return;
+        }
+        for (int cell : this.blockEntities.keySet().toIntArray()) {
+            BlockEntity be = this.blockEntities.get(cell);
+            if (be == null || be.isRemoved()) {
+                continue;
+            }
+            BlockEntityTicker ticker = this.tickers.get(cell);
+            if (ticker == null) {
+                continue;
+            }
+            BlockPos pos = be.getBlockPos();
+            ticker.tick(level, pos, this.getBlockState(pos), be);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T extends BlockEntity> void rebindTicker(Level level, BlockPos pos, BlockState state, T be) {
+        BlockEntityTicker<T> ticker = state.getTicker(level, (BlockEntityType<T>) be.getType());
+        if (ticker == null) {
+            this.tickers.remove(localIndex(pos));
+        } else {
+            this.tickers.put(localIndex(pos), ticker);
+        }
     }
 
     // ---- light emitters ----------------------------------------------------

@@ -19,6 +19,7 @@ import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterColorHandlersEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.client.event.InputEvent;
@@ -82,6 +83,21 @@ public class CreateManaIndustryClient {
         } else if (stage == RenderLevelStageEvent.Stage.AFTER_LEVEL) {
             CMIParticleEngine.INSTANCE.endFrame(event.getCamera(),
                     event.getModelViewMatrix(), event.getProjectionMatrix());
+        }
+    }
+
+    /**
+     * Cube block-entity ticking on the client (Create's rotation/mixer
+     * animations are client-BE driven; the server half runs from
+     * {@code AllvrCubeMap#tick}). Vanilla also ticks BEs client-side, so this
+     * mirrors it for cubes, which sit outside the vanilla BE tick loop.
+     */
+    @SubscribeEvent
+    private static void onClientTick(ClientTickEvent.Post event) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level != null
+            && mc.level.dimension() == com.iridium126.createmanaindustry.dimension.AllvrDimensions.ALLAY_LEVEL) {
+            com.iridium126.createmanaindustry.client.dimension.AllvrClientCubeCache.tickBlockEntities();
         }
     }
 

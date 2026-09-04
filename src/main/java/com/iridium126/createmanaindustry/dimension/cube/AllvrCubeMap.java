@@ -59,6 +59,8 @@ public final class AllvrCubeMap {
     private static final int SEND_BUDGET_PER_TICK = 24;
     /** Shell-load time budget per tick. */
     private static final long TICK_BUDGET_NANOS = 3_000_000L;
+    /** Far-cube unload scan cadence (ticks). */
+    private static final int UNLOAD_SCAN_TICKS = 40;
     /**
      * Session cube cap. Uniform island-interior cubes are a few hundred bytes
      * but shell cubes carry real section data; past the cap only cubes within
@@ -71,8 +73,15 @@ public final class AllvrCubeMap {
     private final Registry<net.minecraft.world.level.biome.Biome> biomeRegistry;
     private final AllvrIslandFieldGenerator generator;
     private final Long2ObjectOpenHashMap<AllvrCube> cubes = new Long2ObjectOpenHashMap<>();
+    /**
+     * Cubes that hold block entities — the ticking worklist (kept tiny: most
+     * cubes are pure terrain). Vanilla's per-chunk {@code TickingTracker} is
+     * deliberately not involved; see {@link #tickBlockEntities}.
+     */
+    private final Long2ObjectOpenHashMap<AllvrCube> beCubes = new Long2ObjectOpenHashMap<>();
     private final Map<UUID, Subscription> subscriptions = new java.util.HashMap<>();
     private boolean loggedCapWarning;
+    private int unloadScanTicks;
 
     /** Per-player client subscription state: which cube keys have been streamed. */
     private static final class Subscription {
@@ -124,7 +133,7 @@ public final class AllvrCubeMap {
             return false;
         }
 
-        updateBlockEntity(cube, pos, oldState, newState);
+        updateBlockEntity(cube, pos, newState);
 
         // light emitter tracking (wire "light source events"; consumed by the
         // phase-3 synthetic light sampler)
@@ -174,19 +183,18 @@ public final class AllvrCubeMap {
         }
     }
 
-    private void updateBlockEntity(AllvrCube cube, BlockPos pos, BlockState oldState, BlockState newState) {
-        if (oldState.hasBlockEntity() && !newState.hasBlockEntity()) {
-            BlockEntity be = cube.removeBlockEntity(pos);
-            if (be != null) {
-                be.setRemoved();
-            }
-        }
-        if (newState.hasBlockEntity() && newState.getBlock() instanceof net.minecraft.world.level.block.EntityBlock entityBlock) {
-            BlockEntity be = entityBlock.newBlockEntity(pos, newState);
-            if (be != null) {
-                be.setLevel(level);
-                cube.putBlockEntity(pos, be);
-            }
+    private void updateBlockEntity(AllvrCube cube, BlockPos pos, BlockState newState) {
+        cube.updateBlockEntity(level, pos, newState);
+        refreshBeCube(cube);
+    }
+
+    /** Keeps the block-entity worklist in step with a cube's BE set. */
+    private void refreshBeCube(AllvrCube cube) {
+        long key = cube.getPos().asLong();
+        if (cube.hasBlockEntities()) {
+            this.beCubes.put(key, cube);
+        } else {
+            this.beCubes.remove(key);
         }
     }
 
@@ -299,6 +307,84 @@ public final class AllvrCubeMap {
             }
 
             forgetOutOfRange(player, pc, sub);
+        }
+
+        this.tickBlockEntities(players);
+        if (++this.unloadScanTicks >= UNLOAD_SCAN_TICKS) {
+            this.unloadScanTicks = 0;
+            this.unloadFarCubes(players);
+        }
+    }
+
+    /**
+     * Server block-entity ticking — the cube analogue of
+     * {@code Level#tickBlockEntities} (cube BEs are invisible to vanilla's
+     * per-chunk TickingTracker). Vanilla parity: every game tick, no budget
+     * (a skipped tick slows machines and breaks their determinism). A cube
+     * ticks only while within the shell radius of some player — the
+     * unload-distance equivalent of vanilla's simulation-distance gating.
+     */
+    private void tickBlockEntities(List<ServerPlayer> players) {
+        if (this.beCubes.isEmpty()) {
+            return;
+        }
+        // snapshot: a ticker can setBlock (adding/removing BEs → registry writes)
+        for (AllvrCube cube : this.beCubes.values().toArray(new AllvrCube[0])) {
+            if (!cube.hasBlockEntities()) {
+                continue;
+            }
+            AllvrCubePos cpos = cube.getPos();
+            for (ServerPlayer player : players) {
+                if (chebyshev(AllvrCubePos.of(player.blockPosition()), cpos) <= GEN_RADIUS) {
+                    cube.tickBlockEntities(level);
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Cubes beyond every player's forget margins are dropped from memory.
+     * Phase-6 persistence does not exist yet, so player edits inside them are
+     * lost (the island regenerates from the seed on next access) — accepted
+     * known limitation, documented in the dev doc. No forget packets are sent
+     * here: {@link #forgetOutOfRange} uses the same radii, so any cube dropped
+     * here is already forgotten client-side.
+     */
+    private void unloadFarCubes(List<ServerPlayer> players) {
+        if (this.cubes.isEmpty()) {
+            return;
+        }
+        LongList unload = null;
+        LongIterator it = this.cubes.keySet().iterator();
+        while (it.hasNext()) {
+            long key = it.nextLong();
+            AllvrCubePos cpos = AllvrCubePos.fromLong(key);
+            boolean nearAnyPlayer = false;
+            for (ServerPlayer player : players) {
+                AllvrCubePos pc = AllvrCubePos.of(player.blockPosition());
+                if (Math.abs(cpos.getX() - pc.getX()) <= FORGET_XZ_RADIUS
+                    && Math.abs(cpos.getZ() - pc.getZ()) <= FORGET_XZ_RADIUS
+                    && Math.abs(cpos.getY() - pc.getY()) <= FORGET_Y_RADIUS) {
+                    nearAnyPlayer = true;
+                    break;
+                }
+            }
+            if (!nearAnyPlayer) {
+                if (unload == null) {
+                    unload = new LongArrayList();
+                }
+                unload.add(key);
+            }
+        }
+        if (unload != null) {
+            for (long key : unload) {
+                if (this.cubes.remove(key) != null) {
+                    this.beCubes.remove(key);
+                }
+            }
+            CreateManaIndustry.LOGGER.debug("[Allvr] unloaded {} far cubes ({} remain)",
+                unload.size(), this.cubes.size());
         }
     }
 

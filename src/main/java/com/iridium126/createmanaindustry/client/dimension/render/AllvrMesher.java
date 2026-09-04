@@ -27,7 +27,13 @@ import net.minecraft.world.level.block.state.BlockState;
 public final class AllvrMesher {
 
     public static final int CUBE = 32;
-    static final int PADDED = 34;
+    public static final int PADDED = 34;
+
+    /** Snapshot array index for local coords −1..32 per axis (shared with
+     *  {@code AllvrClientCubeCache#snapshotForMesher}). */
+    public static int paddedIndex(int x, int y, int z) {
+        return (y + 1) * (PADDED * PADDED) + (z + 1) * PADDED + (x + 1);
+    }
 
     /** [axis*2 + dir] → the face Direction (dir 0 = positive axis). Also the
      *  per-face material table order, shared with {@link AllvrRenderStateMap}
@@ -61,7 +67,7 @@ public final class AllvrMesher {
 
     /** Snapshot array index for local coords −1..32 per axis. */
     private static int idx(int x, int y, int z) {
-        return (y + 1) * (PADDED * PADDED) + (z + 1) * PADDED + (x + 1);
+        return paddedIndex(x, y, z);
     }
 
     private BlockState stateAt(int axisU, int axisV, int axisW, int u, int v, int w) {
@@ -188,8 +194,9 @@ public final class AllvrMesher {
         return AllvrRenderStateMap.entryOf(id).renderable ? id + 1 : 0;
     }
 
-    /** Precomputed per-voxel occluder flag used by the sweep. */
-    static byte occludesAt(BlockState state) {
+    /** Precomputed per-voxel occluder flag used by the sweep and the snapshot
+     *  builder. */
+    public static byte occludesAt(BlockState state) {
         if (!state.canOcclude()) {
             return 0;
         }

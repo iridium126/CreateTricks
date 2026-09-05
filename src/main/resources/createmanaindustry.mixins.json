@@ -52,7 +52,6 @@
     "allvr.AllvrRenderSectionLayerMixin",
     "allvr.AllvrGetLightColorMixin",
     "allvriris.AllvrIrisCreatePipelineMixin",
-    "allvriris.AllvrShaderPackMixin",
     "allvriris.AllvrProgramSetMixin",
     "allvriris.AllvrIrisPipelineMixin",
     "allvriris.accessor.AllvrIrisRenderingPipelineAccessor",

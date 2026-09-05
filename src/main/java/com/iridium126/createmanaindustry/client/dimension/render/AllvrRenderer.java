@@ -48,7 +48,7 @@ import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
  * without a resolvable voxy patch (or with the patched program unavailable) →
  * AFTER_LEVEL, self-lit after the composite blit (documented V0 coexistence
  * trade-off); pack-lit via the voxy patch (iris integration G2) →
- * AFTER_SOLID_BLOCKS — inside the gbuffer phase, so the draw lands in the
+ * AFTER_BLOCK_ENTITIES — inside the gbuffer phase, so the draw lands in the
  * pack's colortex targets before its deferred passes sample them
  * ({@link AllvrIrisFrameTarget} carries the pack-lit framebuffer).
  * <p>
@@ -144,19 +144,23 @@ public final class AllvrRenderer {
         RenderLevelStageEvent.Stage stage = event.getStage();
         // mode decision (grilling decision ⑧ fallback chain):
         //  1. pack-lit (patched): voxy.json patch function resolved + compiled →
-        //     AFTER_SOLID_BLOCKS, inside the gbuffer phase before the pack's
-        //     deferred passes sample the patch-written buffers (Photon)
+        //     AFTER_BLOCK_ENTITIES, inside the gbuffer phase before the pack's
+        //     deferred passes sample the patch-written buffers (Photon).
+        //     NOT AFTER_SOLID_BLOCKS — that stage dispatches from the tail of
+        //     renderSectionLayer, which this mod HEAD-cancels in the allay
+        //     dimension (vanilla terrain is ALLVR's job), so the event never
+        //     fires there (G2 smoke ⑤)
         //  2. albedo pass: voxy.json resolves but ships NO patch function
         //     (Complementary) — vanilla-gbuffer-mimicking albedo into the pack's
-        //     declared colortex, still at AFTER_SOLID_BLOCKS; the pack's own
-        //     deferred lighting shades our pixels like vanilla terrain
+        //     declared colortex, same stage; the pack's own deferred lighting
+        //     shades our pixels like vanilla terrain
         //  3. unpatched coexistence (no voxy.json / compile failure / switch
         //     off): AFTER_LEVEL, self-lit after the composite blit (V0 behavior)
         //  4. no pack: AFTER_SKY (vanilla window, byte-identical V0)
         boolean patched = data != null && this.shaders.patchedTerrain() != 0;
         boolean albedo = !patched && data != null && this.shaders.albedoTerrain() != 0;
         RenderLevelStageEvent.Stage chosen = patched || albedo
-            ? RenderLevelStageEvent.Stage.AFTER_SOLID_BLOCKS
+            ? RenderLevelStageEvent.Stage.AFTER_BLOCK_ENTITIES
             : packInUse ? RenderLevelStageEvent.Stage.AFTER_LEVEL
             : RenderLevelStageEvent.Stage.AFTER_SKY;
         if (stage != chosen) {

@@ -64,9 +64,13 @@ public final class AllvrVoxyPatch {
     /** voxy.json schema version both target packs ship ("version": 1). */
     private static final int PATCH_VERSION = 1;
     /**
-     * Value of the injected {@code #define VOXY} — matches voxy's
-     * SHADER_DEFINE_VERSION so packs cannot distinguish the two renderers and
-     * a co-installed voxy port produces byte-identical defines.
+     * Value voxy injects for the pack-global {@code #define VOXY} (its
+     * SHADER_DEFINE_VERSION). ALLVR does NOT inject this define on iris
+     * 1.8.14 — source preprocessing happens eagerly at pack load with
+     * ProgramSets shared across dimensions, so a per-dimension define is
+     * impossible and a global one would perturb other dimensions (R24):
+     * packs simply run their pre-voxy {@code #ifndef VOXY} branches. Kept as
+     * the contract value should a compile-time injection hook ever be built.
      */
     public static final int SHADER_DEFINE_VERSION = 2;
 
@@ -358,10 +362,14 @@ public final class AllvrVoxyPatch {
         try {
             patchText = sourceProvider.apply(directory.resolve("voxy.json"));
         } catch (Exception e) {
-            CreateManaIndustry.LOGGER.debug("[Allvr] no voxy.json in shader pack ({})", e.toString());
+            CreateManaIndustry.LOGGER.info("[Allvr] no voxy.json read at {} ({})", directory, e.toString());
             return null;
         }
         if (patchText == null || patchText.isBlank()) {
+            // usually: the pack file didn't make it into iris's include graph —
+            // the voxy source names are registered by AllvrShaderPackSourceNamesMixin
+            CreateManaIndustry.LOGGER.info("[Allvr] no voxy.json content at {} (provider returned {})",
+                directory, patchText == null ? "null" : "blank");
             return null;
         }
 
@@ -415,6 +423,7 @@ public final class AllvrVoxyPatch {
                 throw new IllegalStateException(
                     "voxy.json version mismatch: expected " + PATCH_VERSION + " got " + parsed.version);
             }
+            CreateManaIndustry.LOGGER.info("[Allvr] voxy.json parsed at {}", directory);
         } catch (Exception e) {
             CreateManaIndustry.LOGGER.error("[Allvr] failed to parse voxy.json — falling back to the unlit "
                 + "coexistence path for this pack", e);

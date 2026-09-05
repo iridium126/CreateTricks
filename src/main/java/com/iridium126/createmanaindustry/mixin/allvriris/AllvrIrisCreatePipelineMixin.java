@@ -14,12 +14,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * {@code Iris.createPipeline} is the single pipeline factory (wired into
  * {@code PipelineManager} as its {@code pipelineFactory}) and runs
  * synchronously on the calling thread, so a threadlocal set at HEAD survives
- * through the whole pipeline construction — including every ProgramSet source
- * read that flows into the Jcpp preprocessing where ALLVR's per-dimension
- * {@code VOXY} define is injected ({@link AllvrShaderPackMixin}). The state
- * itself lives in {@link AllvrIrisPipelineCapture}: mixin classes must keep
- * every non-injector member private, and state merged into the target would be
- * unreachable from the other mixins.
+ * through the whole pipeline construction — {@code AllvrIrisPipelineMixin}
+ * gates the allay-dimension data build on it. Pack-load-time work (ProgramSet
+ * construction, source preprocessing) happens BEFORE any pipeline exists on
+ * iris 1.8.14 and must not gate on this state. The state itself lives in
+ * {@link AllvrIrisPipelineCapture}: mixin classes must keep every non-injector
+ * member private, and state merged into the target would be unreachable from
+ * the other mixins.
  */
 @Mixin(value = Iris.class, remap = false)
 public abstract class AllvrIrisCreatePipelineMixin {

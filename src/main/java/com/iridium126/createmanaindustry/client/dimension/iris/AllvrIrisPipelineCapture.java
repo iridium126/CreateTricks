@@ -3,10 +3,14 @@ package com.iridium126.createmanaindustry.client.dimension.iris;
 /**
  * Shared state for the allay-dimension pipeline capture. Lives outside the
  * mixin package: mixin-registered packages are protected, so a non-mixin class
- * there cannot be loaded when the merged injector code references it. Both the
+ * there cannot be loaded when the merged injector code references it. The
  * {@code Iris.createPipeline} handlers ({@code AllvrIrisCreatePipelineMixin})
- * and the pack-side consumer ({@code AllvrShaderPackMixin}) share this single
- * threadlocal through one ordinary class.
+ * set it and the pipeline-side consumer ({@code AllvrIrisPipelineMixin}) reads
+ * it through this one ordinary class.
+ * <p>
+ * Note the capture window covers PIPELINE construction only — iris 1.8.14
+ * builds ProgramSets eagerly at pack load (before any pipeline exists), so
+ * pack-load-time work must not gate on this state.
  */
 public final class AllvrIrisPipelineCapture {
 

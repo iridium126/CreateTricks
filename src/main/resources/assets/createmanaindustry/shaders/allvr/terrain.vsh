@@ -54,10 +54,12 @@ void main() {
     uint u = (lo >> 13u) & 31u;
     uint v = (lo >> 18u) & 31u;
     uint w = (lo >> 23u) & 31u;
-    uint stateId = ((lo >> 28u) & 0xFFFFu) | (hi << 4u); // 16-bit id across the 36-bit boundary
-    // NOTE: id occupies bits 28..43 of the 64-bit word → low 4 bits in .x,
-    // high 12 in .y low bits. Bits 44..51 carry the mesher-baked light
-    // (sky in .y[12..15], block in .y[16..19], AllvrLightBaker).
+    // id occupies bits 28..43 of the 64-bit word → low 4 bits in .x[28..31],
+    // high 12 in .y[0..11]; .y[12..19] carry the mesher-baked light (sky/block)
+    // and MUST be masked out — an unmasked `hi << 4` folds them into the
+    // stateId and every sunlit face (sky=15) fetched a garbage state entry
+    // (renderable flag 0 → discarded: "top faces invisible" regression)
+    uint stateId = ((lo >> 28u) & 0xFu) | ((hi & 0xFFFu) << 4u);
 
     // (u,v) basis per (axis,dir) — the mesher chose them so u×v = the outward
     // face normal:

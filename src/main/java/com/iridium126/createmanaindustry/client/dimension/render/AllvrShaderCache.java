@@ -255,8 +255,12 @@ public final class AllvrShaderCache {
             vHeader.append("#define TAAU\n");
         }
         if (data.getUniforms() != null) {
+            // NB: layout() is the brace-wrapped member list WITHOUT the trailing
+            // semicolon — the uniform-block declaration needs it appended (voxy's
+            // same convention; missing it derails the parser into every following
+            // declaration)
             vHeader.append("layout(binding = UNIFORM_UBO_BINDING, std140) uniform ShaderUniformBindings ")
-                .append(data.getUniforms().layout()).append('\n');
+                .append(data.getUniforms().layout()).append(";\n");
         }
         vHeader.append("vec2 voxy_taaOffset() ").append(data.getTAAShift()).append('\n');
         return vHeader.toString();
@@ -288,7 +292,7 @@ public final class AllvrShaderCache {
         if (data.getUniforms() != null) {
             fHeader.append("layout(binding = ").append(UNIFORM_UBO_BINDING)
                 .append(", std140) uniform ShaderUniformBindings ")
-                .append(data.getUniforms().layout()).append('\n');
+                .append(data.getUniforms().layout()).append(";\n");
         }
         if (data.getImageSet() != null) {
             fHeader.append(data.getImageSet().layout());

@@ -1,6 +1,8 @@
 package com.iridium126.createmanaindustry.mixin.allvriris;
 
+import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisDataHolder;
+import com.iridium126.createmanaindustry.config.ClientConfig;
 import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisPipelineCapture;
 import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisPipelineData;
 import com.iridium126.createmanaindustry.client.dimension.iris.AllvrVoxyPatch;
@@ -47,16 +49,24 @@ public class AllvrIrisPipelineMixin implements IGetAllvrPatchData, IGetAllvrPipe
         target = "Lnet/irisshaders/iris/pipeline/transform/ShaderPrinter;resetPrintState()V"), remap = false)
     private void allvr$capturePatch(ProgramSet programSet, CallbackInfo ci) {
         this.allvr$patch = ((IGetAllvrPatchData) programSet).allvr$getPatchData();
+        CreateManaIndustry.LOGGER.info("[Allvr] pipeline ctor for {}: patch {}", System.identityHashCode(programSet),
+            this.allvr$patch != null ? "present" : "null");
     }
 
     @Inject(method = "<init>", at = @At(value = "INVOKE",
         target = "Lnet/irisshaders/iris/pipeline/IrisRenderingPipeline;createSetupComputes([Lnet/irisshaders/iris/shaderpack/programs/ComputeSource;Lnet/irisshaders/iris/shaderpack/programs/ProgramSet;Lnet/irisshaders/iris/shaderpack/texture/TextureStage;)[Lnet/irisshaders/iris/gl/program/ComputeProgram;"), remap = false)
     private void allvr$buildPipeline(ProgramSet programSet, CallbackInfo ci) {
-        // publish only the allay dimension's pipeline (the patch parse is
-        // dimension-gated the same way); a no-voxy.json pack publishes null so
-        // a stale entry from a previously loaded pack cannot survive
+        CreateManaIndustry.LOGGER.info("[Allvr] pipeline build gate: allayPipeline={} patch={}",
+            AllvrIrisPipelineCapture.isBuildingAllayPipeline(), this.allvr$patch != null ? "present" : "null");
+        // publish only the allay dimension's pipeline, and only with the
+        // integration enabled — this hook always runs after client configs
+        // load (pipelines build on world entry), so the config gate is safe
+        // here even though it froze the pack-load-time hooks (see
+        // AllvrProgramSetMixin / AllvrPackRenderTargetDirectivesMixin). A
+        // no-voxy.json pack publishes null so a stale entry from a previously
+        // loaded pack cannot survive.
         if (AllvrIrisPipelineCapture.isBuildingAllayPipeline()) {
-            if (this.allvr$patch != null) {
+            if (this.allvr$patch != null && ClientConfig.allvrIrisIntegration) {
                 this.allvr$pipeline = AllvrIrisPipelineData.buildPipeline(
                     (IrisRenderingPipeline) (Object) this, this.allvr$patch,
                     this.customUniforms, this.shaderStorageBufferHolder);

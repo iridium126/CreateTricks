@@ -319,6 +319,8 @@ public final class AllvrRenderer {
                     // arena full: hold the stream and retry when space frees up —
                     // dropping it left the cube unrendered until some later block
                     // change happened to re-trigger a remesh
+                    // the stale node still points at the just-freed range — drop it
+                    this.unpublishNodeMesh(key);
                     if (rc.deferredQuads == null) {
                         this.deferredCount++;
                     }
@@ -337,6 +339,10 @@ public final class AllvrRenderer {
                     }
                     this.assignQuads(key, rc, start, result.quads());
                 }
+            } else {
+                // empty mesh: the range freed above is never re-published —
+                // drop the stale node (see unpublishNodeMesh)
+                this.unpublishNodeMesh(key);
             }
             if (rc.needsRemesh) {
                 rc.needsRemesh = false;
@@ -364,6 +370,22 @@ public final class AllvrRenderer {
             this.sawFirstMesh.add(key);
             this.dirtyAllNeighbors(key);
         }
+    }
+
+    /**
+     * Drops the cube's node publication (GPU-cull path) after its arena range
+     * was freed. Without this, the node keeps HAS_MESH + stale quadStart/
+     * quadCount pointing at freed — and possibly already-reused — quad memory,
+     * which the traversal then draws as ghost geometry at this cube's origin:
+     * a GPU-path-only artifact (the V0 draw skips the cube via quadCount == 0),
+     * same class as the 4b dropLevel ghost fix. Reached by two pumpResults
+     * branches: an empty mesh result, and an arena-starved (deferred) remesh.
+     * {@code freeNode} is a no-op for cubes that never published a node (first
+     * mesh already empty, or the cubeInfo table was full); a later
+     * {@link #assignQuads} re-allocates the node via {@code setMesh}.
+     */
+    private void unpublishNodeMesh(long key) {
+        this.nodes.freeNode(key);
     }
 
     /** Uploads deferred mesh results once the arena can actually fit them.

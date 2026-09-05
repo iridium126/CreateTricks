@@ -37,6 +37,52 @@ flat out uint vFaceVoxy;  // voxy face encoding: axis(x2,y0,z1)<<1 | dir(+=1)
 
 const vec3 AXIS[3] = vec3[3](vec3(1, 0, 0), vec3(0, 1, 0), vec3(0, 0, 1));
 
+#ifdef ALLVR_SHADOW_PASS
+// Pack shadow-map distortion (doc 4i 排查⑧): the pack's own shadow.vsh
+// compresses shadow clip space radially (higher texel density near the
+// player) and rescales depth, and its deferred/composite stages sample with
+// the same mapping — our depth-only contribution must land on the same
+// texels or the pack never sees our shadows. Mirror of
+// mist_volumetric_iris.fsh distort_shadow_space (mode ids identical):
+//   0 none | 1 quartic (Photon) | 2 euclidean (Complementary lineage)
+//   3 log (Bliss) | 4 Sundial | 5 iterationT
+uniform int uShadowDistortionMode;
+uniform float uShadowDistortion;
+uniform float uShadowDepthScale;
+uniform vec4 uShadowLogParams; // mode 3: k, a, b, depth scale
+
+float allvrQuarticLength(vec2 v) {
+    vec2 p = v * v; p = p * p;
+    return sqrt(sqrt(p.x + p.y));
+}
+
+vec3 allvrDistortShadowSpace(vec3 clip) {
+    if (uShadowDistortionMode == 0) {
+        return vec3(clip.xy, clip.z * uShadowDepthScale);
+    }
+    if (uShadowDistortionMode == 3) {
+        float logFactor = log(length(clip.xy) * uShadowLogParams.z + uShadowLogParams.y)
+            * uShadowLogParams.x;
+        return vec3(clip.xy / logFactor, clip.z * uShadowLogParams.w);
+    }
+    if (uShadowDistortionMode == 4) {
+        float len = length(clip.xy);
+        float curve = log(uShadowDistortion * len + 1.0) / log(uShadowDistortion + 1.0);
+        vec2 direction = len > 1e-5 ? clip.xy / len : vec2(0.0);
+        return vec3(direction * curve * 0.5 + 0.5, clip.z * uShadowDepthScale);
+    }
+    if (uShadowDistortionMode == 5) {
+        float len = length(clip.xy);
+        float factor = len * uShadowDistortion + (1.0 - uShadowDistortion);
+        float z = (clip.z - ProjMat[3].z) * uShadowDepthScale;
+        return vec3(clip.xy / factor * 0.95, z);
+    }
+    float l = uShadowDistortionMode == 2 ? length(clip.xy) : allvrQuarticLength(clip.xy);
+    float factor = l * uShadowDistortion + (1.0 - uShadowDistortion);
+    return vec3(clip.xy / factor, clip.z * uShadowDepthScale);
+}
+#endif
+
 void main() {
     uint baseVertex = gl_BaseVertex;
     uint rel = gl_VertexID - baseVertex;
@@ -128,5 +174,9 @@ void main() {
     // pack TAA jitter (voxy contract: clip-space offset scaled by w, the
     // function body comes verbatim from the pack's voxy.json taaOffset)
     gl_Position.xy += voxy_taaOffset() * gl_Position.w;
+#endif
+
+#ifdef ALLVR_SHADOW_PASS
+    gl_Position = vec4(allvrDistortShadowSpace(gl_Position.xyz), gl_Position.w);
 #endif
 }

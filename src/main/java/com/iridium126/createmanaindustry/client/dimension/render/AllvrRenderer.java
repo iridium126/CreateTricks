@@ -13,8 +13,10 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
+import org.joml.Matrix4d;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
+import org.joml.Vector3d;
 import org.joml.Vector4f;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
@@ -31,6 +33,7 @@ import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisDataHold
 import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisFrameTarget;
 import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisPipelineData;
 import com.iridium126.createmanaindustry.client.dimension.iris.AllvrVoxyUniforms;
+import com.iridium126.createmanaindustry.client.render.shaderpack.ShadowDistortionRegistry;
 import com.iridium126.createmanaindustry.config.ClientConfig;
 import com.iridium126.createmanaindustry.dimension.AllvrDimensions;
 import com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos;
@@ -93,6 +96,8 @@ public final class AllvrRenderer {
     private boolean warnedTier;
     private boolean warnedPack;
     private boolean warnedPatchFallback;
+    private boolean warnedShadowEmpty;
+    private boolean loggedShadowStart;
     // iris integration (G2 draw mounting): the allay pipeline's patch data +
     // the pack-lit draw targets it resolves to
     private AllvrIrisPipelineData irisData;
@@ -549,6 +554,85 @@ public final class AllvrRenderer {
         }
     }
 
+    /**
+     * Appends the MDI commands for one cube into {@link #commands} (respecting
+     * the shared-index {@code MAX_QUADS_PER_COMMAND} split — craftable cubes
+     * beyond it, e.g. checkerboard ~5×10⁴ quads, continue in consecutive
+     * commands); returns the new command count, capped at {@code MAX_COMMANDS}.
+     */
+    private int appendCommands(Cube rc, int n) {
+        int remaining = rc.quadCount;
+        int baseQuad = rc.quadStart;
+        while (remaining > 0 && n < AllvrBuffers.MAX_COMMANDS) {
+            int take = Math.min(remaining, AllvrBuffers.MAX_QUADS_PER_COMMAND);
+            int o = n * AllvrBuffers.COMMAND_STRIDE;
+            this.commands[o] = take * 6;
+            this.commands[o + 1] = 1;
+            this.commands[o + 2] = 0;
+            this.commands[o + 3] = baseQuad * 4;
+            this.commands[o + 4] = rc.slot;
+            baseQuad += take;
+            remaining -= take;
+            n++;
+        }
+        return n;
+    }
+
+    /**
+     * Shadow-pass command source (doc §13 4i 排查⑦): the main pass's commands
+     * are culled by the PLAYER's view frustum, but the shadow map must contain
+     * every cube inside the light's ortho box regardless of where the player
+     * looks — reusing the view-culled commands made terrain shadows appear,
+     * disappear and shift with view rotation. Culls against the shadow box
+     * instead: cube bounding spheres (r = 16√3 + margin) versus |x|,|y| ≤
+     * halfPlaneLength and the z window, evaluated in double precision. The
+     * centers go through the shadow modelview as PLAYER-space points (world −
+     * camera, the same input space the shadow program's vertices use) —
+     * feeding absolute centers (排查⑨) put |Y| ≈ 9.7k through a rotation into
+     * a ±shadowDistance box and rejected everything. Non-ortho (legacy
+     * perspective shadow) projections skip culling.
+     */
+    private int buildShadowCommands(Matrix4f shadowModelView, Matrix4f shadowProjection, Vec3 camPos) {
+        boolean ortho = shadowProjection.m33() == 1.0f;
+        Matrix4d view = new Matrix4d(shadowModelView);
+        double limXY = 0;
+        double zMin = 0;
+        double zMax = 0;
+        if (ortho) {
+            double radius = 16.0 * Math.sqrt(3.0) + 4.0;
+            limXY = 1.0 / Math.abs(shadowProjection.m00()) + radius;
+            float m22 = shadowProjection.m22();
+            float m32 = shadowProjection.m32();
+            double zA = (-1.0 - m32) / m22;
+            double zB = (1.0 - m32) / m22;
+            zMin = Math.min(zA, zB) - radius;
+            zMax = Math.max(zA, zB) + radius;
+        }
+        Vector3d center = new Vector3d();
+        int n = 0;
+        Iterator<Long2ObjectOpenHashMap.Entry<Cube>> it = this.renderCubes.long2ObjectEntrySet().fastIterator();
+        while (it.hasNext() && n < AllvrBuffers.MAX_COMMANDS) {
+            Long2ObjectOpenHashMap.Entry<Cube> e = it.next();
+            Cube rc = e.getValue();
+            if (rc.quadCount <= 0 || rc.slot < 0) {
+                continue;
+            }
+            if (ortho) {
+                AllvrCubePos pos = AllvrCubePos.fromLong(e.getLongKey());
+                view.transformPosition(center.set(
+                    pos.minBlockX() + 16.0 - camPos.x,
+                    pos.minBlockY() + 16.0 - camPos.y,
+                    pos.minBlockZ() + 16.0 - camPos.z), center);
+                if (Math.abs(center.x) > limXY || Math.abs(center.y) > limXY
+                    || center.z < zMin || center.z > zMax) {
+                    continue;
+                }
+            }
+            n = this.appendCommands(rc, n);
+        }
+        return n;
+    }
+
     private void draw(RenderLevelStageEvent event, ClientLevel level, AllvrIrisPipelineData data) {
         Minecraft mc = Minecraft.getInstance();
         Camera camera = event.getCamera();
@@ -573,20 +657,7 @@ public final class AllvrRenderer {
             // one command reaches quads only through the shared index buffer
             // (MAX_QUADS_PER_COMMAND); craftable cubes beyond that (e.g.
             // checkerboard, ~5×10⁴ quads) continue in consecutive commands
-            int remaining = rc.quadCount;
-            int baseQuad = rc.quadStart;
-            while (remaining > 0 && n < AllvrBuffers.MAX_COMMANDS) {
-                int take = Math.min(remaining, AllvrBuffers.MAX_QUADS_PER_COMMAND);
-                int o = n * AllvrBuffers.COMMAND_STRIDE;
-                this.commands[o] = take * 6;
-                this.commands[o + 1] = 1;
-                this.commands[o + 2] = 0;
-                this.commands[o + 3] = baseQuad * 4;
-                this.commands[o + 4] = rc.slot;
-                baseQuad += take;
-                remaining -= take;
-                n++;
-            }
+            n = this.appendCommands(rc, n);
         }
         if (n == 0) {
             this.logStats(0, cubesWithGeometry);
@@ -731,7 +802,7 @@ public final class AllvrRenderer {
             }
             this.frameTarget.unbind();
             if (ClientConfig.allvrIrisShadowPass) {
-                this.drawShadowPass(commandCount, useMdIC);
+                this.drawShadowPass(camPos);
             }
             GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, savedFbo);
             GL11.glViewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
@@ -744,49 +815,102 @@ public final class AllvrRenderer {
      * iris rendered its own shadow content earlier this frame — ours adds on
      * top via depth LEQUAL, so the pack's deferred shadow sampling sees allay
      * terrain shadows. Runs inside the patched draw's stage slot (still before
-     * every composite that samples shadowtex). The draw is world-space (the
-     * shadow matrices consume absolute positions, uCamInt = 0): float32 at
-     * |Y| ≈ 30M quantizes to 2-block steps — the accepted R20 envelope.
+     * every composite that samples shadowtex).
+     * <p>
+     * Submission is <b>player-space</b> (camera-relative): the shadow modelview
+     * is rotation-only plus a grid-snap translate
+     * ({@code ShadowMatrices.createModelViewMatrix}), i.e. it consumes
+     * {@code worldPos - cameraPos} — exactly the shader's {@code relPos} when
+     * uCamInt/uCamFrac carry the camera. An earlier world-space submission
+     * (uCamInt = 0) pushed |Y| ≈ 30M through a ±shadowDistance ortho (NDC in
+     * the hundred-thousands), so every vertex left clip space and nothing
+     * reached the map — the ±30M R20 envelope was never accepted here, it is
+     * avoided outright.
+     * <p>
+     * Both depth textures are written: shadowtex0 (everything) already holds
+     * iris's entity + translucent depth, while shadowtex1 (opaque-only) is a
+     * blit taken inside the shadow pass — Photon samples shadowtex1 for opaque
+     * shadows, so a shadowtex0-only write was invisible.
+     * <p>
+     * The command source is rebuilt for the shadow box via
+     * {@link #buildShadowCommands} — the main pass's view-frustum-culled
+     * commands would make the shadows view-dependent — and submitted with an
+     * explicit count ({@code draw(n)}), keeping the GPU path's
+     * GL_PARAMETER_BUFFER semantics untouched.
+     * <p>
+     * The program is the shadow variant ({@code ALLVR_SHADOW_PASS}): it
+     * applies the pack's shadow-map distortion (mode/bias/depthScale from the
+     * shared {@link com.iridium126.createmanaindustry.client.render.shaderpack.ShadowDistortionRegistry}
+     * — the same conventions the mist Tyndall sampling uses) so our depth
+     * lands on the texels the pack's deferred stages actually sample.
      */
-    private void drawShadowPass(int commandCount, boolean useMdIC) {
+    private void drawShadowPass(Vec3 camPos) {
         Matrix4f shadowModelView = AllvrIrisDataHolder.shadowModelView();
         Matrix4f shadowProjection = AllvrIrisDataHolder.shadowProjection();
         if (shadowModelView == null || shadowProjection == null) {
             return; // no shadow pass ran this frame (shadows off / night config)
         }
-        int depthTex = AllvrIrisDataHolder.shadowDepthTexture();
-        int resolution = AllvrIrisDataHolder.shadowResolution();
-        if (!this.frameTarget.bindShadow(depthTex, resolution)) {
-            return;
-        }
-        int prog = this.shaders.terrain(); // unpatched program — no TAA jitter in shadow space
+        int prog = this.shaders.shadowTerrain();
         if (prog == 0) {
             return;
+        }
+        int resolution = AllvrIrisDataHolder.shadowResolution();
+        int commandCount = this.buildShadowCommands(shadowModelView, shadowProjection, camPos);
+        if (commandCount == 0) {
+            if (!this.warnedShadowEmpty && !this.renderCubes.isEmpty()) {
+                this.warnedShadowEmpty = true;
+                CreateManaIndustry.LOGGER.warn("[Allvr] shadow pass culled to 0 commands ({} cubes with geometry) "
+                    + "— shadow-box cull mismatch, terrain will not cast shadows", this.renderCubes.size());
+            }
+            return;
+        }
+        if (!this.loggedShadowStart) {
+            this.loggedShadowStart = true;
+            CreateManaIndustry.LOGGER.info("[Allvr] shadow pass drawing: {} commands, distortion mode={} bias={} "
+                + "depthScale={}", commandCount, ShadowDistortionRegistry.resolveForCurrentPack().glslMode(),
+                ShadowDistortionRegistry.resolveForCurrentPack().bias(),
+                ShadowDistortionRegistry.resolveForCurrentPack().depthScale());
         }
 
         int savedFbo = GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
         int[] savedViewport = new int[4];
         GL11.glGetIntegerv(GL11.GL_VIEWPORT, savedViewport);
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, this.frameTarget.shadowFbo());
-        GL11.glViewport(0, 0, resolution, resolution);
 
         GL20.glUseProgram(prog);
         AllvrShaderCache.uniformMat4(prog, "ModelViewMat", shadowModelView);
         AllvrShaderCache.uniformMat4(prog, "ProjMat", shadowProjection);
-        AllvrShaderCache.uniformIVec3(prog, "uCamInt", 0, 0, 0);
-        AllvrShaderCache.uniformVec3(prog, "uCamFrac", 0f, 0f, 0f);
+        int camX = net.minecraft.util.Mth.floor(camPos.x);
+        int camY = net.minecraft.util.Mth.floor(camPos.y);
+        int camZ = net.minecraft.util.Mth.floor(camPos.z);
+        AllvrShaderCache.uniformIVec3(prog, "uCamInt", camX, camY, camZ);
+        AllvrShaderCache.uniformVec3(prog, "uCamFrac",
+            (float) (camPos.x - camX), (float) (camPos.y - camY), (float) (camPos.z - camZ));
         AllvrShaderCache.uniformInt(prog, "uAtlas", 0);
         AllvrShaderCache.uniformInt(prog, "uStateTable", AllvrBuffers.STATE_TBO_UNIT);
+        var distortion = ShadowDistortionRegistry.resolveForCurrentPack();
+        AllvrShaderCache.uniformInt(prog, "uShadowDistortionMode", distortion.glslMode());
+        AllvrShaderCache.uniformFloat(prog, "uShadowDistortion", distortion.bias());
+        AllvrShaderCache.uniformFloat(prog, "uShadowDepthScale", distortion.depthScale());
+        AllvrShaderCache.uniformVec4(prog, "uShadowLogParams",
+            distortion.logK(), distortion.logA(), distortion.logB(), distortion.depthScale());
+
+        GL11.glViewport(0, 0, resolution, resolution);
         // depth-only: the fsh still runs (alpha cutout discard) but writes no color
         GL11.glColorMask(false, false, false, false);
         RenderSystem.enableDepthTest();
-        if (useMdIC) {
-            this.buffers.drawIndirectCount(this.coreGl46);
-        } else {
+
+        this.buffers.uploadCommands(this.commands, commandCount);
+        int[] shadowTex = {AllvrIrisDataHolder.shadowDepthTexture(),
+            AllvrIrisDataHolder.shadowDepthTextureNoTranslucents()};
+        for (int tex : shadowTex) {
+            if (tex <= 0 || !this.frameTarget.bindShadow(tex, resolution)) {
+                continue;
+            }
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, this.frameTarget.shadowFbo());
             this.buffers.draw(commandCount);
         }
-        GL11.glColorMask(true, true, true, true);
 
+        GL11.glColorMask(true, true, true, true);
         GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, savedFbo);
         GL11.glViewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
     }

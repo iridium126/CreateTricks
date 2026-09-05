@@ -93,12 +93,19 @@ public final class AllvrIrisPipelineData {
     public static final int SSBO_BINDING_BASE = 12;
     public static final int SAMPLER_BINDING_BASE = 8;
 
+    /** Draw-target texture ids, re-resolved from the live pipeline every
+     *  frame by {@link #refreshDrawTargets()} — iris reallocates its render
+     *  targets on window resize, and ids captured at pipeline build would
+     *  leave the terrain FBO drawing into deleted textures (terrain invisible
+     *  until the pack is reloaded). */
     public final int[] opaqueDrawTargets;
     public final int[] translucentDrawTargets;
     /** Dimensions of the first opaque target — the terrain FBO's viewport
-     *  (smaller than the main target when the pack runs TAAU). */
-    public final int opaqueWidth;
-    public final int opaqueHeight;
+     *  (smaller than the main target when the pack runs TAAU). Refreshed
+     *  together with the target ids every frame. */
+    public volatile int opaqueWidth;
+    public volatile int opaqueHeight;
+    private final IrisRenderingPipeline pipeline;
     private final AllvrVoxyPatch patch;
     private final String opaquePatch;
     private final String translucentPatch;
@@ -118,9 +125,10 @@ public final class AllvrIrisPipelineData {
     private IntSupplier opaqueDepthTexture = () -> 0;
     private IntSupplier translucentDepthTexture = () -> 0;
 
-    private AllvrIrisPipelineData(AllvrVoxyPatch patch, int[] opaqueDrawTargets, int[] translucentDrawTargets,
-                                  StructLayout uniformSet, Runnable blendingSetup, ImageSet imageSet, SSBOSet ssboSet,
-                                  int opaqueWidth, int opaqueHeight) {
+    private AllvrIrisPipelineData(IrisRenderingPipeline ipipe, AllvrVoxyPatch patch, int[] opaqueDrawTargets,
+                                  int[] translucentDrawTargets, StructLayout uniformSet, Runnable blendingSetup,
+                                  ImageSet imageSet, SSBOSet ssboSet, int opaqueWidth, int opaqueHeight) {
+        this.pipeline = ipipe;
         this.patch = patch;
         this.opaqueDrawTargets = opaqueDrawTargets;
         this.translucentDrawTargets = translucentDrawTargets;
@@ -203,7 +211,7 @@ public final class AllvrIrisPipelineData {
         var opaqueDrawTargets = getDrawBuffers(patch.getOpaqueTargets(), flipped, rt, opaqueWidthHeight);
         var translucentDrawTargets = getDrawBuffers(patch.getTranslucentTargets(), flipped, rt, null);
 
-        var out = new AllvrIrisPipelineData(patch, opaqueDrawTargets, translucentDrawTargets, uniforms,
+        var out = new AllvrIrisPipelineData(ipipe, patch, opaqueDrawTargets, translucentDrawTargets, uniforms,
             patch.createBlendSetup(), imageSet, ssboSet, opaqueWidthHeight[0], opaqueWidthHeight[1]);
         CreateManaIndustry.LOGGER.info(
             "[Allvr] voxy patch resolved: opaque buffers {} translucent {} uniforms {} samplers {} ssbos {} taa {} taaU {} size {}x{}",
@@ -227,6 +235,26 @@ public final class AllvrIrisPipelineData {
             targetTextures[i] = stageWritesToAlt.contains(targets[i]) ? target.getAltTexture() : target.getMainTexture();
         }
         return targetTextures;
+    }
+
+    /**
+     * Re-resolves the draw-target texture ids and colortex size from the live
+     * pipeline. Called every frame before the terrain FBO bind (render thread):
+     * iris recreates its render-target textures on window resize — the ids
+     * captured at pipeline build die with them, and a stale FBO either fails
+     * completeness or draws into deleted textures (terrain invisible until the
+     * pack is reloaded). Also picks up the current frame's flip state.
+     */
+    public void refreshDrawTargets() {
+        var flipped = this.pipeline.getFlippedAfterPrepare();
+        RenderTargets rt = ((AllvrIrisRenderingPipelineAccessor) this.pipeline).getRenderTargets();
+        int[] wh = {0, 0};
+        int[] opaque = getDrawBuffers(this.patch.getOpaqueTargets(), flipped, rt, wh);
+        System.arraycopy(opaque, 0, this.opaqueDrawTargets, 0, opaque.length);
+        int[] translucent = getDrawBuffers(this.patch.getTranslucentTargets(), flipped, rt, null);
+        System.arraycopy(translucent, 0, this.translucentDrawTargets, 0, translucent.length);
+        this.opaqueWidth = wh[0];
+        this.opaqueHeight = wh[1];
     }
 
     /**

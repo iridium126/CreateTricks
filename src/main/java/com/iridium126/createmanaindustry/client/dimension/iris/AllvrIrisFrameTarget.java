@@ -38,8 +38,6 @@ public final class AllvrIrisFrameTarget {
 
     private int colorFbo;
     private final int[] attachedTextures = new int[8];
-    private int attachedCount = -1;
-    private int attachedDepth = -1;
     private boolean attachedOk;
 
     private int viewportW;
@@ -76,49 +74,41 @@ public final class AllvrIrisFrameTarget {
         if (mainWidth <= 0 || mainHeight <= 0) {
             return false;
         }
+        // live target ids/size — iris reallocates its render targets on resize
+        this.data.refreshDrawTargets();
         if (this.colorFbo == 0) {
             this.colorFbo = GL45C.glCreateFramebuffers();
-            this.attachedCount = -1;
-            this.attachedDepth = -1;
         }
         int[] targets = this.data.opaqueDrawTargets;
-        boolean colorsChanged = this.attachedCount != targets.length;
-        if (!colorsChanged) {
-            for (int i = 0; i < targets.length; i++) {
-                colorsChanged |= this.attachedTextures[i] != targets[i];
-            }
+        // (re)attach EVERY frame, not on id change: deleting a texture severs
+        // its FBO attachment even when the driver hands the same numeric id
+        // back on recreation (the window-resize case), so change detection
+        // alone left us drawing into severed attachments — the terrain simply
+        // vanished until the pack was reloaded (doc 4i 排查⑧). These are
+        // stateless DSA attachment writes; the per-frame cost is negligible.
+        int count = Math.min(targets.length, this.attachedTextures.length);
+        for (int i = 0; i < count; i++) {
+            this.attachedTextures[i] = targets[i];
+            GL45C.glNamedFramebufferTexture(this.colorFbo, GL30C.GL_COLOR_ATTACHMENT0 + i, targets[i], 0);
         }
-        if (colorsChanged) {
-            this.attachedCount = targets.length;
-            for (int i = 0; i < targets.length; i++) {
-                this.attachedTextures[i] = targets[i];
-                GL45C.glNamedFramebufferTexture(this.colorFbo, GL30C.GL_COLOR_ATTACHMENT0 + i, targets[i], 0);
-            }
-            for (int i = targets.length; i < this.attachedTextures.length; i++) {
-                GL45C.glNamedFramebufferTexture(this.colorFbo, GL30C.GL_COLOR_ATTACHMENT0 + i, 0, 0);
-            }
-            int[] drawBuffers = new int[targets.length];
-            for (int i = 0; i < drawBuffers.length; i++) {
-                drawBuffers[i] = GL30C.GL_COLOR_ATTACHMENT0 + i;
-            }
-            GL45C.glNamedFramebufferDrawBuffers(this.colorFbo, drawBuffers);
+        for (int i = count; i < this.attachedTextures.length; i++) {
+            GL45C.glNamedFramebufferTexture(this.colorFbo, GL30C.GL_COLOR_ATTACHMENT0 + i, 0, 0);
         }
-        int depth = this.depthSupplier.getAsInt();
-        int prevDepth = this.attachedDepth;
-        if (depth != prevDepth) {
-            this.attachedDepth = depth;
-            GL45C.glNamedFramebufferTexture(this.colorFbo, GL30C.GL_DEPTH_ATTACHMENT, depth, 0);
+        int[] drawBuffers = new int[targets.length];
+        for (int i = 0; i < drawBuffers.length; i++) {
+            drawBuffers[i] = GL30C.GL_COLOR_ATTACHMENT0 + i;
         }
-        if (colorsChanged || depth != prevDepth) {
-            this.attachedOk = GL45C.glCheckNamedFramebufferStatus(this.colorFbo, GL30C.GL_FRAMEBUFFER)
-                == GL30C.GL_FRAMEBUFFER_COMPLETE;
-            if (!this.attachedOk && !this.warnedIncomplete) {
+        GL45C.glNamedFramebufferDrawBuffers(this.colorFbo, drawBuffers);
+        GL45C.glNamedFramebufferTexture(this.colorFbo, GL30C.GL_DEPTH_ATTACHMENT,
+            this.depthSupplier.getAsInt(), 0);
+        this.attachedOk = GL45C.glCheckNamedFramebufferStatus(this.colorFbo, GL30C.GL_FRAMEBUFFER)
+            == GL30C.GL_FRAMEBUFFER_COMPLETE;
+        if (!this.attachedOk) {
+            if (!this.warnedIncomplete) {
                 this.warnedIncomplete = true;
                 CreateManaIndustry.LOGGER.error("[Allvr] terrain frame target incomplete (pack targets changed?) "
                     + "— falling back to the unpatched draw");
             }
-        }
-        if (!this.attachedOk) {
             return false;
         }
         // the pack's colortex may be smaller than the main target (TAAU /
@@ -245,8 +235,6 @@ public final class AllvrIrisFrameTarget {
             this.uniformScratch = 0;
         }
         this.uniformSize = -1;
-        this.attachedCount = -1;
-        this.attachedDepth = -1;
         this.shadowDepth = -1;
     }
 }

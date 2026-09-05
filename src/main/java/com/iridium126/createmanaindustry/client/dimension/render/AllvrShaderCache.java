@@ -74,6 +74,9 @@ public final class AllvrShaderCache {
         java.util.regex.Pattern.compile("^\\s*#pragma\\s+cmi_include\\s+(\\S+)\\s*$", java.util.regex.Pattern.MULTILINE);
 
     private int terrain;
+    // shadow-pass variant of the terrain program: the unpatched sources plus
+    // ALLVR_SHADOW_PASS (applies the pack's shadow-map distortion — doc 4i)
+    private int shadowTerrain;
     private int cullReset;
     private int traversal;
     private int cullFinalize;
@@ -86,8 +89,8 @@ public final class AllvrShaderCache {
     // pipeline data's patch sources; identity-keyed on the data object)
     private AllvrIrisPipelineData patchedData;
     private int patchedTerrain;
-    // level-2 coexistence program: pack declares draw buffers but ships no
-    // patch function (Complementary) — vanilla-gbuffer-mimicking albedo pass
+    // level-2 coexistence program: pack without a patch function (or a failed
+    // patched link) — vanilla-gbuffer-mimicking albedo pass
     private AllvrIrisPipelineData albedoData;
     private int albedoTerrain;
     private volatile boolean dirty = true;
@@ -114,6 +117,10 @@ public final class AllvrShaderCache {
             GL20.glDeleteProgram(this.terrain);
             this.terrain = 0;
         }
+        if (this.shadowTerrain != 0) {
+            GL20.glDeleteProgram(this.shadowTerrain);
+            this.shadowTerrain = 0;
+        }
         // the patched programs are identity-keyed on their pipeline data — drop
         // them here so the next syncIrisData pass re-links against fresh sources
         this.dropPatched();
@@ -128,6 +135,7 @@ public final class AllvrShaderCache {
         this.cullClamp = 0;
         this.hizFirst = this.hizDownsample = this.revalidate = 0;
         this.terrain = link(GLSL_DIR + "terrain.vsh", GLSL_DIR + "terrain.fsh");
+        this.shadowTerrain = linkShadowTerrain();
         this.cullReset = compileCompute(GLSL_DIR + "gpu_cull_reset.comp");
         this.traversal = compileCompute(GLSL_DIR + "gpu_cull_traversal.comp");
         this.cullFinalize = compileCompute(GLSL_DIR + "gpu_cull_finalize.comp");
@@ -154,6 +162,25 @@ public final class AllvrShaderCache {
         return this.terrain;
     }
 
+    public int shadowTerrain() {
+        return this.shadowTerrain;
+    }
+
+    /** The unpatched terrain sources plus {@code ALLVR_SHADOW_PASS} — the
+     *  shadow-pass draw applies the pack's shadow-map distortion through it
+     *  (the plain unpatched program must stay distortion-free for the main
+     *  fallback path). */
+    private int linkShadowTerrain() {
+        String vs = load(GLSL_DIR + "terrain.vsh");
+        String fs = load(GLSL_DIR + "terrain.fsh");
+        if (vs == null || fs == null) {
+            return 0;
+        }
+        int vsh = compileStage(versionLine + "#define ALLVR_SHADOW_PASS\n" + PRELUDE + vs, GL20.GL_VERTEX_SHADER);
+        int fsh = compileStage(versionLine + PRELUDE + fs, GL20.GL_FRAGMENT_SHADER);
+        return link(GLSL_DIR + "terrain.vsh (shadow)", vsh, fsh);
+    }
+
     // ------------------------------------------------------------------
     // patched terrain program (iris integration draw mounting)
     // ------------------------------------------------------------------
@@ -171,7 +198,11 @@ public final class AllvrShaderCache {
             this.dropPatched();
             return 0;
         }
-        if (this.patchedTerrain != 0 && this.patchedData == data) {
+        // identity check covers failures too: patchedData is recorded on every
+        // attempt, so a failed link is remembered and NOT retried every frame
+        // (retrying burned one full program compile per frame — the observed
+        // Complementary fps collapse). F3+T clears it via dropPatched.
+        if (this.patchedData == data) {
             return this.patchedTerrain;
         }
         this.dropPatched();
@@ -203,7 +234,8 @@ public final class AllvrShaderCache {
             this.dropAlbedo();
             return 0;
         }
-        if (this.albedoTerrain != 0 && this.albedoData == data) {
+        // same failure-latch semantics as syncPatchedTerrain
+        if (this.albedoData == data) {
             return this.albedoTerrain;
         }
         this.dropAlbedo();
@@ -304,6 +336,14 @@ public final class AllvrShaderCache {
         if (patchSource == null || patchSource.isBlank()) {
             return 0;
         }
+        // Complementary's voxy patch reads a `miplevel` variable that voxy's
+        // own fsh environment defines and the patch's own includes forgot (its
+        // gbuffers_terrain declares it via lib/util/miplevel.glsl). Provide the
+        // same zero-detail value the patch's degenerate midCoord setup produces
+        // — but only when the (include-expanded) source doesn't define it.
+        if (patchSource.contains("miplevel") && !patchSource.contains("float miplevel")) {
+            patchSource = "float miplevel = 0.0;\n" + patchSource;
+        }
 
         int vsh = compileStage(versionLine + PRELUDE + vHeader + vs, GL20.GL_VERTEX_SHADER);
         int fsh = compileStage(versionLine + PRELUDE + fHeader + fs + patchSource, GL20.GL_FRAGMENT_SHADER);
@@ -375,6 +415,10 @@ public final class AllvrShaderCache {
 
     public static void uniformVec3(int prog, String name, float x, float y, float z) {
         GL20.glUniform3f(location(prog, name), x, y, z);
+    }
+
+    public static void uniformVec4(int prog, String name, float x, float y, float z, float w) {
+        GL20.glUniform4f(location(prog, name), x, y, z, w);
     }
 
     public static void uniformFloat(int prog, String name, float v) {

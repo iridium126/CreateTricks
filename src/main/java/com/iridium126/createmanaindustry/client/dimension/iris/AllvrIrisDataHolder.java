@@ -72,6 +72,15 @@ public final class AllvrIrisDataHolder {
         return srt == null ? -1 : srt.getDepthTexture().getTextureId();
     }
 
+    /** The shadow map's opaque-only depth texture (shadowtex1), or -1 when
+     *  shadows are off. iris blits shadowtex0 into it inside the shadow pass
+     *  (before translucents), and packs sample it for opaque shadows — so a
+     *  post-pass terrain draw must write it separately. */
+    public static int shadowDepthTextureNoTranslucents() {
+        var srt = shadowTargets();
+        return srt == null ? -1 : srt.getDepthTextureNoTranslucents().getTextureId();
+    }
+
     /** shadowMapResolution, or -1 when shadows are off. */
     public static int shadowResolution() {
         var srt = shadowTargets();

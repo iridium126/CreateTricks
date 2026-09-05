@@ -41,12 +41,14 @@
     "allvr.AllvrBlockCollisionsMixin",
     "allvr.AllvrLevelMixin",
     "allvr.AllvrLevelHeightAccessorMixin",
+    "allvr.AllvrServerboundPosMixin",
     "allvr.AllvrServerLevelMixin",
     "allvr.AllvrNaturalSpawnerMixin",
     "allvr.AllvrEntityMixin"
   ],
   "client": [
     "allvr.AllvrClientLevelMixin",
+    "allvr.AllvrPredictionHandlerMixin",
     "allvr.AllvrRenderSectionLayerMixin",
     "allvr.AllvrGetLightColorMixin",
     "sodium.AllvrSodiumTerrainMixin",

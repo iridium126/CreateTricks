@@ -42,6 +42,7 @@
     "allvr.AllvrLevelMixin",
     "allvr.AllvrLevelHeightAccessorMixin",
     "allvr.AllvrServerLevelMixin",
+    "allvr.AllvrNaturalSpawnerMixin",
     "allvr.AllvrEntityMixin"
   ],
   "client": [

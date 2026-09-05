@@ -13,8 +13,10 @@ import net.minecraft.world.level.LevelHeightAccessor;
 
 /**
  * Widens the world-bounds predicate ({@code isOutsideBuildHeight}, and with
- * it {@code isInWorldBounds}) from the dimension_type's formal 4064 window to
- * the cube range (±AllvrDimensionLimits.Y_BOUND) inside the allay dimension.
+ * it {@code isInWorldBounds}) from the dimension_type's formal window (384
+ * blocks — deliberately minimal, the window is pure formality since every
+ * block access routes to the cube layer) to the cube range
+ * (±AllvrDimensionLimits.Y_BOUND) inside the allay dimension.
  * <p>
  * Without this, vanilla consumers of the predicate reject cube-only Y
  * positions before cube code ever runs — e.g. {@code BlockPosArgument}

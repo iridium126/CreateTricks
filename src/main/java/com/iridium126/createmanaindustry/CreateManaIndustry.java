@@ -76,6 +76,15 @@ public class CreateManaIndustry {
     public static boolean ARS_ACTIVE = false;
     public static boolean IRISVEIL_ACTIVE = false;
     public static boolean IRIS_ACTIVE = false;
+    /**
+     * A voxy port is installed. Voxy owns the pack-facing VOXY surface globally
+     * (the {@code VOXY} define via its StandardMacros hook, the vx* uniforms and
+     * depth samplers, the extended colortex set), so ALLVR's shared-surface hooks
+     * (mixin.allvriris.shared.*) are apply-time gated off while this is set.
+     * ALLVR's own patch pipeline still coexists with voxy (its duck interfaces
+     * and fields are separately named).
+     */
+    public static boolean VOXY_PORT_ACTIVE = false;
 
     public static final CreateRegistrate REGISTRATE = CreateRegistrate.create(MODID);
 
@@ -102,6 +111,7 @@ public class CreateManaIndustry {
         ARS_ACTIVE = ModList.get().isLoaded("ars_nouveau");
         IRISVEIL_ACTIVE = ModList.get().isLoaded("irisveil");
         IRIS_ACTIVE = ModList.get().isLoaded("iris");
+        VOXY_PORT_ACTIVE = ModList.get().isLoaded("voxy");
 
         REGISTRATE.registerEventListeners(modEventBus);
         modEventBus.addListener(CMICapabilities::register);

@@ -37,6 +37,8 @@ public final class ClientConfig {
     // ---- allay dimension (ALLVR) -------------------------------------------
 
     private static ModConfigSpec.BooleanValue ALLVR_GPU_PIPELINE;
+    private static ModConfigSpec.BooleanValue ALLVR_IRIS_INTEGRATION;
+    private static ModConfigSpec.BooleanValue ALLVR_IRIS_SHADOW_PASS;
 
     static {
         BUILDER.comment("Volumetric mist rendering options.").push("rendering");
@@ -96,6 +98,20 @@ public final class ClientConfig {
                         + "compile fails. Stage 4a slice: frustum culling only (HiZ occlusion and LOD arrive "
                         + "in 4b/4c).")
                 .define("gpuPipeline", false);
+        ALLVR_IRIS_INTEGRATION = BUILDER
+                .comment("ALLVR iris shader-pack integration (voxy contract): when the active shader pack "
+                        + "ships a voxy.json adaptation (Photon, Complementary, ...), allay-dimension terrain "
+                        + "renders through the pack's own colortex targets and lighting patch instead of the "
+                        + "unlit post-composite fallback. Packs without voxy.json keep the fallback. Shared "
+                        + "shader surfaces (VOXY define, vx* uniforms/samplers, extended colortex set) are "
+                        + "yielded to the voxy mod while it is installed (coexistence).")
+                .define("irisIntegration", false);
+        ALLVR_IRIS_SHADOW_PASS = BUILDER
+                .comment("Render allay-dimension terrain into the shader pack's shadow map (depth-only MDI): "
+                        + "entities/particles receive island cast shadows, and packs whose deferred lighting "
+                        + "shadow-samples the gbuffer (Photon) get real terrain self-shadowing. Requires "
+                        + "irisIntegration and an active pack with a shadow pass.")
+                .define("irisShadowPass", true);
         BUILDER.pop();
     }
 
@@ -112,6 +128,8 @@ public final class ClientConfig {
     public static boolean shaderPackIntegration = true;
     public static boolean hexSprayRedirect = true;
     public static boolean allvrGpuPipeline = false;
+    public static boolean allvrIrisIntegration = false;
+    public static boolean allvrIrisShadowPass = true;
 
     private ClientConfig() {}
 
@@ -130,6 +148,8 @@ public final class ClientConfig {
             shaderPackIntegration = PARTICLE_SHADER_PACK_INTEGRATION.get();
             hexSprayRedirect = PARTICLE_HEX_SPRAY_REDIRECT.get();
             allvrGpuPipeline = ALLVR_GPU_PIPELINE.get();
+            allvrIrisIntegration = ALLVR_IRIS_INTEGRATION.get();
+            allvrIrisShadowPass = ALLVR_IRIS_SHADOW_PASS.get();
         }
     }
 }

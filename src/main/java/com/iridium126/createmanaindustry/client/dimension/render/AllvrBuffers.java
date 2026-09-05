@@ -300,6 +300,10 @@ public final class AllvrBuffers {
             }
             this.hizLevels = levels;
         } else {
+            // drop the generated-but-incomplete texture so the id doesn't
+            // linger bound-and-garbage until the next allocation attempt
+            GL11.glDeleteTextures(this.hizTexture);
+            this.hizTexture = 0;
             com.iridium126.createmanaindustry.CreateManaIndustry.LOGGER.error(
                 "[Allvr] HiZ pyramid allocation failed ({}x{} levels {}) — HiZ disabled, frustum only",
                 w, h, levels);

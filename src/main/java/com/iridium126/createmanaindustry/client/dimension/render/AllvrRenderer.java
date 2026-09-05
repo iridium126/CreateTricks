@@ -77,6 +77,9 @@ public final class AllvrRenderer {
     /** 1.5·near·far/(far−near): view-space → depth-space bias for HiZ tests. */
     private float depthBiasScale = -1f;
     private long lastGpuDebugMillis;
+    /** HiZ re-allocation throttle state (failure retry backoff). */
+    private long lastHizAllocMillis;
+    private boolean lastHizAllocFailed;
 
     private boolean initialized;
     private boolean tierOk;
@@ -548,7 +551,7 @@ public final class AllvrRenderer {
     /**
      * 4b GPU-driven draw (doc §9.1/§9.2/§9.4): flush dirty nodes → reset →
      * traversal (frustum + HiZ vs last frame's pyramid + two-phase split) →
-     * finalize → cmdgen → one glMultiDrawElementsIndirectCount whose command
+     * finalize → cmdgen → clamp → one glMultiDrawElementsIndirectCount whose command
      * count is only ever read by the GPU (GL_PARAMETER_BUFFER) → build the HiZ
      * pyramid from the borrowed MC main depth → revalidate phase-1 stamps
      * against the fresh pyramid. Kernel sequence is serialized by SSBO/image
@@ -622,6 +625,14 @@ public final class AllvrRenderer {
         this.buffers.dispatchCmdgenIndirect();
         GL42.glMemoryBarrier(GL43.GL_COMMAND_BARRIER_BIT | GL43.GL_SHADER_STORAGE_BARRIER_BIT);
 
+        // 4b. clamp the MDI command count to MAX_COMMANDS: cmdgen drops commands
+        // past the cap but keeps its counter running, and a parameter-buffer
+        // count above maxcount makes the MDIC draw error out entirely (nothing
+        // draws that frame) — converge in place before the draw consumes it
+        GL20.glUseProgram(this.shaders.cullClamp());
+        GL43.glDispatchCompute(1, 1, 1);
+        GL42.glMemoryBarrier(GL43.GL_COMMAND_BARRIER_BIT | GL43.GL_SHADER_STORAGE_BARRIER_BIT);
+
         // triage readback (Q9): 5 s-throttled, debug-log gated — the real
         // per-frame path stays zero-readback. Also dumps node[0]'s raw uints
         // (GPU mirror truth) and a CPU re-run of the plane test (frustum
@@ -684,7 +695,8 @@ public final class AllvrRenderer {
                 this.nodes.mirror()[2], this.nodes.mirror()[3],
                 this.nodes.mirror()[4], this.nodes.mirror()[5],
                 this.nodes.mirror()[6], this.nodes.mirror()[7],
-                this.debugCpuFrustumPass(camX, camY, camZ), this.nodes.nodeCount()) + cmdTriage;
+                this.debugCpuFrustumPass(camX, camY, camZ), this.nodes.nodeCount()) + cmdTriage
+                + (cmdCount >= AllvrBuffers.MAX_COMMANDS ? " CLAMPED" : "");
         }
 
         // 5. terrain draw — V0 program/state, MDIC submission
@@ -796,8 +808,20 @@ public final class AllvrRenderer {
         if (this.buffers.hizReady() && this.buffers.hizWidth() == w && this.buffers.hizHeight() == h) {
             return true;
         }
+        // re-allocation throttle: a failed attempt left hizReady() false, so
+        // without this the alloc (and its GL error) would retry every frame
+        long now = System.currentTimeMillis();
+        if (this.lastHizAllocFailed && now - this.lastHizAllocMillis < 1000) {
+            return false;
+        }
+        this.lastHizAllocMillis = now;
         this.buffers.allocHiz(w, h);
-        return true;
+        this.lastHizAllocFailed = !this.buffers.hizReady();
+        // the caller's hiz predicate must see the allocation outcome: returning
+        // true unconditionally here left an incomplete texture bound (samples
+        // 0.0 = near plane) and culled the entire world instead of degrading
+        // to frustum-only
+        return this.buffers.hizReady();
     }
 
     /**

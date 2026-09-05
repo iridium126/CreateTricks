@@ -42,6 +42,7 @@ public class CMIMixinPlugin implements IMixinConfigPlugin {
     private static final String IRIS_MOD_ID = "iris";
     private static final String IRISVEIL_MOD_ID = "irisveil";
     private static final String SODIUM_MOD_ID = "sodium";
+    private static final String VOXY_MOD_ID = "voxy";
 
     @Override
     public void onLoad(String mixinPackage) {}
@@ -71,6 +72,19 @@ public class CMIMixinPlugin implements IMixinConfigPlugin {
 
         // Mixins targeting iris internals — disable when iris is absent
         if (mixinClassName.contains(".iris."))
+            return isLoaded(IRIS_MOD_ID);
+
+        // Allay-dimension iris integration (voxy contract). The core hooks
+        // (patch parsing, per-dimension define injection, pipeline data) need
+        // iris only. The shared-surface hooks in .shared. additionally yield to
+        // the voxy mod when it is installed: voxy owns the VOXY define, the vx*
+        // uniforms/samplers and the extended colortex set globally, and both
+        // mods would fight over those registration points (its PackRenderTarget
+        // Directives @Redirect would even conflict with a co-applied wrap).
+        if (mixinClassName.contains(".allvriris.shared."))
+            return isLoaded(IRIS_MOD_ID) && !isLoaded(VOXY_MOD_ID);
+
+        if (mixinClassName.contains(".allvriris."))
             return isLoaded(IRIS_MOD_ID);
 
         // Mixins reserving iris-veil-compat resources (the particle TBO texture

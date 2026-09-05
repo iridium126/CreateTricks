@@ -1,0 +1,17 @@
+// ALLVR GPU-cull clamp: caps the MDI command count at MAX_COMMANDS, in place.
+// cmdgen drops commands beyond the cap but keeps its atomic counter running,
+// and glMultiDrawElementsIndirectCount generates an error (drawing nothing)
+// when the GL_PARAMETER_BUFFER count exceeds maxcount — so the count the draw
+// consumes must be converged after cmdgen. One thread; runs after the cmdgen
+// barrier, before the debug triage readback and the draw.
+layout(local_size_x = 1) in;
+
+layout(std430, binding = BIND_CMD_COUNT) buffer CmdCount {
+    uint cmdCount;
+};
+
+void main() {
+    if (cmdCount > uint(MAX_COMMANDS)) {
+        cmdCount = uint(MAX_COMMANDS);
+    }
+}

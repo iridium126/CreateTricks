@@ -77,6 +77,7 @@ public final class AllvrShaderCache {
     private int traversal;
     private int cullFinalize;
     private int cmdgen;
+    private int cullClamp;
     private int hizFirst;
     private int hizDownsample;
     private int revalidate;
@@ -105,18 +106,20 @@ public final class AllvrShaderCache {
             this.terrain = 0;
         }
         for (int p : new int[] {this.cullReset, this.traversal, this.cullFinalize, this.cmdgen,
-                this.hizFirst, this.hizDownsample, this.revalidate}) {
+                this.cullClamp, this.hizFirst, this.hizDownsample, this.revalidate}) {
             if (p != 0) {
                 GL20.glDeleteProgram(p);
             }
         }
         this.cullReset = this.traversal = this.cullFinalize = this.cmdgen = 0;
+        this.cullClamp = 0;
         this.hizFirst = this.hizDownsample = this.revalidate = 0;
         this.terrain = link(GLSL_DIR + "terrain.vsh", GLSL_DIR + "terrain.fsh");
         this.cullReset = compileCompute(GLSL_DIR + "gpu_cull_reset.comp");
         this.traversal = compileCompute(GLSL_DIR + "gpu_cull_traversal.comp");
         this.cullFinalize = compileCompute(GLSL_DIR + "gpu_cull_finalize.comp");
         this.cmdgen = compileCompute(GLSL_DIR + "gpu_cull_cmdgen.comp");
+        this.cullClamp = compileCompute(GLSL_DIR + "gpu_cull_clamp.comp");
         this.hizFirst = compileCompute(GLSL_DIR + "gpu_hiz_first.comp");
         this.hizDownsample = compileCompute(GLSL_DIR + "gpu_hiz_downsample.comp");
         this.revalidate = compileCompute(GLSL_DIR + "gpu_cull_revalidate.comp");
@@ -127,7 +130,7 @@ public final class AllvrShaderCache {
             CreateManaIndustry.LOGGER.info("[Allvr] terrain program compiled: {}", this.terrain);
         }
         if (this.gpuReady()) {
-            CreateManaIndustry.LOGGER.info("[Allvr] GPU-cull programs compiled (reset/traversal/finalize/cmdgen)");
+            CreateManaIndustry.LOGGER.info("[Allvr] GPU-cull programs compiled (reset/traversal/finalize/cmdgen/clamp)");
         }
         if (this.hizReady()) {
             CreateManaIndustry.LOGGER.info("[Allvr] HiZ programs compiled (first/downsample/revalidate)");
@@ -154,6 +157,10 @@ public final class AllvrShaderCache {
         return this.cmdgen;
     }
 
+    public int cullClamp() {
+        return this.cullClamp;
+    }
+
     public int hizFirst() {
         return this.hizFirst;
     }
@@ -170,9 +177,10 @@ public final class AllvrShaderCache {
         return this.terrain != 0;
     }
 
-    /** All four compute programs linked (GPU-cull path completeness). */
+    /** All five GPU-cull programs linked (GPU-cull path completeness). */
     public boolean gpuReady() {
-        return this.cullReset != 0 && this.traversal != 0 && this.cullFinalize != 0 && this.cmdgen != 0;
+        return this.cullReset != 0 && this.traversal != 0 && this.cullFinalize != 0 && this.cmdgen != 0
+            && this.cullClamp != 0;
     }
 
     /** All three HiZ programs linked; false degrades 4b to frustum-only (4a). */

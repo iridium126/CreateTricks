@@ -9,6 +9,7 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -26,6 +27,10 @@ import org.lwjgl.opengl.GL46;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.client.dimension.AllvrClientCubeCache;
+import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisDataHolder;
+import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisFrameTarget;
+import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisPipelineData;
+import com.iridium126.createmanaindustry.client.dimension.iris.AllvrVoxyUniforms;
 import com.iridium126.createmanaindustry.config.ClientConfig;
 import com.iridium126.createmanaindustry.dimension.AllvrDimensions;
 import com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos;
@@ -38,12 +43,14 @@ import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
  * CPU greedy mesher, per-cube MDI commands, CPU frustum culling, no occlusion
  * culling / LOD / deferred shading (those are phases 4–5).
  * <p>
- * Frame slot: AFTER_SKY by default (the vanilla-terrain window this pass
- * replaces); when an iris shader pack is in use the draw moves to AFTER_LEVEL
- * with a one-time chat note — iris restructures the frame (gbuffer capture +
- * composite blit) and the pack's final output would overwrite an AFTER_SKY
- * draw, while after the blit our terrain stays visible (unlit by the pack;
- * documented V0 coexistence trade-off, doc §6.4 实况).
+ * Frame slot by mode (grilling decision ⑧ fallback chain): no pack →
+ * AFTER_SKY (the vanilla-terrain window this pass replaces); pack in use
+ * without a resolvable voxy patch (or with the patched program unavailable) →
+ * AFTER_LEVEL, self-lit after the composite blit (documented V0 coexistence
+ * trade-off); pack-lit via the voxy patch (iris integration G2) →
+ * AFTER_SOLID_BLOCKS — inside the gbuffer phase, so the draw lands in the
+ * pack's colortex targets before its deferred passes sample them
+ * ({@link AllvrIrisFrameTarget} carries the pack-lit framebuffer).
  * <p>
  * Lifecycle: cube apply/forget/setBlock arrive from {@link AllvrClientCubeCache}
  * on the main thread; mesh jobs run on the mesher worker; results are drained
@@ -85,11 +92,21 @@ public final class AllvrRenderer {
     private boolean tierOk;
     private boolean warnedTier;
     private boolean warnedPack;
+    private boolean warnedPatchFallback;
+    // iris integration (G2 draw mounting): the allay pipeline's patch data +
+    // the pack-lit draw targets it resolves to
+    private AllvrIrisPipelineData irisData;
+    private AllvrIrisFrameTarget frameTarget;
+    private int appliedCustomIdRevision = -1;
     private int loggedMeshResults;
     private long lastStatsLogMillis;
     /** Cubes currently holding a deferred (arena-starved) mesh stream. */
     private int deferredCount;
     private long lastStarveWarnMillis;
+
+    /** Texture unit for the vanilla lightmap in the level-2 albedo pass
+     *  (outside the HiZ/MC-depth compute units and the patch's sampler range). */
+    private static final int LIGHTMAP_UNIT = 5;
 
     private static final class Cube {
         int slot = -1;
@@ -113,17 +130,44 @@ public final class AllvrRenderer {
             return;
         }
         boolean packInUse = irisPackInUse();
+        // iris integration context — resolved BEFORE the stage gate so the vx*
+        // uniform suppliers stay current even on frames the terrain draw skips
+        AllvrIrisPipelineData data = null;
+        if (packInUse && ClientConfig.allvrIrisIntegration) {
+            data = AllvrIrisDataHolder.current();
+            if (data != null) {
+                AllvrVoxyUniforms.update(event.getModelViewMatrix(), event.getProjectionMatrix(),
+                    mc.options.renderDistance().get() * 16);
+                this.syncIrisData(data);
+            }
+        }
         RenderLevelStageEvent.Stage stage = event.getStage();
-        RenderLevelStageEvent.Stage chosen = packInUse
-            ? RenderLevelStageEvent.Stage.AFTER_LEVEL
+        // mode decision (grilling decision ⑧ fallback chain):
+        //  1. pack-lit (patched): voxy.json patch function resolved + compiled →
+        //     AFTER_SOLID_BLOCKS, inside the gbuffer phase before the pack's
+        //     deferred passes sample the patch-written buffers (Photon)
+        //  2. albedo pass: voxy.json resolves but ships NO patch function
+        //     (Complementary) — vanilla-gbuffer-mimicking albedo into the pack's
+        //     declared colortex, still at AFTER_SOLID_BLOCKS; the pack's own
+        //     deferred lighting shades our pixels like vanilla terrain
+        //  3. unpatched coexistence (no voxy.json / compile failure / switch
+        //     off): AFTER_LEVEL, self-lit after the composite blit (V0 behavior)
+        //  4. no pack: AFTER_SKY (vanilla window, byte-identical V0)
+        boolean patched = data != null && this.shaders.patchedTerrain() != 0;
+        boolean albedo = !patched && data != null && this.shaders.albedoTerrain() != 0;
+        RenderLevelStageEvent.Stage chosen = patched || albedo
+            ? RenderLevelStageEvent.Stage.AFTER_SOLID_BLOCKS
+            : packInUse ? RenderLevelStageEvent.Stage.AFTER_LEVEL
             : RenderLevelStageEvent.Stage.AFTER_SKY;
         if (stage != chosen) {
             return;
         }
         if (packInUse && !this.warnedPack) {
             this.warnedPack = true;
-            chat(mc, "[Allvr] shader pack active — drawing allay terrain post-composite "
-                + "(no pack lighting; V0 coexistence)");
+            chat(mc, data != null
+                ? "[Allvr] shader pack active — allay terrain drawn into the pack's gbuffer (pack-lit)"
+                : "[Allvr] shader pack active — drawing allay terrain post-composite "
+                    + "(no pack lighting; V0 coexistence)");
         }
         if (!this.initialized) {
             this.initialize(mc);
@@ -140,10 +184,42 @@ public final class AllvrRenderer {
         // config switch; the CPU path below is the V0 fallback and stays
         // until 4c acceptance removes it.
         if (this.wantGpu()) {
-            this.gpuDraw(event, level);
+            this.gpuDraw(event, level, data);
         } else {
-            this.draw(event, level);
+            this.draw(event, level, data);
         }
+    }
+
+    /**
+     * Keeps the iris-integration runtime state in step with the pipeline data:
+     * the patched program (identity-keyed, rebuilt after an F3+T), the pack-lit
+     * frame target (one per data — the old one's GL objects are released) and
+     * the customId column of the state table (full re-resolve on pack change,
+     * revision-driven re-upload for late-registered states).
+     */
+    private void syncIrisData(AllvrIrisPipelineData data) {
+        this.shaders.syncPatchedTerrain(data);
+        if (this.shaders.patchedTerrain() == 0) {
+            // no patch function in the pack's voxy.json (or it failed to
+            // compile) — the level-2 albedo pass takes over
+            this.shaders.syncAlbedoTerrain(data);
+        }
+        if (data == this.irisData) {
+            if (AllvrRenderStateMap.customIdRevision() != this.appliedCustomIdRevision) {
+                this.appliedCustomIdRevision = AllvrRenderStateMap.setCustomIds(data.getCustomIds());
+                this.buffers.invalidateStateTable();
+            }
+            return;
+        }
+        if (this.frameTarget != null) {
+            this.frameTarget.destroy();
+            this.frameTarget = null;
+        }
+        this.irisData = data;
+        this.frameTarget = new AllvrIrisFrameTarget(data, AllvrIrisDataHolder.depthSupplier());
+        data.setDepthTextures(this.frameTarget::depthTexture, this.frameTarget::depthTexture);
+        this.appliedCustomIdRevision = AllvrRenderStateMap.setCustomIds(data.getCustomIds());
+        this.buffers.invalidateStateTable();
     }
 
     /**
@@ -226,8 +302,15 @@ public final class AllvrRenderer {
         this.sawFirstMesh.remove(key);
     }
 
-    /** Client-side block change: remesh the cube (and border-adjacent neighbors). */
-    public void onBlockChanged(net.minecraft.core.BlockPos pos) {
+    /**
+     * Client-side block change: remesh the cube (and border-adjacent neighbors
+     * for the face-culling seam), plus the light-driven dirty set (grilling
+     * decision ⑥): an occluder change shifts the sky column exposure BELOW it
+     * (the column scan looks up from every voxel; the 128-block window spans
+     * 4 cubes), an emitter change relights every cube whose voxels sit within
+     * manhattan 15 of it.
+     */
+    public void onBlockChanged(net.minecraft.core.BlockPos pos, BlockState oldState, BlockState newState) {
         AllvrCubePos cpos = AllvrCubePos.of(pos);
         long key = cpos.asLong();
         Cube rc = this.renderCubes.get(key);
@@ -241,19 +324,45 @@ public final class AllvrRenderer {
         int ly = pos.getY() & 31;
         int lz = pos.getZ() & 31;
         if (lx == 0) {
-            this.dirtyNeighbor(cpos.getX() - 1, cpos.getY(), cpos.getZ());
+            this.dirtyCube(cpos.getX() - 1, cpos.getY(), cpos.getZ());
         } else if (lx == 31) {
-            this.dirtyNeighbor(cpos.getX() + 1, cpos.getY(), cpos.getZ());
+            this.dirtyCube(cpos.getX() + 1, cpos.getY(), cpos.getZ());
         }
         if (ly == 0) {
-            this.dirtyNeighbor(cpos.getX(), cpos.getY() - 1, cpos.getZ());
+            this.dirtyCube(cpos.getX(), cpos.getY() - 1, cpos.getZ());
         } else if (ly == 31) {
-            this.dirtyNeighbor(cpos.getX(), cpos.getY() + 1, cpos.getZ());
+            this.dirtyCube(cpos.getX(), cpos.getY() + 1, cpos.getZ());
         }
         if (lz == 0) {
-            this.dirtyNeighbor(cpos.getX(), cpos.getY(), cpos.getZ() - 1);
+            this.dirtyCube(cpos.getX(), cpos.getY(), cpos.getZ() - 1);
         } else if (lz == 31) {
-            this.dirtyNeighbor(cpos.getX(), cpos.getY(), cpos.getZ() + 1);
+            this.dirtyCube(cpos.getX(), cpos.getY(), cpos.getZ() + 1);
+        }
+        // light dirt — the same rules AllvrLightBaker bakes from
+        if (oldState != null && newState != null) {
+            if (AllvrMesher.occludesAt(oldState) != AllvrMesher.occludesAt(newState)) {
+                for (int k = 1; k <= AllvrLightBaker.SKY_WINDOW_BLOCKS >> 5; k++) {
+                    this.dirtyCube(cpos.getX(), cpos.getY() - k, cpos.getZ());
+                }
+            }
+            if (oldState.getLightEmission() != newState.getLightEmission()) {
+                // per axis at most one neighbor qualifies (15 < 32)
+                int minX = lx <= 14 ? -1 : 0;
+                int maxX = lx >= 17 ? 1 : 0;
+                int minY = ly <= 14 ? -1 : 0;
+                int maxY = ly >= 17 ? 1 : 0;
+                int minZ = lz <= 14 ? -1 : 0;
+                int maxZ = lz >= 17 ? 1 : 0;
+                for (int dx = minX; dx <= maxX; dx++) {
+                    for (int dy = minY; dy <= maxY; dy++) {
+                        for (int dz = minZ; dz <= maxZ; dz++) {
+                            if ((dx | dy | dz) != 0) {
+                                this.dirtyCube(cpos.getX() + dx, cpos.getY() + dy, cpos.getZ() + dz);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -285,7 +394,8 @@ public final class AllvrRenderer {
         AllvrMesherWorker.submit(key);
     }
 
-    private void dirtyNeighbor(int cx, int cy, int cz) {
+    /** Marks a cube (any offset) for remesh when it holds geometry. */
+    private void dirtyCube(int cx, int cy, int cz) {
         long nkey = AllvrCubePos.of(cx, cy, cz).asLong();
         Cube rc = this.renderCubes.get(nkey);
         if (rc != null && rc.quadCount > 0) {
@@ -435,7 +545,7 @@ public final class AllvrRenderer {
         }
     }
 
-    private void draw(RenderLevelStageEvent event, ClientLevel level) {
+    private void draw(RenderLevelStageEvent event, ClientLevel level, AllvrIrisPipelineData data) {
         Minecraft mc = Minecraft.getInstance();
         Camera camera = event.getCamera();
         Vec3 camPos = camera.getPosition();
@@ -488,26 +598,8 @@ public final class AllvrRenderer {
             }
         }
 
-        this.buffers.ensureStateTable(AllvrRenderStateMap.entryCount());
         this.buffers.uploadCommands(this.commands, n);
-
-        GL20.glUseProgram(prog);
-        this.buffers.bindForDraw();
-        this.terrainUniforms(prog, event, level, camPos);
-
-        GL13.glActiveTexture(GL13.GL_TEXTURE0);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D,
-            mc.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS).getId());
-
-        // state: opaque forward pass into the MC main target (borrowed depth —
-        // vanilla entities/translucents render after and depth-test correctly)
-        RenderSystem.enableDepthTest();
-        GL11.glEnable(GL11.GL_CULL_FACE);
-        GL11.glCullFace(GL11.GL_BACK);
-        RenderSystem.depthMask(true);
-        RenderSystem.disableBlend();
-
-        this.buffers.draw(n);
+        this.drawTerrain(event, level, camPos, n, false, data);
         this.logStats(n, cubesWithGeometry);
 
         // off-departure hygiene (particle-engine discipline)
@@ -549,6 +641,153 @@ public final class AllvrRenderer {
     }
 
     /**
+     * Shared draw tail for both command sources (doc §13 iris slice G2):
+     * patched-program selection (pack-lit vs unpatched fallback), the pack-lit
+     * frame target bind/unbind with FBO+viewport save/restore (the vanilla
+     * translucents and iris's own passes continue in the same frame), the
+     * common terrain program state, the MDI submission and the shadow-pass
+     * depth-only draw.
+     */
+    private void drawTerrain(RenderLevelStageEvent event, ClientLevel level, Vec3 camPos,
+                             int commandCount, boolean useMdIC, AllvrIrisPipelineData data) {
+        Minecraft mc = Minecraft.getInstance();
+        // 0 = unpatched main-target draw, 1 = patched (pack-lit), 2 = albedo pass
+        int mode = 0;
+        int prog = this.shaders.terrain();
+        if (data != null) {
+            prog = this.shaders.patchedTerrain();
+            if (prog != 0) {
+                mode = 1;
+            } else if (this.shaders.albedoTerrain() != 0) {
+                mode = 2;
+                prog = this.shaders.albedoTerrain();
+            } else if (!this.warnedPatchFallback) {
+                this.warnedPatchFallback = true;
+                CreateManaIndustry.LOGGER.warn("[Allvr] patched terrain programs unavailable — falling back "
+                    + "to the unpatched draw (fallback chain, grilling decision ⑧)");
+            }
+        }
+        if (prog == 0) {
+            return;
+        }
+
+        int savedFbo = 0;
+        int[] savedViewport = null;
+        if (mode > 0) {
+            savedFbo = GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
+            savedViewport = new int[4];
+            GL11.glGetIntegerv(GL11.GL_VIEWPORT, savedViewport);
+            var main = mc.getMainRenderTarget();
+            if (this.frameTarget.beginFrame(main.width, main.height)) {
+                this.frameTarget.bind();
+            } else {
+                // incomplete target (dead pack textures) → albedo fallback: the
+                // unpatched program draws into the currently bound gbuffer FBO
+                mode = 0;
+                prog = this.shaders.terrain();
+            }
+        }
+
+        // TBO freshness parity: the state table must cover every id the mesher
+        // registers (invalidateStateTable forces the re-upload after a
+        // customId re-resolve — grilling decision ⑦)
+        this.buffers.ensureStateTable(AllvrRenderStateMap.entryCount());
+        GL20.glUseProgram(prog);
+        this.buffers.bindForDraw();
+        this.terrainUniforms(prog, event, level, camPos);
+        if (mode == 2) {
+            // albedo pass samples the vanilla lightmap with the baked nibbles
+            GL13.glActiveTexture(GL13.GL_TEXTURE0 + LIGHTMAP_UNIT);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, AllvrIrisPipelineData.getLightmapTextureId());
+            GL20.glUniform1i(GL20.glGetUniformLocation(prog, "uLightmapTex"), LIGHTMAP_UNIT);
+        }
+        GL13.glActiveTexture(GL13.GL_TEXTURE0);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D,
+            mc.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS).getId());
+
+        // state: opaque pass (borrowed depth — the pack's deferred shading and
+        // the vanilla translucents depth-test against it correctly)
+        RenderSystem.enableDepthTest();
+        GL11.glEnable(GL11.GL_CULL_FACE);
+        GL11.glCullFace(GL11.GL_BACK);
+        RenderSystem.depthMask(true);
+        RenderSystem.disableBlend();
+
+        if (useMdIC) {
+            this.buffers.drawIndirectCount(this.coreGl46);
+        } else {
+            this.buffers.draw(commandCount);
+        }
+
+        if (mode > 0) {
+            if (mode == 2) {
+                GL13.glActiveTexture(GL13.GL_TEXTURE0 + LIGHTMAP_UNIT);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+            }
+            this.frameTarget.unbind();
+            if (ClientConfig.allvrIrisShadowPass) {
+                this.drawShadowPass(commandCount, useMdIC);
+            }
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, savedFbo);
+            GL11.glViewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
+        }
+    }
+
+    /**
+     * G2 shadow-pass participation (grilling decision ⑥, sub-switch
+     * {@code allvrIrisShadowPass}): depth-only MDI into the pack's shadow map.
+     * iris rendered its own shadow content earlier this frame — ours adds on
+     * top via depth LEQUAL, so the pack's deferred shadow sampling sees allay
+     * terrain shadows. Runs inside the patched draw's stage slot (still before
+     * every composite that samples shadowtex). The draw is world-space (the
+     * shadow matrices consume absolute positions, uCamInt = 0): float32 at
+     * |Y| ≈ 30M quantizes to 2-block steps — the accepted R20 envelope.
+     */
+    private void drawShadowPass(int commandCount, boolean useMdIC) {
+        Matrix4f shadowModelView = AllvrIrisDataHolder.shadowModelView();
+        Matrix4f shadowProjection = AllvrIrisDataHolder.shadowProjection();
+        if (shadowModelView == null || shadowProjection == null) {
+            return; // no shadow pass ran this frame (shadows off / night config)
+        }
+        int depthTex = AllvrIrisDataHolder.shadowDepthTexture();
+        int resolution = AllvrIrisDataHolder.shadowResolution();
+        if (!this.frameTarget.bindShadow(depthTex, resolution)) {
+            return;
+        }
+        int prog = this.shaders.terrain(); // unpatched program — no TAA jitter in shadow space
+        if (prog == 0) {
+            return;
+        }
+
+        int savedFbo = GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
+        int[] savedViewport = new int[4];
+        GL11.glGetIntegerv(GL11.GL_VIEWPORT, savedViewport);
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, this.frameTarget.shadowFbo());
+        GL11.glViewport(0, 0, resolution, resolution);
+
+        GL20.glUseProgram(prog);
+        AllvrShaderCache.uniformMat4(prog, "ModelViewMat", shadowModelView);
+        AllvrShaderCache.uniformMat4(prog, "ProjMat", shadowProjection);
+        AllvrShaderCache.uniformIVec3(prog, "uCamInt", 0, 0, 0);
+        AllvrShaderCache.uniformVec3(prog, "uCamFrac", 0f, 0f, 0f);
+        AllvrShaderCache.uniformInt(prog, "uAtlas", 0);
+        AllvrShaderCache.uniformInt(prog, "uStateTable", AllvrBuffers.STATE_TBO_UNIT);
+        // depth-only: the fsh still runs (alpha cutout discard) but writes no color
+        GL11.glColorMask(false, false, false, false);
+        RenderSystem.enableDepthTest();
+        if (useMdIC) {
+            this.buffers.drawIndirectCount(this.coreGl46);
+        } else {
+            this.buffers.draw(commandCount);
+        }
+        GL11.glColorMask(true, true, true, true);
+
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, savedFbo);
+        GL11.glViewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
+    }
+
+    /**
      * 4b GPU-driven draw (doc §9.1/§9.2/§9.4): flush dirty nodes → reset →
      * traversal (frustum + HiZ vs last frame's pyramid + two-phase split) →
      * finalize → cmdgen → clamp → one glMultiDrawElementsIndirectCount whose command
@@ -559,11 +798,11 @@ public final class AllvrRenderer {
      * different command source. HiZ degrades to frustum-only (4a) under an
      * active iris pack or when the pyramid can't be built (Q7 safe degradation).
      */
-    private void gpuDraw(RenderLevelStageEvent event, ClientLevel level) {
+    private void gpuDraw(RenderLevelStageEvent event, ClientLevel level, AllvrIrisPipelineData data) {
         if (this.shaders.needsRebuild()) {
             this.shaders.rebuild();
             if (!this.shaders.gpuReady()) {
-                this.draw(event, level); // compute compile failed — V0 fallback
+                this.draw(event, level, null); // compute compile failed — V0 fallback
                 return;
             }
         }
@@ -699,32 +938,9 @@ public final class AllvrRenderer {
                 + (cmdCount >= AllvrBuffers.MAX_COMMANDS ? " CLAMPED" : "");
         }
 
-        // 5. terrain draw — V0 program/state, MDIC submission
-        int prog = this.shaders.terrain();
-        if (prog == 0) {
-            this.buffers.unbindGpuCull();
-            return;
-        }
-        // TBO freshness parity with the V0 path (which re-checks every frame):
-        // the state table must cover every id the mesher registers. In a
-        // GPU-only session nothing ever builds it (every face renders black
-        // through the unbound samplerBuffer), and ids registered after the
-        // last build fetch out of bounds (garbage rect/tint)
-        this.buffers.ensureStateTable(AllvrRenderStateMap.entryCount());
-        GL20.glUseProgram(prog);
-        this.buffers.bindForDraw();
-        this.terrainUniforms(prog, event, level, camPos);
-        GL13.glActiveTexture(GL13.GL_TEXTURE0);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D,
-            mc.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS).getId());
-
-        RenderSystem.enableDepthTest();
-        GL11.glEnable(GL11.GL_CULL_FACE);
-        GL11.glCullFace(GL11.GL_BACK);
-        RenderSystem.depthMask(true);
-        RenderSystem.disableBlend();
-
-        this.buffers.drawIndirectCount(this.coreGl46);
+        // 5. terrain draw — shared tail (pack-lit FBO under a resolved patch),
+        // MDIC submission with the GPU count
+        this.drawTerrain(event, level, camPos, -1, true, data);
         this.logGpuStats(nodeCount, highWater, phase1, phase2, cmdCount, triage);
 
         // 6. build the fresh HiZ pyramid from this frame's depth, then

@@ -10,6 +10,7 @@ import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL43;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
+import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisPipelineData;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceLocation;
@@ -81,6 +82,14 @@ public final class AllvrShaderCache {
     private int hizFirst;
     private int hizDownsample;
     private int revalidate;
+    // iris-integration patched terrain program (built on demand from the
+    // pipeline data's patch sources; identity-keyed on the data object)
+    private AllvrIrisPipelineData patchedData;
+    private int patchedTerrain;
+    // level-2 coexistence program: pack declares draw buffers but ships no
+    // patch function (Complementary) — vanilla-gbuffer-mimicking albedo pass
+    private AllvrIrisPipelineData albedoData;
+    private int albedoTerrain;
     private volatile boolean dirty = true;
 
     /** Selects the GLSL version before the first compile (capability probe). */
@@ -105,6 +114,10 @@ public final class AllvrShaderCache {
             GL20.glDeleteProgram(this.terrain);
             this.terrain = 0;
         }
+        // the patched programs are identity-keyed on their pipeline data — drop
+        // them here so the next syncIrisData pass re-links against fresh sources
+        this.dropPatched();
+        this.dropAlbedo();
         for (int p : new int[] {this.cullReset, this.traversal, this.cullFinalize, this.cmdgen,
                 this.cullClamp, this.hizFirst, this.hizDownsample, this.revalidate}) {
             if (p != 0) {
@@ -139,6 +152,158 @@ public final class AllvrShaderCache {
 
     public int terrain() {
         return this.terrain;
+    }
+
+    // ------------------------------------------------------------------
+    // patched terrain program (iris integration draw mounting)
+    // ------------------------------------------------------------------
+
+    /**
+     * Builds (once per pipeline-data identity) the pack-lit terrain program:
+     * the base terrain sources + a header carrying the voxy contract (the UBO
+     * layout struct, sampler/SSBO declarations, {@code PATCHED_SHADER}) + the
+     * pack's {@code voxy_opaque.glsl} appended to the fsh; the vsh gains the
+     * pack's TAA jitter function when the patch ships one. Returns 0 on
+     * compile failure — the renderer falls back to the unpatched draw.
+     */
+    public int syncPatchedTerrain(AllvrIrisPipelineData data) {
+        if (data == null) {
+            this.dropPatched();
+            return 0;
+        }
+        if (this.patchedTerrain != 0 && this.patchedData == data) {
+            return this.patchedTerrain;
+        }
+        this.dropPatched();
+        this.patchedData = data;
+        this.patchedTerrain = this.linkPatched(data);
+        if (this.patchedTerrain != 0) {
+            CreateManaIndustry.LOGGER.info("[Allvr] patched terrain program compiled: {}",
+                this.patchedTerrain);
+        } else {
+            CreateManaIndustry.LOGGER.error("[Allvr] patched terrain program compile FAILED — "
+                + "falling back to the unpatched colortex0 draw");
+        }
+        return this.patchedTerrain;
+    }
+
+    public int patchedTerrain() {
+        return this.patchedTerrain;
+    }
+
+    /**
+     * Level-2 coexistence program: an ALLVR_ALBEDO_PASS terrain program that
+     * writes a vanilla-gbuffer-style albedo (albedo × tint × shade × baked
+     * lightmap, no fog) into the pack's first declared draw buffer. Built when
+     * the pack resolves a voxy.json WITHOUT a patch function — Complementary
+     * ships exactly that (its deferred lighting does the shading).
+     */
+    public int syncAlbedoTerrain(AllvrIrisPipelineData data) {
+        if (data == null) {
+            this.dropAlbedo();
+            return 0;
+        }
+        if (this.albedoTerrain != 0 && this.albedoData == data) {
+            return this.albedoTerrain;
+        }
+        this.dropAlbedo();
+        this.albedoData = data;
+        String vs = load(GLSL_DIR + "terrain.vsh");
+        String fs = load(GLSL_DIR + "terrain.fsh");
+        if (vs == null || fs == null) {
+            return 0;
+        }
+        String vHeader = this.taaHeader(data);
+        String fHeader = "#define ALLVR_ALBEDO_PASS\n";
+        int vsh = compileStage(versionLine + PRELUDE + vHeader + vs, GL20.GL_VERTEX_SHADER);
+        int fsh = compileStage(versionLine + PRELUDE + fHeader + fs, GL20.GL_FRAGMENT_SHADER);
+        if (vsh == 0 || fsh == 0) {
+            if (vsh != 0) {
+                GL20.glDeleteShader(vsh);
+            }
+            if (fsh != 0) {
+                GL20.glDeleteShader(fsh);
+            }
+            CreateManaIndustry.LOGGER.error("[Allvr] albedo terrain program compile FAILED");
+            return 0;
+        }
+        this.albedoTerrain = link("albedo terrain", vsh, fsh);
+        return this.albedoTerrain;
+    }
+
+    public int albedoTerrain() {
+        return this.albedoTerrain;
+    }
+
+    private void dropAlbedo() {
+        if (this.albedoTerrain != 0) {
+            GL20.glDeleteProgram(this.albedoTerrain);
+            this.albedoTerrain = 0;
+        }
+        this.albedoData = null;
+    }
+
+    /** The pack's TAA jitter plumbing for a vertex shader (UBO + function),
+     *  shared by the patched and albedo programs. Empty when no TAA. */
+    private String taaHeader(AllvrIrisPipelineData data) {
+        if (!data.hasTAA()) {
+            return "";
+        }
+        StringBuilder vHeader = new StringBuilder("#define ALLVR_TAA\n#define UNIFORM_UBO_BINDING ")
+            .append(UNIFORM_UBO_BINDING).append('\n');
+        if (data.getPatch().taaUEnabled()) {
+            vHeader.append("#define TAAU\n");
+        }
+        if (data.getUniforms() != null) {
+            vHeader.append("layout(binding = UNIFORM_UBO_BINDING, std140) uniform ShaderUniformBindings ")
+                .append(data.getUniforms().layout()).append('\n');
+        }
+        vHeader.append("vec2 voxy_taaOffset() ").append(data.getTAAShift()).append('\n');
+        return vHeader.toString();
+    }
+
+    private void dropPatched() {
+        if (this.patchedTerrain != 0) {
+            GL20.glDeleteProgram(this.patchedTerrain);
+            this.patchedTerrain = 0;
+        }
+        this.patchedData = null;
+    }
+
+    /** voxy contract constants — keep in sync with AllvrIrisPipelineData. */
+    private static final int UNIFORM_UBO_BINDING = 8;
+    private static final int SAMPLER_BINDING_BASE = 8;
+    private static final int SSBO_BINDING_BASE = 12;
+
+    private int linkPatched(AllvrIrisPipelineData data) {
+        String vs = load(GLSL_DIR + "terrain.vsh");
+        String fs = load(GLSL_DIR + "terrain.fsh");
+        if (vs == null || fs == null) {
+            return 0;
+        }
+        String vHeader = this.taaHeader(data);
+        StringBuilder fHeader = new StringBuilder("#define PATCHED_SHADER\n")
+            .append("#define SAMPLER_BINDING_BASE ").append(SAMPLER_BINDING_BASE).append('\n')
+            .append("#define SSBO_BINDING_BASE ").append(SSBO_BINDING_BASE).append('\n');
+        if (data.getUniforms() != null) {
+            fHeader.append("layout(binding = ").append(UNIFORM_UBO_BINDING)
+                .append(", std140) uniform ShaderUniformBindings ")
+                .append(data.getUniforms().layout()).append('\n');
+        }
+        if (data.getImageSet() != null) {
+            fHeader.append(data.getImageSet().layout());
+        }
+        if (data.getSsboSet() != null) {
+            fHeader.append(data.getSsboSet().layout());
+        }
+        String patchSource = data.getPatchOpaqueSource();
+        if (patchSource == null || patchSource.isBlank()) {
+            return 0;
+        }
+
+        int vsh = compileStage(versionLine + PRELUDE + vHeader + vs, GL20.GL_VERTEX_SHADER);
+        int fsh = compileStage(versionLine + PRELUDE + fHeader + fs + patchSource, GL20.GL_FRAGMENT_SHADER);
+        return link("patched terrain", vsh, fsh);
     }
 
     public int cullReset() {
@@ -255,6 +420,11 @@ public final class AllvrShaderCache {
         }
         int vsh = compileStage(versionLine + PRELUDE + vs, GL20.GL_VERTEX_SHADER);
         int fsh = compileStage(versionLine + PRELUDE + fs, GL20.GL_FRAGMENT_SHADER);
+        return link(vshPath, vsh, fsh);
+    }
+
+    /** Attaches already-compiled stages and links; deletes the stages either way. */
+    private static int link(String name, int vsh, int fsh) {
         if (vsh == 0 || fsh == 0) {
             if (vsh != 0) {
                 GL20.glDeleteShader(vsh);
@@ -271,7 +441,7 @@ public final class AllvrShaderCache {
         GL20.glDeleteShader(vsh);
         GL20.glDeleteShader(fsh);
         if (GL20.glGetProgrami(prog, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
-            CreateManaIndustry.LOGGER.error("[Allvr] terrain link failed: {}", GL20.glGetProgramInfoLog(prog));
+            CreateManaIndustry.LOGGER.error("[Allvr] {} link failed: {}", name, GL20.glGetProgramInfoLog(prog));
             GL20.glDeleteProgram(prog);
             return 0;
         }

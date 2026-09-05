@@ -1,5 +1,7 @@
 package com.iridium126.createmanaindustry.mixin.allvriris;
 
+import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisDataHolder;
+import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisPipelineCapture;
 import com.iridium126.createmanaindustry.client.dimension.iris.AllvrIrisPipelineData;
 import com.iridium126.createmanaindustry.client.dimension.iris.AllvrVoxyPatch;
 import com.iridium126.createmanaindustry.client.dimension.iris.IGetAllvrPatchData;
@@ -50,10 +52,16 @@ public class AllvrIrisPipelineMixin implements IGetAllvrPatchData, IGetAllvrPipe
     @Inject(method = "<init>", at = @At(value = "INVOKE",
         target = "Lnet/irisshaders/iris/pipeline/IrisRenderingPipeline;createSetupComputes([Lnet/irisshaders/iris/shaderpack/programs/ComputeSource;Lnet/irisshaders/iris/shaderpack/programs/ProgramSet;Lnet/irisshaders/iris/shaderpack/texture/TextureStage;)[Lnet/irisshaders/iris/gl/program/ComputeProgram;"), remap = false)
     private void allvr$buildPipeline(ProgramSet programSet, CallbackInfo ci) {
-        if (this.allvr$patch != null) {
-            this.allvr$pipeline = AllvrIrisPipelineData.buildPipeline(
-                (IrisRenderingPipeline) (Object) this, this.allvr$patch,
-                this.customUniforms, this.shaderStorageBufferHolder);
+        // publish only the allay dimension's pipeline (the patch parse is
+        // dimension-gated the same way); a no-voxy.json pack publishes null so
+        // a stale entry from a previously loaded pack cannot survive
+        if (AllvrIrisPipelineCapture.isBuildingAllayPipeline()) {
+            if (this.allvr$patch != null) {
+                this.allvr$pipeline = AllvrIrisPipelineData.buildPipeline(
+                    (IrisRenderingPipeline) (Object) this, this.allvr$patch,
+                    this.customUniforms, this.shaderStorageBufferHolder);
+            }
+            AllvrIrisDataHolder.set((IrisRenderingPipeline) (Object) this, this.allvr$pipeline);
         }
     }
 

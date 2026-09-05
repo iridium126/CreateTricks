@@ -168,6 +168,14 @@ public final class AllvrClientCubeCache {
         }
     }
 
+    /** Long-key variant for code that already works in cube keys (mesher
+     *  light bake); same lock discipline as {@link #peekCube(BlockPos)}. */
+    public static AllvrCube peekCube(long cubePos) {
+        synchronized (LOCK) {
+            return cubes.get(cubePos);
+        }
+    }
+
     /**
      * Client-side mirror of {@code AllvrCubeMap#setBlock} for the write paths
      * vanilla routes through {@code Level#setBlock} on the client (destroy /
@@ -211,7 +219,8 @@ public final class AllvrClientCubeCache {
         }
         // re-entrant LOCK acquisitions below (recursive setBlock via neighbour
         // shape updates) are safe — Java monitors are reentrant
-        com.iridium126.createmanaindustry.client.dimension.render.AllvrRenderer.INSTANCE.onBlockChanged(pos);
+        com.iridium126.createmanaindustry.client.dimension.render.AllvrRenderer.INSTANCE
+            .onBlockChanged(pos, oldState, newState);
 
         // mirror of Level#markAndNotifyBlock, minus renderer notification —
         // cubes have no vanilla sections to re-render (ALLVR remesh, phase 3)

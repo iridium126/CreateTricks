@@ -517,6 +517,17 @@ public final class AllvrBuffers {
         if (entries <= this.stateTboEntries) {
             return;
         }
+        uploadStateTable();
+        this.stateTboEntries = entries;
+    }
+
+    /** Uploads the state TBO even when the entry count didn't grow — used
+     *  when the customId column was re-resolved (pack switch, new ids). */
+    public void invalidateStateTable() {
+        this.stateTboEntries = 0;
+    }
+
+    private void uploadStateTable() {
         float[] packed = AllvrRenderStateMap.packedTable();
         if (this.stateTableBuffer == 0) {
             this.stateTableBuffer = glGenBuffers();
@@ -530,7 +541,6 @@ public final class AllvrBuffers {
         GL11.glBindTexture(GL_TEXTURE_BUFFER, this.stateTbo);
         GL31.glTexBuffer(GL_TEXTURE_BUFFER, GL30.GL_RGBA32F, this.stateTableBuffer);
         GL11.glBindTexture(GL_TEXTURE_BUFFER, 0);
-        this.stateTboEntries = entries;
     }
 
     // ------------------------------------------------------------------

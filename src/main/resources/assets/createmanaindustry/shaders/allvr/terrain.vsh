@@ -29,6 +29,11 @@ flat out vec4 vTint; // rgb tint + renderable flag
 flat out vec4 vInset; // half-texel inset (tile space), xy used
 flat out float vShade;  // vanilla-style directional face shade
 flat out float vDist;   // view distance for fog
+// iris-integration outputs (consumed by the patched fsh seam; the unpatched
+// program leaves them unused — the compiler strips them)
+flat out vec2 vLight;    // baked light nibbles: (block/15, sky/15)
+flat out float vCustomId; // iris block material id (state table spare texel z)
+flat out uint vFaceVoxy;  // voxy face encoding: axis(x2,y0,z1)<<1 | dir(+=1)
 
 const vec3 AXIS[3] = vec3[3](vec3(1, 0, 0), vec3(0, 1, 0), vec3(0, 0, 1));
 
@@ -51,7 +56,8 @@ void main() {
     uint w = (lo >> 23u) & 31u;
     uint stateId = ((lo >> 28u) & 0xFFFFu) | (hi << 4u); // 16-bit id across the 36-bit boundary
     // NOTE: id occupies bits 28..43 of the 64-bit word → low 4 bits in .x,
-    // high 12 in .y low bits.
+    // high 12 in .y low bits. Bits 44..51 carry the mesher-baked light
+    // (sky in .y[12..15], block in .y[16..19], AllvrLightBaker).
 
     // (u,v) basis per (axis,dir) — the mesher chose them so u×v = the outward
     // face normal:
@@ -69,6 +75,7 @@ void main() {
     vRect  = texelFetch(uStateTable, entry + 0);
     vTint  = texelFetch(uStateTable, entry + 1);
     vInset = texelFetch(uStateTable, entry + 2);
+    vCustomId = vInset.z;
 
     vec3 au = AXIS[uAxis];
     vec3 av = AXIS[vAxis];
@@ -86,8 +93,6 @@ void main() {
 
     ivec3 origin = cubeInfo[gl_BaseInstance].xyz;
     vec3 relPos = vec3(origin - uCamInt) - uCamFrac + local;
-
-    gl_Position = ProjMat * ModelViewMat * vec4(relPos, 1.0);
 
     // Texture coords follow the vanilla FaceInfo/BlockFaceUV table (derived
     // from FaceBakery.makeVertices + BlockFaceUV.getU/getV, uv [0,0,16,16]) —
@@ -107,6 +112,19 @@ void main() {
     vec3 normal = aw * (dir == 0u ? 1.0 : -1.0);
     vShade = normal.y > 0.5 ? 1.0 : (normal.y < -0.5 ? 0.5 : (abs(normal.x) > 0.5 ? 0.6 : 0.8));
 
+    // voxy face encoding (the patch's parameter.contract): Photon decodes
+    // normal = axis-slot(x=2,y=0,z=1) with sign from bit0 (+ = 1)
+    uint voxyAxis = axis == 0u ? 2u : (axis == 1u ? 0u : 1u);
+    vFaceVoxy = (voxyAxis << 1u) | (dir == 0u ? 1u : 0u);
+    vLight = vec2(float((hi >> 16u) & 0xFu), float((hi >> 12u) & 0xFu)) * (1.0 / 15.0);
+
     vec4 viewPos = ModelViewMat * vec4(relPos, 1.0);
     vDist = length(viewPos.xyz);
+
+    gl_Position = ProjMat * ModelViewMat * vec4(relPos, 1.0);
+#ifdef ALLVR_TAA
+    // pack TAA jitter (voxy contract: clip-space offset scaled by w, the
+    // function body comes verbatim from the pack's voxy.json taaOffset)
+    gl_Position.xy += voxy_taaOffset() * gl_Position.w;
+#endif
 }

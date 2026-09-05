@@ -67,6 +67,20 @@ public final class AllvrRenderStateMap {
     private static final Map<BlockState, Short> IDS = new ConcurrentHashMap<>();
     /** CopyOnWrite so worker {@link #entryOf} reads never race a resize. */
     private static final List<Entry> ENTRIES = new CopyOnWriteArrayList<>();
+    /** Parallel to {@link #ENTRIES}: the state behind each id (null for air),
+     *  feeding the iris customId resolution (grilling decision ⑦). */
+    private static final List<BlockState> STATES = new CopyOnWriteArrayList<>();
+
+    /**
+     * Per-id iris block-material ids (the pack patch's {@code customId} —
+     * Photon derives its material mask from {@code customId − 10000}). Written
+     * render-thread only by {@link #setCustomIds}; read by
+     * {@link #packedTable} for the spare texel of each face's inset entry.
+     * {@link #customIdRevision} bumps on every change so the renderer can
+     * re-upload the TBO lazily.
+     */
+    private static volatile int[] customIds = new int[] {0};
+    private static volatile int customIdRevision = 0;
 
     private static final Entry NON_RENDERABLE = new Entry(zeroFaces(), false);
 
@@ -80,6 +94,7 @@ public final class AllvrRenderStateMap {
 
     static {
         ENTRIES.add(NON_RENDERABLE); // id 0 = air
+        STATES.add(null);
     }
 
     /** Id for a state, assigning one lazily. Thread-safe. */
@@ -104,8 +119,36 @@ public final class AllvrRenderStateMap {
             }
             IDS.put(state, id);
             ENTRIES.add(resolveEntry(state));
+            STATES.add(state);
+            // the fresh entry has no resolved customId yet — the renderer's
+            // revision check re-runs setCustomIds and re-uploads the TBO
+            customIdRevision++;
             return id;
         }
+    }
+
+    /**
+     * Re-resolves the customId column against {@code ids} (iris's
+     * {@code WorldRenderingSettings.getBlockStateIds()}, live read by the
+     * pipeline data). Returns the new revision. Full re-resolve on every call
+     * — pack switches re-run it wholesale, zero re-mesh (grilling decision ⑦).
+     */
+    public static int setCustomIds(it.unimi.dsi.fastutil.objects.Object2IntMap<BlockState> ids) {
+        int n = ENTRIES.size();
+        int[] out = new int[n];
+        if (ids != null) {
+            for (int i = 0; i < n && i < STATES.size(); i++) {
+                BlockState state = STATES.get(i);
+                out[i] = state == null ? 0 : ids.getOrDefault(state, 0);
+            }
+        }
+        customIds = out;
+        return ++customIdRevision;
+    }
+
+    /** Revision of the customId column — the renderer re-uploads when it moves. */
+    public static int customIdRevision() {
+        return customIdRevision;
     }
 
     public static Entry entryOf(int id) {
@@ -116,12 +159,17 @@ public final class AllvrRenderStateMap {
         return ENTRIES.size();
     }
 
-    /** Packed float table for the state TBO: TEXELS_PER_FACE vec4 per face × 6 faces per id. */
+    /** Packed float table for the state TBO: TEXELS_PER_FACE vec4 per face × 6 faces per id.
+     *  The inset texel's z component carries the iris customId (spare texel, grilling
+     *  decision ⑦); w stays spare. */
     public static float[] packedTable() {
         float[] out = new float[ENTRIES.size() * TEXELS_PER_ENTRY * 4];
+        int[] ids = customIds;
         int i = 0;
-        for (Entry e : ENTRIES) {
-            for (FaceMaterial f : e.faces) {
+        for (int e = 0; e < ENTRIES.size(); e++) {
+            Entry entry = ENTRIES.get(e);
+            int customId = e < ids.length ? ids[e] : 0;
+            for (FaceMaterial f : entry.faces) {
                 out[i++] = f.u0();
                 out[i++] = f.v0();
                 out[i++] = f.du();
@@ -129,10 +177,10 @@ public final class AllvrRenderStateMap {
                 out[i++] = f.tintR();
                 out[i++] = f.tintG();
                 out[i++] = f.tintB();
-                out[i++] = e.renderable ? 1.0f : 0.0f;
+                out[i++] = entry.renderable ? 1.0f : 0.0f;
                 out[i++] = f.insetU();
                 out[i++] = f.insetV();
-                out[i++] = 0.0f;
+                out[i++] = (float) customId;
                 out[i++] = 0.0f;
             }
         }

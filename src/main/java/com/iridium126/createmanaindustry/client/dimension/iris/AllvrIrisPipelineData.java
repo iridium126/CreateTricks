@@ -95,6 +95,10 @@ public final class AllvrIrisPipelineData {
 
     public final int[] opaqueDrawTargets;
     public final int[] translucentDrawTargets;
+    /** Dimensions of the first opaque target — the terrain FBO's viewport
+     *  (smaller than the main target when the pack runs TAAU). */
+    public final int opaqueWidth;
+    public final int opaqueHeight;
     private final AllvrVoxyPatch patch;
     private final String opaquePatch;
     private final String translucentPatch;
@@ -115,10 +119,13 @@ public final class AllvrIrisPipelineData {
     private IntSupplier translucentDepthTexture = () -> 0;
 
     private AllvrIrisPipelineData(AllvrVoxyPatch patch, int[] opaqueDrawTargets, int[] translucentDrawTargets,
-                                  StructLayout uniformSet, Runnable blendingSetup, ImageSet imageSet, SSBOSet ssboSet) {
+                                  StructLayout uniformSet, Runnable blendingSetup, ImageSet imageSet, SSBOSet ssboSet,
+                                  int opaqueWidth, int opaqueHeight) {
         this.patch = patch;
         this.opaqueDrawTargets = opaqueDrawTargets;
         this.translucentDrawTargets = translucentDrawTargets;
+        this.opaqueWidth = opaqueWidth;
+        this.opaqueHeight = opaqueHeight;
         this.opaquePatch = patch.getPatchOpaqueSource();
         this.translucentPatch = patch.getPatchTranslucentSource();
         this.uniforms = uniformSet;
@@ -192,27 +199,47 @@ public final class AllvrIrisPipelineData {
 
         var flipped = ipipe.getFlippedAfterPrepare();
         RenderTargets rt = ((AllvrIrisRenderingPipelineAccessor) ipipe).getRenderTargets();
-        var opaqueDrawTargets = getDrawBuffers(patch.getOpaqueTargets(), flipped, rt);
-        var translucentDrawTargets = getDrawBuffers(patch.getTranslucentTargets(), flipped, rt);
+        int[] opaqueWidthHeight = {0, 0};
+        var opaqueDrawTargets = getDrawBuffers(patch.getOpaqueTargets(), flipped, rt, opaqueWidthHeight);
+        var translucentDrawTargets = getDrawBuffers(patch.getTranslucentTargets(), flipped, rt, null);
 
         var out = new AllvrIrisPipelineData(patch, opaqueDrawTargets, translucentDrawTargets, uniforms,
-            patch.createBlendSetup(), imageSet, ssboSet);
+            patch.createBlendSetup(), imageSet, ssboSet, opaqueWidthHeight[0], opaqueWidthHeight[1]);
         CreateManaIndustry.LOGGER.info(
-            "[Allvr] voxy patch resolved: opaque buffers {} translucent {} uniforms {} samplers {} ssbos {} taa {}",
+            "[Allvr] voxy patch resolved: opaque buffers {} translucent {} uniforms {} samplers {} ssbos {} taa {} taaU {} size {}x{}",
             opaqueDrawTargets.length, translucentDrawTargets.length,
             uniforms != null ? uniforms.size() / 4 : 0,
             imageSet != null ? "bound" : "none",
-            ssboSet != null ? "bound" : "none", out.hasTAA());
+            ssboSet != null ? "bound" : "none", out.hasTAA(), patch.taaUEnabled(),
+            opaqueWidthHeight[0], opaqueWidthHeight[1]);
         return out;
     }
 
-    private static int[] getDrawBuffers(int[] targets, ImmutableSet<Integer> stageWritesToAlt, RenderTargets rt) {
+    private static int[] getDrawBuffers(int[] targets, ImmutableSet<Integer> stageWritesToAlt, RenderTargets rt,
+                                        int[] firstDimsOut) {
         int[] targetTextures = new int[targets.length];
         for (int i = 0; i < targets.length; i++) {
             RenderTarget target = rt.getOrCreate(targets[i]);
+            if (i == 0 && firstDimsOut != null) {
+                firstDimsOut[0] = target.getWidth();
+                firstDimsOut[1] = target.getHeight();
+            }
             targetTextures[i] = stageWritesToAlt.contains(targets[i]) ? target.getAltTexture() : target.getMainTexture();
         }
         return targetTextures;
+    }
+
+    /**
+     * Live read of iris's block → material-id map (the patch's {@code customId}
+     * — Photon derives its material mask from {@code customId − 10000}). Read
+     * at resolution time, not build time, so late population is still seen.
+     */
+    public it.unimi.dsi.fastutil.objects.Object2IntMap<net.minecraft.world.level.block.state.BlockState> getCustomIds() {
+        try {
+            return net.irisshaders.iris.shaderpack.materialmap.WorldRenderingSettings.INSTANCE.getBlockStateIds();
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -522,7 +549,7 @@ public final class AllvrIrisPipelineData {
     // samplers (pack colortexes/lightmap/shadowtex + our depth textures)
     // ------------------------------------------------------------------
 
-    public record ImageSet(String layout, IntConsumer bindingFunction) {}
+    public record ImageSet(String layout, IntConsumer bindingFunction, int samplerCount) {}
 
     private record TextureWSampler(String name, IntSupplier texture, int sampler) {}
 
@@ -649,14 +676,14 @@ public final class AllvrIrisPipelineData {
                 }
             }
         };
-        return new ImageSet(builder.toString(), bindingFunction);
+        return new ImageSet(builder.toString(), bindingFunction, samplers.length);
     }
 
     /**
      * The vanilla lightmap texture id — the vanilla field is private, so the
-     * read goes through {@code AllvrLightTextureAccessor}.
+     * read goes through {@code AllvrLightTextureAccessor}. Render thread only.
      */
-    private static int getLightmapTextureId() {
+    public static int getLightmapTextureId() {
         return ((AllvrLightTextureAccessor) (Object) Minecraft.getInstance().gameRenderer.lightTexture())
             .allvr$getLightTexture().getId();
     }
@@ -665,7 +692,7 @@ public final class AllvrIrisPipelineData {
     // SSBOs (pack shader storage buffers, bound through iris's holder)
     // ------------------------------------------------------------------
 
-    public record SSBOSet(String layout, IntConsumer bindingFunction) {}
+    public record SSBOSet(String layout, IntConsumer bindingFunction, int bindingCount) {}
 
     private static SSBOSet createSSBOLayouts(Int2ObjectMap<String> ssbos, ShaderStorageBufferHolder ssboStore) {
         if (ssboStore == null || ssbos.isEmpty()) {
@@ -692,6 +719,6 @@ public final class AllvrIrisPipelineData {
                     ssboStore.getBufferIndex(binding.irisIndex()));
             }
         };
-        return new SSBOSet(builder.toString(), bindingFunction);
+        return new SSBOSet(builder.toString(), bindingFunction, bindings.size());
     }
 }

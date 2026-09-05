@@ -20,9 +20,11 @@ import net.minecraft.world.level.block.state.BlockState;
  * <p>
  * Output is the doc §7.3 packed 8-byte quad stream:
  * {@code axis(2) | dir(1) | uSize-1(5) | vSize-1(5) | u(5) | v(5) | w(5)
- *  | stateId(16) | spare(28)}. Winding: the (u,v) basis is chosen per
- * (axis, dir) so u×v = the outward face normal; the shared index buffer
- * {@code 0,1,2,2,1,3} then produces CCW-outward triangles.
+ *  | stateId(16) | sky(4) | block(4) | spare(12)}. Winding: the (u,v) basis is
+ * chosen per (axis, dir) so u×v = the outward face normal; the shared index
+ * buffer {@code 0,1,2,2,1,3} then produces CCW-outward triangles. The sky/block
+ * nibbles are the mesher-time light bake ({@link AllvrLightBaker}, iris
+ * integration slice), sampled at the air voxel adjacent to the face center.
  */
 public final class AllvrMesher {
 
@@ -57,6 +59,7 @@ public final class AllvrMesher {
     private final BlockState[] states;
     private final byte[] occludes;
     private final int[] mask = new int[CUBE * CUBE];
+    private AllvrLightBaker light;
     private long[] out;
     private int outCount;
 
@@ -88,10 +91,12 @@ public final class AllvrMesher {
     /**
      * Builds the quad stream for one cube snapshot. Returns a packed long[] of
      * exactly {@code result.length} quads (no trailing slack — sized via the
-     * scratch grow loop, then trimmed).
+     * scratch grow loop, then trimmed). {@code light} may be null (zero light
+     * nibbles) — non-null whenever the mesher worker ran the light bake.
      */
-    public static long[] build(BlockState[] states, byte[] occludes) {
+    public static long[] build(BlockState[] states, byte[] occludes, AllvrLightBaker light) {
         AllvrMesher m = new AllvrMesher(states, occludes);
+        m.light = light;
         m.out = new long[1024];
         for (int axis = 0; axis < 3; axis++) {
             for (int dir = 0; dir < 2; dir++) {
@@ -149,6 +154,21 @@ public final class AllvrMesher {
                             this.mask[(v + dv) * CUBE + u + du] = 0;
                         }
                     }
+                    // flat light bake at the air voxel adjacent to the face
+                    // center (rects merge across light variation — documented)
+                    int sky = 0;
+                    int blk = 0;
+                    if (this.light != null) {
+                        int su = u + (width >> 1);
+                        int sv = v + (height >> 1);
+                        int wn = dir == 0 ? w + 1 : w - 1;
+                        int sx = uAxis == 0 ? su : vAxis == 0 ? sv : wn;
+                        int sy = uAxis == 1 ? su : vAxis == 1 ? sv : wn;
+                        int sz = uAxis == 2 ? su : vAxis == 2 ? sv : wn;
+                        long sampleY = this.light.cubeMinY() + sy;
+                        sky = this.light.sky(sx, sz, sampleY);
+                        blk = this.light.block(sx, sz, sampleY);
+                    }
                     long quad = (long) axis
                         | ((long) dir << 2)
                         | ((long) (width - 1) << 3)
@@ -156,7 +176,9 @@ public final class AllvrMesher {
                         | ((long) u << 13)
                         | ((long) v << 18)
                         | ((long) w << 23)
-                        | ((long) (m - 1) << 28);
+                        | ((long) (m - 1) << 28)
+                        | ((long) sky << 44)
+                        | ((long) blk << 48);
                     if (this.outCount == this.out.length) {
                         // no cap: craftable patterns (checkerboard) reach ~5×10⁴
                         // quads per cube; the old 6144 ceiling AIOOBE'd here and

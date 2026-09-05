@@ -94,7 +94,10 @@ public final class AllvrMesherWorker {
         // interior is filled outside it (the old per-voxel scan held the lock
         // for the full 39k reads and stalled main-thread cube writes).
         AllvrClientCubeCache.snapshotForMesher(key, states, occludes);
-        RESULTS.add(new MeshResult(key, AllvrMesher.build(states, occludes)));
+        // light bake always on: cheap (column scans with per-section skips +
+        // a tiny emitter table), keeps the quad stream format config-agnostic
+        AllvrLightBaker light = AllvrLightBaker.capture(key, occludes);
+        RESULTS.add(new MeshResult(key, AllvrMesher.build(states, occludes, light)));
     }
 
     private AllvrMesherWorker() {}

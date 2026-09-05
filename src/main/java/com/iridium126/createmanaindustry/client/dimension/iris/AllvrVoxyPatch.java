@@ -295,6 +295,16 @@ public final class AllvrVoxyPatch {
         return new float[] {Math.max(0.01f, this.json.renderScale[0]), Math.max(0.01f, this.json.renderScale[1])};
     }
 
+    /**
+     * Whether the pack's TAAU mode is on: the renderScale field only survives
+     * the pack's own {@code #ifdef TAAU} gating when it is (Photon gates the
+     * field itself). The patch's {@code taaOffset} body branches on it, so the
+     * ALLVR-compiled terrain program needs the same define.
+     */
+    public boolean taaUEnabled() {
+        return this.json.renderScale != null;
+    }
+
     public boolean useViewportDims() {
         return this.json.useViewportDims;
     }

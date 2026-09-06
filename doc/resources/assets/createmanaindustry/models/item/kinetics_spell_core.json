@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "createmanaindustry:item/kinetics_spell_core"
+  }
+}

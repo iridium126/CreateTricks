@@ -1,0 +1,7 @@
+{
+  "parent": "minecraft:block/cube_column",
+  "textures": {
+    "end": "createmanaindustry:block/prismarine_quartz_top",
+    "side": "createmanaindustry:block/prismarine_quartz_side"
+  }
+}

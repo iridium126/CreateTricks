@@ -164,7 +164,13 @@ void main() {
                + aw * plane;
 
     ivec3 origin = cubeInfo[gl_BaseInstance].xyz;
-    vec3 relPos = vec3(origin - uCamInt) - uCamFrac + local;
+    // 4c: cubeInfo.w carries the LOD level (0 = full-res cube and L0 node, the
+    // server stream writes the node's level 0..3). World position scales by
+    // 1 << level; vUvLocal above deliberately does NOT — it stays in node-voxel
+    // units so fract() tiles once per node voxel (per 2^level blocks) and the
+    // derivative-driven mip selection coarsens automatically.
+    float lodScale = ldexp(1.0, cubeInfo[gl_BaseInstance].w);
+    vec3 relPos = vec3(origin - uCamInt) - uCamFrac + local * lodScale;
 
     // Texture coords follow the vanilla FaceInfo/BlockFaceUV table (derived
     // from FaceBakery.makeVertices + BlockFaceUV.getU/getV, uv [0,0,16,16]) —
@@ -214,9 +220,9 @@ void main() {
     vec2 distP[4];
     float devP[4];
     for (int i = 0; i < 4; i++) {
-        vec3 l4 = au * (float(u) + cTab[i].x * float(sizeU))
+        vec3 l4 = (au * (float(u) + cTab[i].x * float(sizeU))
                 + av * (float(v) + cTab[i].y * float(sizeV))
-                + aw * plane;
+                + aw * plane) * lodScale;
         vec4 cp4 = ProjMat * (ModelViewMat * vec4(baseRel + l4, 1.0));
         vec3 dz = allvrDistortShadowSpace(cp4.xyz);
         distC[i] = dz.xy;
@@ -241,11 +247,13 @@ void main() {
         + devP[q] * allvrEdgeNormal(distP[q], distP[(q + 1) & 3]);
     gl_Position = vec4(dilated, distZ[int(corner)], 1.0);
 
-    // plane frame for the fragment-exact solve in shadow.fsh
-    vOriginView = (ModelViewMat * vec4(baseRel + au * float(u) + av * float(v) + aw * plane, 1.0)).xyz;
+    // plane frame for the fragment-exact solve in shadow.fsh (uv bounds in
+    // world blocks — the LOD scale widens the quad's true extent)
+    vOriginView = (ModelViewMat * vec4(baseRel
+        + (au * float(u) + av * float(v) + aw * plane) * lodScale, 1.0)).xyz;
     vUAxisView = mat3(ModelViewMat) * au;
     vVAxisView = mat3(ModelViewMat) * av;
-    vQuadSize = vec2(float(sizeU), float(sizeV));
+    vQuadSize = vec2(float(sizeU), float(sizeV)) * lodScale;
 #else
 #ifdef ALLVR_SHADOW_PASS
     gl_Position = vec4(allvrDistortShadowSpace(gl_Position.xyz), gl_Position.w);

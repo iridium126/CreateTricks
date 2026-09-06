@@ -39,6 +39,7 @@ public final class ClientConfig {
     private static ModConfigSpec.BooleanValue ALLVR_GPU_PIPELINE;
     private static ModConfigSpec.BooleanValue ALLVR_IRIS_INTEGRATION;
     private static ModConfigSpec.BooleanValue ALLVR_IRIS_SHADOW_PASS;
+    private static ModConfigSpec.BooleanValue ALLVR_LOD;
 
     static {
         BUILDER.comment("Volumetric mist rendering options.").push("rendering");
@@ -112,6 +113,13 @@ public final class ClientConfig {
                         + "shadow-samples the gbuffer (Photon) get real terrain self-shadowing. Requires "
                         + "irisIntegration and an active pack with a shadow pass.")
                 .define("irisShadowPass", true);
+        ALLVR_LOD = BUILDER
+                .comment("Far-terrain LOD for the allay dimension (4c-1): beyond the full-resolution cube streaming "
+                        + "radius the server streams server-meshed LOD nodes (band table 256/512/1024/2048 blocks, "
+                        + "server-side allvrLodDistance caps the extent). Requires the GPU terrain pipeline "
+                        + "(gpuPipeline) — LOD nodes only flow through the GPU-driven draw path. Streaming extent "
+                        + "is server-authoritative; this switch only turns the client's request/render half on.")
+                .define("lod", false);
         BUILDER.pop();
     }
 
@@ -130,6 +138,7 @@ public final class ClientConfig {
     public static boolean allvrGpuPipeline = false;
     public static boolean allvrIrisIntegration = false;
     public static boolean allvrIrisShadowPass = true;
+    public static boolean allvrLod = false;
 
     private ClientConfig() {}
 
@@ -150,6 +159,7 @@ public final class ClientConfig {
             allvrGpuPipeline = ALLVR_GPU_PIPELINE.get();
             allvrIrisIntegration = ALLVR_IRIS_INTEGRATION.get();
             allvrIrisShadowPass = ALLVR_IRIS_SHADOW_PASS.get();
+            allvrLod = ALLVR_LOD.get();
         }
     }
 }

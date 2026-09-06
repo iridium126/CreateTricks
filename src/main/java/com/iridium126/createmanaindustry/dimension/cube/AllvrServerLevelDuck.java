@@ -11,4 +11,8 @@ public interface AllvrServerLevelDuck {
 
     /** Lazily created cube registry for this level; null off the allay dimension. */
     AllvrCubeMap allvr$getCubeMap();
+
+    /** Lazily created LOD pipeline for this level (created with the cube map);
+     *  null off the allay dimension. */
+    com.iridium126.createmanaindustry.dimension.lod.AllvrLodMap allvr$getLodMap();
 }

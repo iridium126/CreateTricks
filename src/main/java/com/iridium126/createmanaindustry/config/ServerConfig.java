@@ -88,6 +88,11 @@ public final class ServerConfig {
     private static ModConfigSpec.LongValue ARTIFACT_MAX_MEDIA;
     private static ModConfigSpec.LongValue BATTERY_MAX_MEDIA;
 
+    // ---- allvr_lod ---------------------------------------------------------
+
+    private static ModConfigSpec.IntValue ALLVR_LOD_DISTANCE;
+    private static ModConfigSpec.IntValue ALLVR_LOD_BUILD_THREADS;
+
     static {
         BUILDER.comment("Fluid conversion ratios — how much mana/media/source one bucket holds.").push("fluid");
         MANA_PER_BUCKET = BUILDER
@@ -203,6 +208,19 @@ public final class ServerConfig {
                 .comment("Maximum media capacity for incomplete media batteries.")
                 .defineInRange("batteryMaxMedia", 640000000L, 10000L, Long.MAX_VALUE);
         BUILDER.pop();
+
+        BUILDER.comment("Allay dimension LOD pipeline (server-authoritative streaming extent).").push("allvr_lod");
+        ALLVR_LOD_DISTANCE = BUILDER
+                .comment("Far-terrain view distance for the allay dimension's LOD pipeline, in blocks. "
+                        + "Beyond the full-resolution cube streaming radius (256 blocks) the server streams "
+                        + "server-meshed LOD nodes out to this distance (fixed band table 256/512/1024/2048, "
+                        + "the view distance only caps the outer edge). Applies to every player in the dimension.")
+                .defineInRange("allvrLodDistance", 2048, 512, 4096);
+        ALLVR_LOD_BUILD_THREADS = BUILDER
+                .comment("Worker threads that build LOD node meshes (density-field math + greedy mesher, no world "
+                        + "access). The server main thread only dispatches and captures edit overlays (<0.5ms/tick).")
+                .defineInRange("allvrLodBuildThreads", 2, 1, 4);
+        BUILDER.pop();
     }
 
     // ---- stress values (formerly CMIStress) --------------------------------
@@ -267,6 +285,8 @@ public final class ServerConfig {
     public static long trinketMaxMedia = 64000000L;
     public static long artifactMaxMedia = 640000000L;
     public static long batteryMaxMedia = 640000000L;
+    public static int allvrLodDistance = 2048;
+    public static int allvrLodBuildThreads = 2;
 
     // ---- stress accessors (BlockStressValues providers) --------------------
 
@@ -353,6 +373,8 @@ public final class ServerConfig {
             trinketMaxMedia = TRINKET_MAX_MEDIA.get();
             artifactMaxMedia = ARTIFACT_MAX_MEDIA.get();
             batteryMaxMedia = BATTERY_MAX_MEDIA.get();
+            allvrLodDistance = ALLVR_LOD_DISTANCE.get();
+            allvrLodBuildThreads = ALLVR_LOD_BUILD_THREADS.get();
         }
     }
 }

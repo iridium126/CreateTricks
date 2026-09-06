@@ -46,6 +46,10 @@ import com.iridium126.createmanaindustry.dimension.AllvrServerHandler;
 import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrBlockUpdatePacket;
 import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrCubePacket;
 import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrForgetCubePacket;
+import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrLodBitmapPacket;
+import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrLodForgetPacket;
+import com.iridium126.createmanaindustry.dimension.net.ClientboundAllvrLodMeshPacket;
+import com.iridium126.createmanaindustry.dimension.net.ServerboundAllvrLodRequestPacket;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
@@ -231,6 +235,25 @@ public class CreateManaIndustry {
                 ClientboundAllvrBlockUpdatePacket.TYPE,
                 ClientboundAllvrBlockUpdatePacket.STREAM_CODEC,
                 ClientboundAllvrBlockUpdatePacket::handle);
+        // Allay dimension LOD pipeline (4c-1): surface-node bitmaps, batched
+        // mesh requests, mesh responses (vanilla state ids, client-remapped)
+        // and per-node invalidation.
+        registrar.playToClient(
+                ClientboundAllvrLodBitmapPacket.TYPE,
+                ClientboundAllvrLodBitmapPacket.STREAM_CODEC,
+                ClientboundAllvrLodBitmapPacket::handle);
+        registrar.playToClient(
+                ClientboundAllvrLodMeshPacket.TYPE,
+                ClientboundAllvrLodMeshPacket.STREAM_CODEC,
+                ClientboundAllvrLodMeshPacket::handle);
+        registrar.playToClient(
+                ClientboundAllvrLodForgetPacket.TYPE,
+                ClientboundAllvrLodForgetPacket.STREAM_CODEC,
+                ClientboundAllvrLodForgetPacket::handle);
+        registrar.playToServer(
+                ServerboundAllvrLodRequestPacket.TYPE,
+                ServerboundAllvrLodRequestPacket.STREAM_CODEC,
+                ServerboundAllvrLodRequestPacket::handle);
     }
 
     /**

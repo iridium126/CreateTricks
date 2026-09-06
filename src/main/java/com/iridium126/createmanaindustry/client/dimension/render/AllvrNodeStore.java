@@ -51,11 +51,22 @@ public final class AllvrNodeStore {
     private int capacity = 1024;
     private int highWater;
     private final Long2IntOpenHashMap byCubeKey = new Long2IntOpenHashMap();
+    /**
+     * LOD node maps, one per level 0..3 (doc §13 4c). Level maps are
+     * load-bearing for correctness, not just organization: an L0 cell long
+     * ALIASES a full-res cube long (same 21-bit packing), so a combined map
+     * would collide the two node kinds.
+     */
+    private final Long2IntOpenHashMap[] lodByCubeKey = new Long2IntOpenHashMap[4];
     private final IntList freeIndices = new IntArrayList();
     private final IntSet dirty = new IntOpenHashSet();
 
     public AllvrNodeStore() {
         this.byCubeKey.defaultReturnValue(-1);
+        for (int i = 0; i < this.lodByCubeKey.length; i++) {
+            this.lodByCubeKey[i] = new Long2IntOpenHashMap();
+            this.lodByCubeKey[i].defaultReturnValue(-1);
+        }
     }
 
     public int capacity() {
@@ -67,7 +78,11 @@ public final class AllvrNodeStore {
     }
 
     public int nodeCount() {
-        return this.byCubeKey.size();
+        int n = this.byCubeKey.size();
+        for (Long2IntOpenHashMap map : this.lodByCubeKey) {
+            n += map.size();
+        }
+        return n;
     }
 
     public long[] mirror() {
@@ -81,7 +96,12 @@ public final class AllvrNodeStore {
 
     /** Allocates (or returns) the node for a cube; -1 when the node space is full. */
     public int allocNode(long cubeKey, BlockPos cubeMinBlock) {
-        int existing = this.byCubeKey.get(cubeKey);
+        return this.allocIn(this.byCubeKey, cubeKey, cubeMinBlock);
+    }
+
+    /** Allocates (or returns) the node for {@code key} in {@code map}. */
+    private int allocIn(Long2IntOpenHashMap map, long key, BlockPos cubeMinBlock) {
+        int existing = map.get(key);
         if (existing >= 0) {
             return existing;
         }
@@ -96,7 +116,7 @@ public final class AllvrNodeStore {
         } else {
             return -1;
         }
-        this.byCubeKey.put(cubeKey, idx);
+        map.put(key, idx);
         this.writePosition(idx, cubeMinBlock);
         this.dirty.add(idx);
         return idx;
@@ -123,6 +143,39 @@ public final class AllvrNodeStore {
         if (idx < 0) {
             return;
         }
+        this.retire(idx);
+    }
+
+    /**
+     * LOD variant of {@link #setMesh}: allocates/publishes the node in the
+     * level's own map (an L0 cell long aliases full-res cube longs — see the
+     * field doc) and stores {@code level} in the b.w word, which the vertex
+     * shader reads back as the local-coordinate scale {@code 1 << level}.
+     */
+    public void setLodMesh(int level, long cellLong, BlockPos nodeMinBlock, int quadStart, int quadCount, int slot) {
+        int idx = this.allocIn(this.lodByCubeKey[level], cellLong, nodeMinBlock);
+        if (idx < 0) {
+            return;
+        }
+        int o = idx * LONGS_PER_NODE;
+        int word = packWord(slot, level, FLAG_HAS_MESH);
+        this.mirror[o + 2] = (this.mirror[o + 2] & 0xFFFFFFFF00000000L)
+            | ((long) quadCount & 0xFFFFFFFFL);
+        this.mirror[o + 3] = ((long) quadStart & 0xFFFFFFFFL) | ((long) word << 32);
+        this.dirty.add(idx);
+    }
+
+    /** Drops one LOD node (per-level map). No-op for never-published nodes. */
+    public void freeLodNode(int level, long cellLong) {
+        int idx = this.lodByCubeKey[level].remove(cellLong);
+        if (idx < 0) {
+            return;
+        }
+        this.retire(idx);
+    }
+
+    /** Marks a node dead and recycles its index (map entry already removed). */
+    private void retire(int idx) {
         int o = idx * LONGS_PER_NODE;
         int word = (int) (this.mirror[o + 3] >>> 32);
         word |= FLAG_DEAD << FLAGS_SHIFT;
@@ -136,6 +189,9 @@ public final class AllvrNodeStore {
         java.util.Arrays.fill(this.mirror, 0L);
         this.highWater = 0;
         this.byCubeKey.clear();
+        for (Long2IntOpenHashMap map : this.lodByCubeKey) {
+            map.clear();
+        }
         this.freeIndices.clear();
         this.dirty.clear();
     }

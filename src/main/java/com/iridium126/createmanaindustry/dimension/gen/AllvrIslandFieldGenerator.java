@@ -52,6 +52,11 @@ public final class AllvrIslandFieldGenerator {
     /** Superellipse exponent — 8 reads as a box with rounded corners. */
     private static final int SHAPE_EXPONENT = 8;
 
+    /** FBM jag bound in d-units (evaluate adds {@code fbm2 · EDGE_NOISE} within
+     *  {@code |d| < 2·EDGE_NOISE} of the ideal surface). Public: the LOD
+     *  classifiers size their q thresholds from it (doc §13 4c). */
+    public static final double EDGE_JAG = EDGE_NOISE;
+
     /** Depth under the surface that counts as grass / dirt before stone. */
     private static final double GRASS_BAND = 0.05;
     private static final double DIRT_BAND = 0.22;
@@ -108,18 +113,27 @@ public final class AllvrIslandFieldGenerator {
 
     /** Islands whose influence overlaps the cube AABB (at most ~27 candidates). */
     private Island[] collectIslands(int x0, int y0, int z0) {
-        int minX = Math.floorDiv(x0 - (int) INFLUENCE_MARGIN, SPACING_XZ);
-        int maxX = Math.floorDiv(x0 + 31 + (int) INFLUENCE_MARGIN, SPACING_XZ);
-        int minY = Math.floorDiv(y0 - (int) INFLUENCE_MARGIN, SPACING_Y);
-        int maxY = Math.floorDiv(y0 + 31 + (int) INFLUENCE_MARGIN, SPACING_Y);
-        int minZ = Math.floorDiv(z0 - (int) INFLUENCE_MARGIN, SPACING_XZ);
-        int maxZ = Math.floorDiv(z0 + 31 + (int) INFLUENCE_MARGIN, SPACING_XZ);
+        return islandsForBox(x0, y0, z0, x0 + 32, y0 + 32, z0 + 32);
+    }
 
-        Island[] out = new Island[(maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1)];
+    /**
+     * Islands whose influence (surface + FBM jag + jitter reach) can overlap
+     * the block AABB {@code [min, max)} — the LOD bitmap and snapshot builders
+     * use this with node-sized boxes (doc §13 4c).
+     */
+    public Island[] islandsForBox(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
+        int cx0 = Math.floorDiv(minX - (int) INFLUENCE_MARGIN, SPACING_XZ);
+        int cx1 = Math.floorDiv(maxX - 1 + (int) INFLUENCE_MARGIN, SPACING_XZ);
+        int cy0 = Math.floorDiv(minY - (int) INFLUENCE_MARGIN, SPACING_Y);
+        int cy1 = Math.floorDiv(maxY - 1 + (int) INFLUENCE_MARGIN, SPACING_Y);
+        int cz0 = Math.floorDiv(minZ - (int) INFLUENCE_MARGIN, SPACING_XZ);
+        int cz1 = Math.floorDiv(maxZ - 1 + (int) INFLUENCE_MARGIN, SPACING_XZ);
+
+        Island[] out = new Island[(cx1 - cx0 + 1) * (cy1 - cy0 + 1) * (cz1 - cz0 + 1)];
         int n = 0;
-        for (int cx = minX; cx <= maxX; cx++) {
-            for (int cy = minY; cy <= maxY; cy++) {
-                for (int cz = minZ; cz <= maxZ; cz++) {
+        for (int cx = cx0; cx <= cx1; cx++) {
+            for (int cy = cy0; cy <= cy1; cy++) {
+                for (int cz = cz0; cz <= cz1; cz++) {
                     out[n++] = islandAt(cx, cy, cz);
                 }
             }
@@ -128,7 +142,7 @@ public final class AllvrIslandFieldGenerator {
     }
 
     /** Seed-stable island parameters for a lattice cell. */
-    private Island islandAt(int cellX, int cellY, int cellZ) {
+    public Island islandAt(int cellX, int cellY, int cellZ) {
         long h = mix(seed
             ^ cellX * 0x9E3779B97F4A7C15L
             ^ cellY * 0xBF58476D1CE4E5B9L
@@ -153,10 +167,32 @@ public final class AllvrIslandFieldGenerator {
     }
 
     /**
-     * Solid material for a world voxel, or {@code null} for air. Interior
-     * voxels skip the edge FBM entirely.
+     * Pure superellipse gauge² term for one island at a world point — the
+     * {@code q} of {@code d = q^(1/8) − 1} with NO FBM and NO pow (doc §13 4c:
+     * the LOD bitmap/snapshot classifiers compare q directly against
+     * precomputed per-level thresholds, since FBM only applies within
+     * {@code |d| < EDGE_NOISE·2}, i.e. {@code q ∈ ((1−2·EDGE)⁸, (1+2·EDGE)⁸)}).
      */
-    private BlockState evaluate(int wx, int wy, int wz, Island[] islands) {
+    public static double gaugeQ(Island island, double wx, double wy, double wz) {
+        double nx = Math.abs(wx - island.cx) / island.halfWidth;
+        double ny = Math.abs(wy - island.cy) / island.halfHeight;
+        double nz = Math.abs(wz - island.cz) / island.halfWidth;
+        double a = nx * nx;
+        double b = ny * ny;
+        double c = nz * nz;
+        double a4 = a * a;
+        double b4 = b * b;
+        double c4 = c * c;
+        return a4 * a4 + b4 * b4 + c4 * c4;
+    }
+
+    /**
+     * Solid material for a world voxel, or {@code null} for air. Interior
+     * voxels skip the edge FBM entirely. Public for the server LOD snapshot
+     * builder, which routes only FBM-band cells here (the q-only fast path
+     * covers the rest).
+     */
+    public BlockState evaluate(int wx, int wy, int wz, Island[] islands) {
         double bestDepth = 0.0;
         boolean solid = false;
         for (Island island : islands) {
@@ -271,6 +307,6 @@ public final class AllvrIslandFieldGenerator {
         return (h >>> 11) * 0x1.0p-53;
     }
 
-    private record Island(double cx, double cy, double cz, double halfWidth, double halfHeight, long hash) {
+    public record Island(double cx, double cy, double cz, double halfWidth, double halfHeight, long hash) {
     }
 }

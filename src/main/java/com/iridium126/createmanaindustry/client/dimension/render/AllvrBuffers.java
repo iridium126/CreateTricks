@@ -69,7 +69,12 @@ public final class AllvrBuffers {
      * whole visible command stream (65536 × 20 B = 1.28 MB, one-time alloc).
      */
     public static final int MAX_COMMANDS = 1 << 16;
-    public static final int MAX_SLOTS = 65536;
+    /**
+     * 4c capacity bump (grilling Q5): R=2048 holds ~50k surface LOD nodes on
+     * top of full-res cubes, R=4096 more still — 16-bit slots would exhaust.
+     * cubeInfo SSBO grows to 4 MB, the free-slot stack to 1 MB.
+     */
+    public static final int MAX_SLOTS = 1 << 18;
     /**
      * Queue entries = node indices, two temporal segments (doc §9.2 two-phase
      * occlusion): [0] = last-frame-visible counter, [1] = newly-visible
@@ -402,8 +407,11 @@ public final class AllvrBuffers {
     // slots (cube info table)
     // ------------------------------------------------------------------
 
-    /** Allocates a slot and writes the cube's absolute origin. -1 when full. */
-    public int allocSlot(int x, int y, int z) {
+    /** Allocates a slot and writes the cube's absolute origin. -1 when full.
+     *  {@code level} rides in the unused w component: the vertex shader scales
+     *  local coordinates by {@code 1 << level} (0 for full-res cubes, the LOD
+     *  level 0..3 for LOD nodes — 4c). */
+    public int allocSlot(int x, int y, int z, int level) {
         int slot;
         if (this.freeSlotCount > 0) {
             slot = this.freeSlots[--this.freeSlotCount];
@@ -418,7 +426,7 @@ public final class AllvrBuffers {
         // 1181224960-style garbage ints sent every vertex outside the clip
         // volume (the "terrain invisible in every config" bug).
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 16L * slot,
-            new int[] {x, y, z, 1});
+            new int[] {x, y, z, level});
         return slot;
     }
 

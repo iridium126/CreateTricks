@@ -37,6 +37,8 @@ import com.iridium126.createmanaindustry.client.render.shaderpack.ShadowDistorti
 import com.iridium126.createmanaindustry.config.ClientConfig;
 import com.iridium126.createmanaindustry.dimension.AllvrDimensions;
 import com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos;
+import com.iridium126.createmanaindustry.dimension.lod.AllvrLodPos;
+import com.iridium126.createmanaindustry.dimension.mesh.AllvrMesher;
 import com.mojang.blaze3d.systems.RenderSystem;
 
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
@@ -67,6 +69,16 @@ public final class AllvrRenderer {
     private final AllvrShaderCache shaders = new AllvrShaderCache();
     private final AllvrNodeStore nodes = new AllvrNodeStore();
     private final Long2ObjectOpenHashMap<Cube> renderCubes = new Long2ObjectOpenHashMap<>();
+    /**
+     * LOD render entries, one map per level 0..3 (doc §13 4c-1). Keys are cell
+     * longs and ALIAS full-res cube longs at L0 — the per-level maps keep the
+     * two node kinds apart. LOD nodes flow only into the GPU path (4c
+     * decision: the V0 CPU command source never sees them, and it is deleted
+     * at 4c-2 anyway); they are excluded from the shadow pass (full-res
+     * coverage meets typical pack shadowDistance).
+     */
+    @SuppressWarnings("unchecked")
+    private final Long2ObjectOpenHashMap<Cube>[] lodCubes = new Long2ObjectOpenHashMap[4];
     /** Dedupe set for submitted mesh jobs (main thread only). */
     private final LongOpenHashSet pending = new LongOpenHashSet();
     private final int[] commands = new int[AllvrBuffers.COMMAND_STRIDE * AllvrBuffers.MAX_COMMANDS];
@@ -90,6 +102,8 @@ public final class AllvrRenderer {
     /** HiZ re-allocation throttle state (failure retry backoff). */
     private long lastHizAllocMillis;
     private boolean lastHizAllocFailed;
+    /** One-time hint when allvrLod is on but the GPU path cannot serve it. */
+    private boolean warnedLodNeedsGpu;
 
     private boolean initialized;
     private boolean tierOk;
@@ -321,10 +335,112 @@ public final class AllvrRenderer {
         if (rc == null) {
             rc = new Cube();
             AllvrCubePos pos = AllvrCubePos.fromLong(key);
-            rc.slot = this.buffers.allocSlot(pos.minBlockX(), pos.minBlockY(), pos.minBlockZ());
+            rc.slot = this.buffers.allocSlot(pos.minBlockX(), pos.minBlockY(), pos.minBlockZ(), 0);
             this.renderCubes.put(key, rc);
         }
         this.submit(key);
+    }
+
+    /**
+     * Applies one server-built LOD mesh (main thread; quads arrive with
+     * vanilla state ids and were remapped by the caller). Mirrors the
+     * pumpResults discipline: the old arena range is freed and its node
+     * unpublished BEFORE the new stream lands, so a freed range can never be
+     * drawn through a stale node (the ghost-geometry fix class from 4b).
+     * An empty stream publishes nothing but still settles the caller's
+     * has-mesh state — the node just exists faceless.
+     */
+    public void applyLodMesh(int level, long cellLong, long[] quads) {
+        if (!this.initialized) {
+            this.initialize(Minecraft.getInstance());
+        }
+        AllvrLodPos pos = AllvrLodPos.fromCellLong(level, cellLong);
+        Cube rc = this.lodCubes[level].get(cellLong);
+        if (rc != null) {
+            if (rc.quadStart >= 0) {
+                this.buffers.freeRange(rc.quadStart, rc.quadCount);
+                rc.quadStart = -1;
+                rc.quadCount = 0;
+                this.nodes.freeLodNode(level, cellLong);
+            }
+            if (rc.deferredQuads != null) {
+                rc.deferredQuads = null;
+                this.deferredCount--;
+            }
+        }
+        if (quads.length == 0) {
+            // empty stream: publish nothing and release the slot — the node
+            // stays faceless (its has-mesh state lives in the client state,
+            // so the request walk never re-requests it)
+            if (rc != null) {
+                if (rc.slot >= 0) {
+                    this.buffers.freeSlot(rc.slot);
+                }
+                this.lodCubes[level].remove(cellLong);
+            }
+            return;
+        }
+        if (rc == null) {
+            rc = new Cube();
+            rc.slot = this.buffers.allocSlot(pos.minBlockX(), pos.minBlockY(), pos.minBlockZ(), level);
+            this.lodCubes[level].put(cellLong, rc);
+        }
+        int start = this.buffers.allocRange(quads.length);
+        if (start < 0) {
+            // arena full: hold and retry when space frees (same contract as
+            // the full-res deferred path — dropping would leave a permanent
+            // far-terrain hole with nothing to re-trigger the request)
+            rc.deferredQuads = quads;
+            this.deferredCount++;
+            long now = System.currentTimeMillis();
+            if (now - this.lastStarveWarnMillis > 5000) {
+                this.lastStarveWarnMillis = now;
+                CreateManaIndustry.LOGGER.warn("[Allvr] quad arena full — {} mesh(es) deferred", this.deferredCount);
+            }
+            return;
+        }
+        this.buffers.uploadQuads(start, quads);
+        rc.quadStart = start;
+        rc.quadCount = quads.length;
+        if (rc.slot >= 0) {
+            this.nodes.setLodMesh(level, cellLong,
+                new net.minecraft.core.BlockPos(pos.minBlockX(), pos.minBlockY(), pos.minBlockZ()),
+                start, quads.length, rc.slot);
+        }
+    }
+
+    /** Drops one LOD node's geometry (invalidation, eviction, level unload). */
+    public void forgetLod(int level, long cellLong) {
+        Cube rc = this.lodCubes[level].remove(cellLong);
+        if (rc == null) {
+            return;
+        }
+        if (rc.deferredQuads != null) {
+            this.deferredCount--;
+        }
+        if (rc.quadStart >= 0) {
+            this.buffers.freeRange(rc.quadStart, rc.quadCount);
+        }
+        if (rc.slot >= 0) {
+            this.buffers.freeSlot(rc.slot);
+        }
+        this.nodes.freeLodNode(level, cellLong);
+    }
+
+    /** Whether the LOD node currently holds a published (or deferred) mesh. */
+    public boolean hasLodMesh(int level, long cellLong) {
+        Cube rc = this.lodCubes[level].get(cellLong);
+        return rc != null && (rc.quadCount > 0 || rc.deferredQuads != null);
+    }
+
+    /**
+     * LOD gate for the client request state (4c decision: LOD nodes only flow
+     * through the GPU-driven path). False until the renderer initialized —
+     * the first stage event initializes it long before the player could see
+     * far terrain, so the request walk simply starts a few ticks late.
+     */
+    public boolean lodGate() {
+        return this.initialized && this.mdiOk;
     }
 
     public void onCubeForgotten(long key) {
@@ -410,6 +526,9 @@ public final class AllvrRenderer {
 
     public void dropLevel() {
         this.renderCubes.clear();
+        for (var map : this.lodCubes) {
+            map.clear();
+        }
         this.pending.clear();
         this.deferredCount = 0;
         this.buffers.reset();
@@ -566,6 +685,32 @@ public final class AllvrRenderer {
             rc.deferredQuads = null;
             this.deferredCount--;
             this.assignQuads(e.getLongKey(), rc, start, quads);
+        }
+        for (int lvl = 0; lvl < this.lodCubes.length; lvl++) {
+            Iterator<Long2ObjectOpenHashMap.Entry<Cube>> lit = this.lodCubes[lvl].long2ObjectEntrySet().fastIterator();
+            while (lit.hasNext()) {
+                Long2ObjectOpenHashMap.Entry<Cube> e = lit.next();
+                Cube rc = e.getValue();
+                if (rc.deferredQuads == null || !this.buffers.canFit(rc.deferredQuads.length)) {
+                    continue;
+                }
+                int start = this.buffers.allocRange(rc.deferredQuads.length);
+                if (start < 0) {
+                    continue;
+                }
+                long[] quads = rc.deferredQuads;
+                rc.deferredQuads = null;
+                this.deferredCount--;
+                this.buffers.uploadQuads(start, quads);
+                rc.quadStart = start;
+                rc.quadCount = quads.length;
+                if (rc.slot >= 0) {
+                    AllvrLodPos pos = AllvrLodPos.fromCellLong(lvl, e.getLongKey());
+                    this.nodes.setLodMesh(lvl, e.getLongKey(),
+                        new net.minecraft.core.BlockPos(pos.minBlockX(), pos.minBlockY(), pos.minBlockZ()),
+                        start, quads.length, rc.slot);
+                }
+            }
         }
     }
 
@@ -1401,5 +1546,8 @@ public final class AllvrRenderer {
     }
 
     private AllvrRenderer() {
+        for (int i = 0; i < this.lodCubes.length; i++) {
+            this.lodCubes[i] = new Long2ObjectOpenHashMap<>();
+        }
     }
 }

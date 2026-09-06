@@ -11,6 +11,8 @@ import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.state.BlockState;
 
+import com.iridium126.createmanaindustry.dimension.mesh.AllvrMesher;
+
 /**
  * BlockState → 16-bit render-state id table (doc §7.1 {@code AllvrRenderStateMap}).
  * <p>
@@ -42,6 +44,17 @@ import net.minecraft.world.level.block.state.BlockState;
 public final class AllvrRenderStateMap {
 
     public static final short ID_AIR = 0;
+
+    /**
+     * Client-side mesh codec: the 16-bit render id, gated on the per-state
+     * {@code renderable} flag (full-cube model assumption). Consumed by the
+     * common mesher ({@code dimension.mesh.AllvrMesher}).
+     */
+    public static final com.iridium126.createmanaindustry.dimension.mesh.AllvrMeshCodec CLIENT_CODEC =
+        state -> {
+            short id = idOf(state);
+            return entryOf(id).renderable ? id : 0;
+        };
 
     /** Texture-buffer layout: per face (uvRect, tint rgb + renderable flag, inset). */
     public static final int FACES = 6;

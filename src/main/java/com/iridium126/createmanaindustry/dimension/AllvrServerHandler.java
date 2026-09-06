@@ -31,6 +31,7 @@ public final class AllvrServerHandler {
             AllvrCubeMap map = ((AllvrServerLevelDuck) serverLevel).allvr$getCubeMap();
             if (map != null) {
                 map.tick();
+                ((AllvrServerLevelDuck) serverLevel).allvr$getLodMap().tick();
             }
         }
     }
@@ -55,6 +56,7 @@ public final class AllvrServerHandler {
         if (allayLevel != null) {
             UUID uuid = player.getUUID();
             ((AllvrServerLevelDuck) allayLevel).allvr$getCubeMap().resetPlayer(uuid);
+            ((AllvrServerLevelDuck) allayLevel).allvr$getLodMap().resetPlayer(uuid);
         }
     }
 

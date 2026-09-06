@@ -17,7 +17,7 @@ import net.minecraft.world.level.chunk.PalettedContainer;
 import net.minecraft.world.level.material.FluidState;
 
 import com.iridium126.createmanaindustry.CreateManaIndustry;
-import com.iridium126.createmanaindustry.client.dimension.render.AllvrMesher;
+import com.iridium126.createmanaindustry.dimension.mesh.AllvrMesher;
 import com.iridium126.createmanaindustry.dimension.AllvrDimensions;
 import com.iridium126.createmanaindustry.dimension.cube.AllvrCube;
 import com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos;

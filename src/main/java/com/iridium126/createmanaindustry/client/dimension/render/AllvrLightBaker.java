@@ -6,6 +6,7 @@ import java.util.List;
 import com.iridium126.createmanaindustry.client.dimension.AllvrClientCubeCache;
 import com.iridium126.createmanaindustry.dimension.cube.AllvrCube;
 import com.iridium126.createmanaindustry.dimension.cube.AllvrCubePos;
+import com.iridium126.createmanaindustry.dimension.mesh.AllvrMesher;
 
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import net.minecraft.world.level.chunk.LevelChunkSection;
@@ -32,7 +33,7 @@ import net.minecraft.world.level.chunk.LevelChunkSection;
  * center — flat light per quad (rects merge across light variation; the
  * documented flat-light trade-off).
  */
-public final class AllvrLightBaker {
+public final class AllvrLightBaker implements com.iridium126.createmanaindustry.dimension.mesh.AllvrMeshLight {
 
     private static final int SKY_WINDOW = 128;
     private static final int EMITTER_RANGE = 15;
@@ -128,6 +129,11 @@ public final class AllvrLightBaker {
     /** Absolute Y of the center cube's bottom — the mesher converts its local
      *  sample Y with this. */
     public long cubeMinY() {
+        return this.cubeMinY;
+    }
+
+    @Override
+    public long originY() {
         return this.cubeMinY;
     }
 

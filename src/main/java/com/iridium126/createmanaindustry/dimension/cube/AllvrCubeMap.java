@@ -74,6 +74,15 @@ public final class AllvrCubeMap {
     private final AllvrIslandFieldGenerator generator;
     private final Long2ObjectOpenHashMap<AllvrCube> cubes = new Long2ObjectOpenHashMap<>();
     /**
+     * Cubes that received at least one player-path setBlock — the LOD
+     * pipeline's overlay hint (doc §13 4c): unedited cubes are bitwise the
+     * density field, so overlay capture reads only these. Generator writes
+     * (direct section fills) never enter this set.
+     */
+    private final LongOpenHashSet editedCubes = new LongOpenHashSet();
+    /** Attached by the ServerLevel mixin next to the LOD map; null until then. */
+    private com.iridium126.createmanaindustry.dimension.lod.AllvrLodMap lodMap;
+    /**
      * Cubes that hold block entities — the ticking worklist (kept tiny: most
      * cubes are pure terrain). Vanilla's per-chunk {@code TickingTracker} is
      * deliberately not involved; see {@link #tickBlockEntities}.
@@ -131,6 +140,11 @@ public final class AllvrCubeMap {
         BlockState oldState = cube.setBlockState(pos, newState, false);
         if (oldState == null) {
             return false;
+        }
+
+        this.editedCubes.add(cube.getPos().asLong());
+        if (this.lodMap != null) {
+            this.lodMap.onBlockChanged(pos);
         }
 
         updateBlockEntity(cube, pos, newState);
@@ -201,6 +215,16 @@ public final class AllvrCubeMap {
     public BlockEntity getBlockEntity(BlockPos pos) {
         AllvrCube cube = cubes.get(AllvrCubePos.asLong(pos));
         return cube == null ? null : cube.getBlockEntity(pos);
+    }
+
+    /** Whether the cube ever received a player-path write (LOD overlay hint). */
+    public boolean isEdited(long cubeKey) {
+        return this.editedCubes.contains(cubeKey);
+    }
+
+    /** Wired by the ServerLevel mixin after creating both maps. */
+    public void setLodMap(com.iridium126.createmanaindustry.dimension.lod.AllvrLodMap lodMap) {
+        this.lodMap = lodMap;
     }
 
     public int getLoadedCubeCount() {

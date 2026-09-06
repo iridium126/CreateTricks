@@ -33,16 +33,34 @@ public abstract class AllvrServerLevelMixin implements AllvrServerLevelDuck {
     @Unique
     private AllvrCubeMap allvr$cubeMap;
 
+    @Unique
+    private com.iridium126.createmanaindustry.dimension.lod.AllvrLodMap allvr$lodMap;
+
     @Override
     public AllvrCubeMap allvr$getCubeMap() {
+        this.allvr$lazilyCreate();
+        return allvr$cubeMap;
+    }
+
+    @Override
+    public com.iridium126.createmanaindustry.dimension.lod.AllvrLodMap allvr$getLodMap() {
+        this.allvr$lazilyCreate();
+        return allvr$lodMap;
+    }
+
+    @Unique
+    private void allvr$lazilyCreate() {
         ServerLevel self = (ServerLevel) (Object) this;
         if (self.dimension() != AllvrDimensions.ALLAY_LEVEL) {
-            return null;
+            return;
         }
         if (allvr$cubeMap == null) {
             allvr$cubeMap = new AllvrCubeMap(self);
         }
-        return allvr$cubeMap;
+        if (allvr$lodMap == null) {
+            allvr$lodMap = new com.iridium126.createmanaindustry.dimension.lod.AllvrLodMap(self, allvr$cubeMap);
+            allvr$cubeMap.setLodMap(allvr$lodMap);
+        }
     }
 
     @Inject(method = "tickChunk", at = @At("HEAD"), cancellable = true)

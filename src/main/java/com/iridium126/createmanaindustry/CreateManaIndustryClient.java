@@ -98,6 +98,8 @@ public class CreateManaIndustryClient {
         if (mc.level != null
             && mc.level.dimension() == com.iridium126.createmanaindustry.dimension.AllvrDimensions.ALLAY_LEVEL) {
             com.iridium126.createmanaindustry.client.dimension.AllvrClientCubeCache.tickBlockEntities();
+            // LOD request walk (bitmaps → batched C2S mesh requests + eviction)
+            com.iridium126.createmanaindustry.client.dimension.AllvrLodClientState.tick();
         }
     }
 
@@ -195,6 +197,8 @@ public class CreateManaIndustryClient {
             // Allay-dimension streamed cubes die with the level (dimension
             // switch or logout); the server restarts the stream on re-entry.
             com.iridium126.createmanaindustry.client.dimension.AllvrClientCubeCache.clear();
+            // LOD state (bitmaps, pending requests, meshed set) with them
+            com.iridium126.createmanaindustry.client.dimension.AllvrLodClientState.clear();
             // and the renderer-side cube geometry (arena ranges + slots) with them
             com.iridium126.createmanaindustry.client.dimension.render.AllvrRenderer.INSTANCE.dropLevel();
             // The particle engine is self-hosted GL — reset regardless of Veil.

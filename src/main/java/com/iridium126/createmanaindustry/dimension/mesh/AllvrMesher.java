@@ -1,4 +1,4 @@
-package com.iridium126.createmanaindustry.client.dimension.render;
+package com.iridium126.createmanaindustry.dimension.mesh;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -7,24 +7,27 @@ import net.minecraft.world.level.block.state.BlockState;
 
 /**
  * Greedy mesher over a 34³ voxel snapshot (doc §8.1). The snapshot holds the
- * cube's 32³ states plus a 1-voxel border fetched from the client cache, so
- * face visibility across cube borders is resolved from array reads — no
- * per-face cache lookups.
+ * cube's 32³ states plus a 1-voxel border fetched from the neighborhood, so
+ * face visibility across borders is resolved from array reads — no per-face
+ * lookups.
+ * <p>
+ * Common to the client cube path and the server LOD path (doc §13 4c): state
+ * identity and light come in through the {@link AllvrMeshCodec} and
+ * {@link AllvrMeshLight} parameters, so neither side forks the sweep.
  * <p>
  * Face visibility mirrors vanilla {@code Block#shouldRenderFace} minus the
  * {@code hidesNeighborFace} rule (affects only partial models, which are
  * non-renderable in V0 anyway): cull when the neighbor occludes
  * ({@code canOcclude} + full-block collision shape, precomputed per voxel in
  * the snapshot) or when {@code skipRendering} pairs the states (glass/glass).
- * Non-renderable states (per {@link AllvrRenderStateMap}) emit nothing.
  * <p>
  * Output is the doc §7.3 packed 8-byte quad stream:
  * {@code axis(2) | dir(1) | uSize-1(5) | vSize-1(5) | u(5) | v(5) | w(5)
  *  | stateId(16) | sky(4) | block(4) | spare(12)}. Winding: the (u,v) basis is
  * chosen per (axis, dir) so u×v = the outward face normal; the shared index
  * buffer {@code 0,1,2,2,1,3} then produces CCW-outward triangles. The sky/block
- * nibbles are the mesher-time light bake ({@link AllvrLightBaker}, iris
- * integration slice), sampled at the air voxel adjacent to the face center.
+ * nibbles are the mesher-time light bake, sampled at the air voxel adjacent to
+ * the face center.
  */
 public final class AllvrMesher {
 
@@ -32,15 +35,15 @@ public final class AllvrMesher {
     public static final int PADDED = 34;
 
     /** Snapshot array index for local coords −1..32 per axis (shared with
-     *  {@code AllvrClientCubeCache#snapshotForMesher}). */
+     *  snapshot builders on both sides). */
     public static int paddedIndex(int x, int y, int z) {
         return (y + 1) * (PADDED * PADDED) + (z + 1) * PADDED + (x + 1);
     }
 
     /** [axis*2 + dir] → the face Direction (dir 0 = positive axis). Also the
-     *  per-face material table order, shared with {@link AllvrRenderStateMap}
+     *  per-face material table order, shared with {@code AllvrRenderStateMap}
      *  and the vertex shader's faceIdx. */
-    static final Direction[] FACES = {
+    public static final Direction[] FACES = {
         Direction.EAST, Direction.WEST,
         Direction.UP, Direction.DOWN,
         Direction.SOUTH, Direction.NORTH
@@ -59,13 +62,15 @@ public final class AllvrMesher {
     private final BlockState[] states;
     private final byte[] occludes;
     private final int[] mask = new int[CUBE * CUBE];
-    private AllvrLightBaker light;
+    private final AllvrMeshCodec codec;
+    private AllvrMeshLight light;
     private long[] out;
     private int outCount;
 
-    private AllvrMesher(BlockState[] states, byte[] occludes) {
+    private AllvrMesher(BlockState[] states, byte[] occludes, AllvrMeshCodec codec) {
         this.states = states;
         this.occludes = occludes;
+        this.codec = codec;
     }
 
     /** Snapshot array index for local coords −1..32 per axis. */
@@ -89,13 +94,14 @@ public final class AllvrMesher {
     }
 
     /**
-     * Builds the quad stream for one cube snapshot. Returns a packed long[] of
-     * exactly {@code result.length} quads (no trailing slack — sized via the
-     * scratch grow loop, then trimmed). {@code light} may be null (zero light
-     * nibbles) — non-null whenever the mesher worker ran the light bake.
+     * Builds the quad stream for one padded snapshot. Returns a packed long[]
+     * of exactly {@code result.length} quads (no trailing slack — sized via
+     * the scratch grow loop, then trimmed). {@code light} may be null (zero
+     * light nibbles).
      */
-    public static long[] build(BlockState[] states, byte[] occludes, AllvrLightBaker light) {
-        AllvrMesher m = new AllvrMesher(states, occludes);
+    public static long[] build(BlockState[] states, byte[] occludes, AllvrMeshLight light,
+                               AllvrMeshCodec codec) {
+        AllvrMesher m = new AllvrMesher(states, occludes, codec);
         m.light = light;
         m.out = new long[1024];
         for (int axis = 0; axis < 3; axis++) {
@@ -115,7 +121,7 @@ public final class AllvrMesher {
         int vAxis = UV_AXES[faceIdx][1];
 
         for (int w = 0; w < CUBE; w++) {
-            // build the visibility mask for this slice: value = stateId+1
+            // build the visibility mask for this slice: value = packed state id
             boolean any = false;
             for (int v = 0; v < CUBE; v++) {
                 for (int u = 0; u < CUBE; u++) {
@@ -165,7 +171,7 @@ public final class AllvrMesher {
                         int sx = uAxis == 0 ? su : vAxis == 0 ? sv : wn;
                         int sy = uAxis == 1 ? su : vAxis == 1 ? sv : wn;
                         int sz = uAxis == 2 ? su : vAxis == 2 ? sv : wn;
-                        long sampleY = this.light.cubeMinY() + sy;
+                        long sampleY = this.light.originY() + sy;
                         sky = this.light.sky(sx, sz, sampleY);
                         blk = this.light.block(sx, sz, sampleY);
                     }
@@ -176,13 +182,13 @@ public final class AllvrMesher {
                         | ((long) u << 13)
                         | ((long) v << 18)
                         | ((long) w << 23)
-                        | ((long) (m - 1) << 28)
+                        | ((long) m << 28)
                         | ((long) sky << 44)
                         | ((long) blk << 48);
                     if (this.outCount == this.out.length) {
                         // no cap: craftable patterns (checkerboard) reach ~5×10⁴
-                        // quads per cube; the old 6144 ceiling AIOOBE'd here and
-                        // the oversized stream is split per-command at draw time
+                        // quads per cube; the oversized stream is split
+                        // per-command at draw time
                         long[] grown = new long[this.out.length * 2];
                         System.arraycopy(this.out, 0, grown, 0, this.outCount);
                         this.out = grown;
@@ -195,9 +201,10 @@ public final class AllvrMesher {
 
     /**
      * Face-visibility for the face of voxel (u,v,w) toward dir along the sweep
-     * axis; returns stateId+1 or 0. Mirrors vanilla {@code Block#shouldRenderFace}
-     * minus the {@code hidesNeighborFace} rule (partial models don't render in
-     * V0, so the rule can only fire against non-renderable neighbors).
+     * axis; returns the codec's packed id or 0. Mirrors vanilla
+     * {@code Block#shouldRenderFace} minus the {@code hidesNeighborFace} rule
+     * (partial models don't render in V0, so the rule can only fire against
+     * non-renderable neighbors).
      */
     private int maskId(int axis, int dir, int uAxis, int vAxis, Direction face, int u, int v, int w) {
         BlockState state = this.stateAt(uAxis, vAxis, axis, u, v, w);
@@ -212,12 +219,11 @@ public final class AllvrMesher {
         if (state.skipRendering(neighbor, face)) {
             return 0;
         }
-        int id = AllvrRenderStateMap.idOf(state);
-        return AllvrRenderStateMap.entryOf(id).renderable ? id + 1 : 0;
+        return this.codec.packId(state);
     }
 
     /** Precomputed per-voxel occluder flag used by the sweep and the snapshot
-     *  builder. */
+     *  builders (both sides). */
     public static byte occludesAt(BlockState state) {
         if (!state.canOcclude()) {
             return 0;

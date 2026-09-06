@@ -3,6 +3,7 @@ package com.iridium126.createmanaindustry.client.particles.shaderpack;
 import com.iridium126.createmanaindustry.CreateManaIndustry;
 import com.iridium126.createmanaindustry.client.particles.engine.CMIParticleEngine;
 import com.iridium126.createmanaindustry.client.particles.engine.ParticleBuffers;
+import com.iridium126.createmanaindustry.client.particles.engine.ParticleGLUtil;
 import com.iridium126.createmanaindustry.config.ClientConfig;
 
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -85,9 +86,17 @@ public final class CMIPackEntityMergeHook {
             if (!ensureCompiledWithListener())
                 return; // sticky failure recorded; the engine's plain AFTER_LEVEL path takes over
 
-            beginTimer(engine);
-            drawEntities(engine);
-            endTimer(engine);
+            // The finally is load-bearing: a drawEntities throw with the
+            // bracket open would leave this query ACTIVE forever, failing
+            // every later glBeginQuery on the target with GL_INVALID_OPERATION
+            // ("Cannot begin query on an active query object").
+            boolean timed = beginTimer(engine);
+            try {
+                drawEntities(engine);
+            } finally {
+                if (timed)
+                    endTimer(engine);
+            }
 
             // Latch even when this frame's instance count is zero: skipping the
             // L0 drawModels then costs nothing (it would submit the same empty
@@ -423,12 +432,21 @@ public final class CMIPackEntityMergeHook {
     // Timer ring (never blocks)
     // ------------------------------------------------------------------
 
-    private static void beginTimer(CMIParticleEngine engine) {
+    /**
+     * Begins a timer bracket ONLY when the GL_TIME_ELAPSED target is free
+     * (vanilla's Alt+F3 profiler and other timer users can own it); returns
+     * false when the bracket was skipped — the caller must then not run
+     * {@link #endTimer}, which would end the foreign query or error.
+     */
+    private static boolean beginTimer(CMIParticleEngine engine) {
         if (!timerReady) {
             GL30.glGenQueries(TIMER_QUERIES);
             timerReady = true;
         }
+        if (ParticleGLUtil.activeTimeElapsedQuery() != 0)
+            return false;
         GL15.glBeginQuery(GL33.GL_TIME_ELAPSED, TIMER_QUERIES[timerSlot]);
+        return true;
     }
 
     private static void endTimer(CMIParticleEngine engine) {

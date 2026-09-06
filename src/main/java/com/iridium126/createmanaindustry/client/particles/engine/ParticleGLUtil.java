@@ -2,8 +2,10 @@ package com.iridium126.createmanaindustry.client.particles.engine;
 
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
+import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL21;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL33;
 
 /**
  * Tiny GL state guard for the particle engine's self-hosted client-memory
@@ -20,10 +22,30 @@ import org.lwjgl.opengl.GL30;
  * </ul>
  * Call {@link #prepareClientUpload()} immediately before every upload.
  */
-final class ParticleGLUtil {
+public final class ParticleGLUtil {
 
     private ParticleGLUtil() {
     }
+
+    private static final int[] QUERY_SCRATCH = new int[1];
+
+    /**
+     * Id of the query object currently active on the {@code GL_TIME_ELAPSED}
+     * target (0 = none). The query target is process-global — vanilla's
+     * Alt+F3 profiler and any other timer-query user can own it at our
+     * bracket points — so timer brackets must check this before
+     * {@code glBeginQuery} and only {@code glEndQuery} when the active id is
+     * their own: a begin against a busy target fails with GL_INVALID_OPERATION
+     * ("Cannot begin query on an active query object"), and an end without our
+     * bracket running would either end the FOREIGN query (silently ruining its
+     * sample) or log GL_INVALID_OPERATION again ("does not have an active
+     * query").
+     */
+    public static int activeTimeElapsedQuery() {
+        GL15.glGetQueryiv(GL33.GL_TIME_ELAPSED, GL15.GL_CURRENT_QUERY, QUERY_SCRATCH);
+        return QUERY_SCRATCH[0];
+    }
+
 
     static void prepareClientUpload() {
         GL30.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);

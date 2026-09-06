@@ -1,0 +1,13 @@
+{
+  "name": "hexcasting.entry.createmanaindustry.casting_item_production",
+  "category": "hexcasting:createmanaindustry",
+  "icon": "createmanaindustry:incomplete_cypher",
+  "sortnum": 1,
+  "advancement": "hexcasting:root",
+  "pages": [
+    "hexcasting.page.createmanaindustry.casting_item_production.1",
+    "hexcasting.page.createmanaindustry.casting_item_production.2",
+    "hexcasting.page.createmanaindustry.casting_item_production.3",
+    "hexcasting.page.createmanaindustry.casting_item_production.4"
+  ]
+}

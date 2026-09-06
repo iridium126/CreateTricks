@@ -451,12 +451,33 @@ public final class CMIParticleEngine {
             }
         }
 
-        void begin() {
+        /**
+         * Begins a bracket ONLY when the GL_TIME_ELAPSED target is free. The
+         * target is process-global — vanilla's Alt+F3 profiler (and any other
+         * timer-query user) can own it at our begin point; a begin issued
+         * against a busy target fails with GL_INVALID_OPERATION, and the
+         * phase-tail end would then end the FOREIGN query (ruining its sample)
+         * or error "does not have an active query". Returns false in that
+         * case: the bracket is skipped for this frame (the previous sample
+         * stands for the throttle) and {@link #endBracket()} must not run.
+         */
+        boolean begin() {
+            if (ParticleGLUtil.activeTimeElapsedQuery() != 0)
+                return false;
             GL15.glBeginQuery(GL33.GL_TIME_ELAPSED, this.queries[this.slot]);
+            return true;
         }
 
-        /** Ends an open bracket exactly once (mirrors the old partial-query discipline). */
+        /**
+         * Ends an open bracket exactly once (mirrors the old partial-query
+         * discipline). Guarded by the active-id check: only ends when THIS
+         * ring's slot is still the active query — a foreign end that already
+         * closed our bracket must not turn the tail into a second (erroring)
+         * glEndQuery.
+         */
         void endBracket() {
+            if (ParticleGLUtil.activeTimeElapsedQuery() != this.queries[this.slot])
+                return;
             GL15.glEndQuery(GL33.GL_TIME_ELAPSED);
         }
 
@@ -1216,8 +1237,8 @@ public final class CMIParticleEngine {
         // swap — the last fully-written pool stays the next read source.
         boolean queryActive = false;
         try {
-            this.computeTimer.begin();
-            queryActive = true;
+            if (this.computeTimer.begin())
+                queryActive = true;
             GL20.glUseProgram(this.programs.reset());
             this.gpu.bindIndirect(2);
             this.gpu.bindCounter(3, slot);
@@ -1483,19 +1504,23 @@ public final class CMIParticleEngine {
             setIntUniform(this.programs.capture(), "uMetaSlot", this.gpu.metaSlotIndex());
             GL43.glDispatchCompute(1, 1, 1);
             GL42.glMemoryBarrier(GL43.GL_SHADER_STORAGE_BARRIER_BIT | GL42.GL_ATOMIC_COUNTER_BARRIER_BIT);
-            this.computeTimer.endBracket();
-            queryActive = false;
+            if (queryActive) {
+                this.computeTimer.endBracket();
+                queryActive = false;
+                // Collect the oldest sample in the compute ring (issued
+                // TIMER_RING-1 phases ago, virtually always complete): the
+                // true GPU-side cost of this phase. Never blocks — skipped
+                // when the GPU runs that far behind. Skipped with the bracket
+                // when a foreign query owned the target: this slot was not
+                // issued, so there is nothing to collect and the previous
+                // sample stands. The draw ring polls itself after runDraws;
+                // endFrame sums both as the throttle input.
+                this.computeTimer.rotateAndPoll();
+            }
             if (this.pendingFence != 0)
                 GL32.glDeleteSync(this.pendingFence);
             this.pendingFence = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
             this.pendingSlot = slot;
-
-            // Collect the oldest sample in the compute ring (issued TIMER_RING-1
-            // phases ago, virtually always complete): the true GPU-side cost of
-            // this phase. Never blocks — skipped when the GPU runs that far
-            // behind. The draw ring polls itself after runDraws; endFrame sums
-            // both as the throttle input.
-            this.computeTimer.rotateAndPoll();
 
             // 8. Swap the ping-pong pool — success only: an aborted phase keeps
             // the last fully-written pool as the next read source, and
@@ -1591,8 +1616,8 @@ public final class CMIParticleEngine {
         boolean queryActive = false;
         this.drawTimer.ensureCreated();
         try {
-            this.drawTimer.begin();
-            queryActive = true;
+            if (this.drawTimer.begin())
+                queryActive = true;
 
             // Repeat of the compute section's empty-guard from the handoff
             // values: nothing alive and nothing spawned skips vertex work while
@@ -1626,9 +1651,14 @@ public final class CMIParticleEngine {
             // and will set it again before endFrame's skip-check below runs.
             this.hookModelsDrawn = false;
 
-            this.drawTimer.endBracket();
-            queryActive = false;
-            this.drawTimer.rotateAndPoll();
+            if (queryActive) {
+                // Skipped with the bracket when a foreign query owned the
+                // target: this slot was not issued, so the previous sample
+                // stands (same discipline as the compute tail).
+                this.drawTimer.endBracket();
+                queryActive = false;
+                this.drawTimer.rotateAndPoll();
+            }
         } finally {
             if (queryActive) {
                 // Same partial-bracket discipline as the compute phase.

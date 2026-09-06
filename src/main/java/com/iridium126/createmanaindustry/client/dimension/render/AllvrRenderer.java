@@ -97,6 +97,7 @@ public final class AllvrRenderer {
     private boolean warnedPack;
     private boolean warnedPatchFallback;
     private boolean warnedShadowEmpty;
+    private boolean warnedShadowExactFallback;
     private boolean loggedShadowStart;
     // iris integration (G2 draw mounting): the allay pipeline's patch data +
     // the pack-lit draw targets it resolves to
@@ -145,6 +146,9 @@ public final class AllvrRenderer {
                     mc.options.renderDistance().get() * 16);
                 this.syncIrisData(data);
             }
+        }
+        if (data == null) {
+            this.dropIrisState();
         }
         RenderLevelStageEvent.Stage stage = event.getStage();
         // mode decision (grilling decision ⑧ fallback chain):
@@ -229,6 +233,35 @@ public final class AllvrRenderer {
         data.setDepthTextures(this.frameTarget::depthTexture, this.frameTarget::depthTexture);
         this.appliedCustomIdRevision = AllvrRenderStateMap.setCustomIds(data.getCustomIds());
         this.buffers.invalidateStateTable();
+    }
+
+    /**
+     * Tears the iris-integration runtime state down when no pipeline data is
+     * current. Three trigger paths reach it through the {@code data == null}
+     * branch in {@link #onRenderStage}: a pack reload to a voxy-less pack
+     * (the holder publishes null), a disabled shader pack, and the
+     * integration switch turned off mid-session. Without this, the previously
+     * built {@link AllvrIrisFrameTarget} (two GL FBOs + the uniform UBO + a
+     * strong reference to the dead pipeline object) and the identity-keyed
+     * patched/albedo programs linger until some later patch-bearing pack
+     * happens to replace them. Everything rebuilds from scratch on the next
+     * non-null data (a returning pack rebuilds its pipeline → new identity →
+     * full setup in {@link #syncIrisData}), so the early tear-down costs
+     * nothing. No-op when nothing is held (the common case — every stage
+     * event runs this check).
+     */
+    private void dropIrisState() {
+        if (this.irisData == null) {
+            return;
+        }
+        if (this.frameTarget != null) {
+            this.frameTarget.destroy();
+            this.frameTarget = null;
+        }
+        this.irisData = null;
+        this.shaders.syncPatchedTerrain(null);
+        this.shaders.syncAlbedoTerrain(null);
+        this.appliedCustomIdRevision = -1;
     }
 
     /**
@@ -842,7 +875,13 @@ public final class AllvrRenderer {
      * applies the pack's shadow-map distortion (mode/bias/depthScale from the
      * shared {@link com.iridium126.createmanaindustry.client.render.shaderpack.ShadowDistortionRegistry}
      * — the same conventions the mist Tyndall sampling uses) so our depth
-     * lands on the texels the pack's deferred stages actually sample.
+     * lands on the texels the pack's deferred stages actually sample. For
+     * ortho projections (every modern pack) the EXACT variant additionally
+     * dilates each quad's rasterized coverage to a superset of its true
+     * distorted image and recomputes the ray-plane hit per fragment
+     * (shadow.fsh) — per-texel exact coverage and depth with the greedy quad
+     * stream untouched (doc 4i 排查⑪; per-vertex distortion of large quads
+     * otherwise lands blocks away from the true image near the shadow center).
      */
     private void drawShadowPass(Vec3 camPos) {
         Matrix4f shadowModelView = AllvrIrisDataHolder.shadowModelView();
@@ -850,10 +889,26 @@ public final class AllvrRenderer {
         if (shadowModelView == null || shadowProjection == null) {
             return; // no shadow pass ran this frame (shadows off / night config)
         }
-        int prog = this.shaders.shadowTerrain();
+        // the fragment-exact program reconstructs the texel ray assuming an
+        // ortho shadow projection (clip.xy = view.xy / halfPlane, ray along
+        // view z) — every modern pack qualifies; a legacy perspective shadow
+        // projection falls back to the interpolated depth-only program
+        boolean ortho = shadowProjection.m33() == 1.0f;
+        int exactProg = this.shaders.shadowTerrain();
+        int prog = ortho ? exactProg : this.shaders.shadowTerrainSimple();
+        if (prog == 0 && ortho) {
+            prog = this.shaders.shadowTerrainSimple(); // exact program failed to build
+            if (prog != 0 && !this.warnedShadowExactFallback) {
+                this.warnedShadowExactFallback = true;
+                CreateManaIndustry.LOGGER.error("[Allvr] exact shadow program unavailable (compile/link failure?) "
+                    + "— using the legacy interpolated depth variant (large-quad distortion artifacts return; "
+                    + "check earlier shader compile errors)");
+            }
+        }
         if (prog == 0) {
             return;
         }
+        boolean exact = prog == exactProg && exactProg != 0;
         int resolution = AllvrIrisDataHolder.shadowResolution();
         int commandCount = this.buildShadowCommands(shadowModelView, shadowProjection, camPos);
         if (commandCount == 0) {
@@ -866,8 +921,9 @@ public final class AllvrRenderer {
         }
         if (!this.loggedShadowStart) {
             this.loggedShadowStart = true;
-            CreateManaIndustry.LOGGER.info("[Allvr] shadow pass drawing: {} commands, distortion mode={} bias={} "
-                + "depthScale={}", commandCount, ShadowDistortionRegistry.resolveForCurrentPack().glslMode(),
+            CreateManaIndustry.LOGGER.info("[Allvr] shadow pass drawing: {} commands, program={} distortion mode={} "
+                + "bias={} depthScale={}", commandCount, exact ? "exact" : "legacy",
+                ShadowDistortionRegistry.resolveForCurrentPack().glslMode(),
                 ShadowDistortionRegistry.resolveForCurrentPack().bias(),
                 ShadowDistortionRegistry.resolveForCurrentPack().depthScale());
         }
@@ -893,9 +949,14 @@ public final class AllvrRenderer {
         AllvrShaderCache.uniformFloat(prog, "uShadowDepthScale", distortion.depthScale());
         AllvrShaderCache.uniformVec4(prog, "uShadowLogParams",
             distortion.logK(), distortion.logA(), distortion.logB(), distortion.depthScale());
+        // fragment-exact solve inputs (absent locations no-op on the legacy program)
+        GL20.glUniform1f(GL20.glGetUniformLocation(prog, "uShadowHalfPlane"),
+            (float) (1.0 / Math.max(Math.abs(shadowProjection.m00()), 1e-6)));
+        GL20.glUniform2f(GL20.glGetUniformLocation(prog, "uShadowMapSize"), resolution, resolution);
 
         GL11.glViewport(0, 0, resolution, resolution);
-        // depth-only: the fsh still runs (alpha cutout discard) but writes no color
+        // depth-only: the exact fsh computes gl_FragDepth per fragment and the
+        // legacy fsh interpolates it — neither writes color
         GL11.glColorMask(false, false, false, false);
         RenderSystem.enableDepthTest();
 

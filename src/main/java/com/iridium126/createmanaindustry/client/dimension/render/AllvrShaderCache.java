@@ -74,9 +74,15 @@ public final class AllvrShaderCache {
         java.util.regex.Pattern.compile("^\\s*#pragma\\s+cmi_include\\s+(\\S+)\\s*$", java.util.regex.Pattern.MULTILINE);
 
     private int terrain;
-    // shadow-pass variant of the terrain program: the unpatched sources plus
-    // ALLVR_SHADOW_PASS (applies the pack's shadow-map distortion — doc 4i)
+    // shadow-pass variants of the terrain program (doc 4i): the exact variant
+    // (+ALLVR_SHADOW_EXACT, pairs with shadow.fsh) recomputes the distorted
+    // ray-plane hit per fragment — exact coverage and depth for the ortho
+    // shadow projections every modern pack uses; the simple variant (pairs
+    // with terrain.fsh) keeps the old per-vertex-distorted depth-only copy
+    // for legacy perspective shadow projections, which the exact fsh's ortho
+    // ray reconstruction cannot serve.
     private int shadowTerrain;
+    private int shadowTerrainSimple;
     private int cullReset;
     private int traversal;
     private int cullFinalize;
@@ -121,6 +127,10 @@ public final class AllvrShaderCache {
             GL20.glDeleteProgram(this.shadowTerrain);
             this.shadowTerrain = 0;
         }
+        if (this.shadowTerrainSimple != 0) {
+            GL20.glDeleteProgram(this.shadowTerrainSimple);
+            this.shadowTerrainSimple = 0;
+        }
         // the patched programs are identity-keyed on their pipeline data — drop
         // them here so the next syncIrisData pass re-links against fresh sources
         this.dropPatched();
@@ -135,7 +145,10 @@ public final class AllvrShaderCache {
         this.cullClamp = 0;
         this.hizFirst = this.hizDownsample = this.revalidate = 0;
         this.terrain = link(GLSL_DIR + "terrain.vsh", GLSL_DIR + "terrain.fsh");
-        this.shadowTerrain = linkShadowTerrain();
+        this.shadowTerrain = linkShadowTerrain(GLSL_DIR + "shadow.fsh",
+            "#define ALLVR_SHADOW_PASS\n#define ALLVR_SHADOW_EXACT\n", "terrain.vsh (shadow exact)");
+        this.shadowTerrainSimple = linkShadowTerrain(GLSL_DIR + "terrain.fsh",
+            "#define ALLVR_SHADOW_PASS\n", "terrain.vsh (shadow legacy)");
         this.cullReset = compileCompute(GLSL_DIR + "gpu_cull_reset.comp");
         this.traversal = compileCompute(GLSL_DIR + "gpu_cull_traversal.comp");
         this.cullFinalize = compileCompute(GLSL_DIR + "gpu_cull_finalize.comp");
@@ -166,19 +179,24 @@ public final class AllvrShaderCache {
         return this.shadowTerrain;
     }
 
+    public int shadowTerrainSimple() {
+        return this.shadowTerrainSimple;
+    }
+
     /** The unpatched terrain sources plus {@code ALLVR_SHADOW_PASS} — the
      *  shadow-pass draw applies the pack's shadow-map distortion through it
      *  (the plain unpatched program must stay distortion-free for the main
-     *  fallback path). */
-    private int linkShadowTerrain() {
+     *  fallback path). {@code exact} additionally enables the fragment-exact
+     *  path (dilated coverage + shadow.fsh's per-fragment ray-plane solve). */
+    private int linkShadowTerrain(String fshPath, String defines, String name) {
         String vs = load(GLSL_DIR + "terrain.vsh");
-        String fs = load(GLSL_DIR + "terrain.fsh");
+        String fs = load(fshPath);
         if (vs == null || fs == null) {
             return 0;
         }
-        int vsh = compileStage(versionLine + "#define ALLVR_SHADOW_PASS\n" + PRELUDE + vs, GL20.GL_VERTEX_SHADER);
+        int vsh = compileStage(versionLine + defines + PRELUDE + vs, GL20.GL_VERTEX_SHADER);
         int fsh = compileStage(versionLine + PRELUDE + fs, GL20.GL_FRAGMENT_SHADER);
-        return link(GLSL_DIR + "terrain.vsh (shadow)", vsh, fsh);
+        return link(name, vsh, fsh);
     }
 
     // ------------------------------------------------------------------

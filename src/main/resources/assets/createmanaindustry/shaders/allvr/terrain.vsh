@@ -81,6 +81,30 @@ vec3 allvrDistortShadowSpace(vec3 clip) {
     float factor = l * uShadowDistortion + (1.0 - uShadowDistortion);
     return vec3(clip.xy / factor, clip.z * uShadowDepthScale);
 }
+
+// Fragment-exact shadow pass (doc 4i 排查⑪): the pack's radial distortion is
+// nonlinear PER-VERTEX, so rasterizing a large greedy quad chord-interpolates
+// it and lands blocks away from the true image near the shadow center. The
+// vertex stage turns the rasterized coverage into a guaranteed SUPERSET of the
+// true image (corner dilation along perimeter-edge normals by the edge's
+// numeric chord-deviation bound) and shadow.fsh recomputes the exact ray-plane
+// hit per fragment, discarding everything outside the quad's true (u,v) bounds
+// — exact coverage AND exact depth per texel with the quad stream untouched.
+// ALLVR_SHADOW_EXACT marks this path; the plain ALLVR_SHADOW_PASS build (the
+// perspective-projection legacy fallback) keeps the old single-corner distort.
+#ifdef ALLVR_SHADOW_EXACT
+flat out vec3 vOriginView; // the quad's (u,v)=(0,0) corner on the plane, view space
+flat out vec3 vUAxisView;  // quad u axis (unit, player-length preserving) in view space
+flat out vec3 vVAxisView;  // quad v axis in view space
+flat out vec2 vQuadSize;   // (sizeU, sizeV)
+
+vec2 allvrEdgeNormal(vec2 a, vec2 b) {
+    // CCW perimeter → outward normal is the edge direction rotated by -90°
+    vec2 n = vec2(b.y - a.y, a.x - b.x);
+    float len = length(n);
+    return len > 1e-9 ? n / len : vec2(0.0);
+}
+#endif
 #endif
 
 void main() {
@@ -176,7 +200,55 @@ void main() {
     gl_Position.xy += voxy_taaOffset() * gl_Position.w;
 #endif
 
+#ifdef ALLVR_SHADOW_EXACT
+    // Dilation: cover the true distorted image as a superset (see the block
+    // comment above). All four corners go through the same decode + distort
+    // the single corner does; the deviation bound of each perimeter edge is
+    // sampled numerically so the bound stays mode-agnostic (identity, radial,
+    // log and tile conventions all handled by the same code path).
+    vec3 baseRel = vec3(origin - uCamInt) - uCamFrac;
+    vec2 cTab[4] = vec2[](vec2(0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0));
+    vec2 distC[4];  // distorted clip xy per z-order corner
+    float distZ[4]; // distorted clip z per z-order corner
+    vec2 undistP[4]; // perimeter order (CCW): z-order 0,1,3,2
+    vec2 distP[4];
+    float devP[4];
+    for (int i = 0; i < 4; i++) {
+        vec3 l4 = au * (float(u) + cTab[i].x * float(sizeU))
+                + av * (float(v) + cTab[i].y * float(sizeV))
+                + aw * plane;
+        vec4 cp4 = ProjMat * (ModelViewMat * vec4(baseRel + l4, 1.0));
+        vec3 dz = allvrDistortShadowSpace(cp4.xyz);
+        distC[i] = dz.xy;
+        distZ[i] = dz.z;
+        int q = i == 0 ? 0 : i == 1 ? 1 : i == 3 ? 2 : 3;
+        undistP[q] = cp4.xy;
+        distP[q] = dz.xy;
+    }
+    for (int i = 0; i < 4; i++) {
+        int j = (i + 1) & 3;
+        float m = 0.0;
+        for (int k = 1; k <= 3; k++) {
+            float t = float(k) * 0.25;
+            vec2 ct = mix(undistP[i], undistP[j], t);
+            m = max(m, length(allvrDistortShadowSpace(vec3(ct, 0.0)).xy - mix(distP[i], distP[j], t)));
+        }
+        devP[i] = m * 1.2 + 1e-4; // safety factor + epsilon for the identity mode
+    }
+    int q = corner == 0u ? 0 : corner == 1u ? 1 : corner == 3u ? 2 : 3;
+    vec2 dilated = distC[int(corner)]
+        + devP[(q + 3) & 3] * allvrEdgeNormal(distP[(q + 3) & 3], distP[q])
+        + devP[q] * allvrEdgeNormal(distP[q], distP[(q + 1) & 3]);
+    gl_Position = vec4(dilated, distZ[int(corner)], 1.0);
+
+    // plane frame for the fragment-exact solve in shadow.fsh
+    vOriginView = (ModelViewMat * vec4(baseRel + au * float(u) + av * float(v) + aw * plane, 1.0)).xyz;
+    vUAxisView = mat3(ModelViewMat) * au;
+    vVAxisView = mat3(ModelViewMat) * av;
+    vQuadSize = vec2(float(sizeU), float(sizeV));
+#else
 #ifdef ALLVR_SHADOW_PASS
     gl_Position = vec4(allvrDistortShadowSpace(gl_Position.xyz), gl_Position.w);
+#endif
 #endif
 }

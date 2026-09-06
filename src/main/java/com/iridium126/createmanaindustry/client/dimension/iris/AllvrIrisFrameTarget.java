@@ -50,7 +50,7 @@ public final class AllvrIrisFrameTarget {
     private int uniformSize = -1;
 
     private int shadowFbo;
-    private int shadowDepth = -1;
+    private boolean warnedShadowIncomplete;
 
     public AllvrIrisFrameTarget(AllvrIrisPipelineData data, IntSupplier depthSupplier) {
         this.data = data;
@@ -193,7 +193,9 @@ public final class AllvrIrisFrameTarget {
 
     /**
      * Binds (and lazily creates) the depth-only shadow framebuffer against the
-     * pack's shadow map. Returns false when the shadow targets are unavailable.
+     * pack's shadow map. Returns false when the shadow targets are unavailable
+     * or the framebuffer is incomplete (one-shot error anchor — the draw would
+     * otherwise silently produce nothing).
      */
     public boolean bindShadow(int shadowDepthTexture, int resolution) {
         if (shadowDepthTexture <= 0 || resolution <= 0) {
@@ -204,12 +206,22 @@ public final class AllvrIrisFrameTarget {
             GL45C.glNamedFramebufferDrawBuffer(this.shadowFbo, GL11C.GL_NONE);
             GL45C.glNamedFramebufferReadBuffer(this.shadowFbo, GL11C.GL_NONE);
         }
-        if (shadowDepthTexture != this.shadowDepth) {
-            this.shadowDepth = shadowDepthTexture;
-            GL45C.glNamedFramebufferTexture(this.shadowFbo, GL30C.GL_DEPTH_ATTACHMENT, shadowDepthTexture, 0);
-        }
-        return GL45C.glCheckNamedFramebufferStatus(this.shadowFbo, GL30C.GL_FRAMEBUFFER)
+        // reattach EVERY frame, not on id change: deleting a texture severs its
+        // FBO attachment even when the driver hands the same numeric id back on
+        // recreation — iris reallocates its shadow targets on pack reload /
+        // shadow-resolution change (same discipline as beginFrame's color
+        // attachments; doc 4i 排查⑧). An attachmentless GL_NONE framebuffer is
+        // even legally COMPLETE, so only the reattach keeps the draw landing
+        // on the live shadowtex.
+        GL45C.glNamedFramebufferTexture(this.shadowFbo, GL30C.GL_DEPTH_ATTACHMENT, shadowDepthTexture, 0);
+        boolean complete = GL45C.glCheckNamedFramebufferStatus(this.shadowFbo, GL30C.GL_FRAMEBUFFER)
             == GL30C.GL_FRAMEBUFFER_COMPLETE;
+        if (!complete && !this.warnedShadowIncomplete) {
+            this.warnedShadowIncomplete = true;
+            CreateManaIndustry.LOGGER.error("[Allvr] shadow frame target incomplete (pack shadow targets changed?) "
+                + "— terrain will not cast shadows while it stays incomplete");
+        }
+        return complete;
     }
 
     /** The depth-only shadow framebuffer id (valid after a {@link #bindShadow} success). */
@@ -235,6 +247,5 @@ public final class AllvrIrisFrameTarget {
             this.uniformScratch = 0;
         }
         this.uniformSize = -1;
-        this.shadowDepth = -1;
     }
 }
